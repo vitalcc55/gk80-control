@@ -19,6 +19,7 @@
 - [Локальное окружение разработки](engineering/development-environment.md)
 - [Проверки качества](engineering/quality-workflow.md)
 - [Прототип экранов и сценарий показа](engineering/ui-prototype.md)
+- [Активный план первого сквозного demo](engineering/first-core-demo-plan.md)
 
 В `policies/` находится [авторский UX/UI-гайд для бизнес-систем](policies/UX_UI_business_systems_guide.md). Он задаёт общие принципы, а предметные требования к стенду берутся из ТЗ и согласованных решений проекта.
 
