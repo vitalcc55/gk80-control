@@ -120,8 +120,12 @@ var ErrShutdownUnconfirmed = errors.New("engine shutdown is unconfirmed")
 
 // Controller ties mutating commands to one UI ownership period.
 type Controller struct {
-	engine  *Engine
-	revoked bool // guarded by engine.mu
+	engine    *Engine
+	revoked   bool      // guarded by engine.mu
+	expiresAt time.Time // guarded by engine.mu
+	ctx       context.Context
+	cancel    context.CancelFunc
+	timer     *time.Timer // guarded by engine.mu
 }
 
 func (e *Engine) GrantControl() (*Controller, error) {
@@ -130,17 +134,118 @@ func (e *Engine) GrantControl() (*Controller, error) {
 	if e.closed {
 		return nil, ErrControlRevoked
 	}
-	if (e.controller != nil && !e.controller.revoked) || e.unresolvedCreate != nil ||
-		(e.active != nil && (!e.active.finalized || (e.active.stopStatus != nil && e.active.stopStatus.Status != "completed"))) {
+	if e.controller != nil && !e.controller.revoked {
 		return nil, ErrBusy
 	}
-	control := &Controller{engine: e}
+	controlCtx, cancel := context.WithCancel(context.Background())
+	control := &Controller{engine: e, ctx: controlCtx, cancel: cancel}
 	e.controller = control
 	return control, nil
 }
 
 func (e *Engine) allowedLocked(control *Controller) bool {
-	return !e.closed && (control == nil || (e.controller == control && !control.revoked))
+	return !e.closed && (control == nil || (e.controller == control && !control.revoked && (control.expiresAt.IsZero() || time.Now().Before(control.expiresAt))))
+}
+
+// Renew ties command admission to the lease deadline, independently of timer scheduling.
+func (c *Controller) Renew(duration time.Duration) (time.Time, error) {
+	c.engine.mu.Lock()
+	defer c.engine.mu.Unlock()
+	if !c.engine.allowedLocked(c) {
+		return time.Time{}, ErrControlRevoked
+	}
+	c.expiresAt = time.Now().Add(duration)
+	if c.timer == nil {
+		c.timer = time.AfterFunc(time.Until(c.expiresAt), c.expire)
+	} else {
+		c.timer.Reset(time.Until(c.expiresAt))
+	}
+	return c.expiresAt, nil
+}
+
+func (c *Controller) expire() {
+	e := c.engine
+	e.mu.Lock()
+	if c.revoked || e.closed || e.controller != c {
+		e.mu.Unlock()
+		return
+	}
+	if remaining := time.Until(c.expiresAt); remaining > 0 {
+		c.timer.Reset(remaining)
+		e.mu.Unlock()
+		return
+	}
+	c.revoked = true
+	c.cancel()
+	current := e.stopForLossLocked("ui_lost")
+	resolve := e.unresolvedCreate != nil
+	e.mu.Unlock()
+	if current != nil {
+		go e.finishStop(current)
+	}
+	if resolve {
+		go e.resolveRevokedCreate()
+	}
+}
+
+func (c *Controller) Done() <-chan struct{} { return c.ctx.Done() }
+
+func (e *Engine) allowed(control *Controller) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.allowedLocked(control)
+}
+
+type controlOperationContext struct {
+	context.Context
+	control *Controller
+	source  context.Context
+	cancel  context.CancelCauseFunc
+}
+
+// Err also checks the current deadline when a waiting write is ready to begin.
+func (ctx controlOperationContext) Err() error {
+	if err := ctx.source.Err(); err != nil {
+		ctx.cancel(err)
+	}
+	if err := ctx.Context.Err(); err != nil {
+		if errors.Is(context.Cause(ctx.Context), context.DeadlineExceeded) {
+			return context.DeadlineExceeded
+		}
+		return err
+	}
+	e := ctx.control.engine
+	e.mu.Lock()
+	expired := !ctx.control.expiresAt.IsZero() && !time.Now().Before(ctx.control.expiresAt)
+	e.mu.Unlock()
+	if expired {
+		ctx.control.expire()
+	}
+	if errors.Is(context.Cause(ctx.Context), context.DeadlineExceeded) {
+		return context.DeadlineExceeded
+	}
+	return ctx.Context.Err()
+}
+
+// operationContextLocked cancels a not-yet-started write when its UI ownership ends.
+func operationContextLocked(ctx context.Context, control *Controller) (context.Context, func()) {
+	if control == nil {
+		return ctx, func() {}
+	}
+	operation, cancel := context.WithCancelCause(control.ctx)
+	stop := context.AfterFunc(ctx, func() { cancel(ctx.Err()) })
+	if err := ctx.Err(); err != nil {
+		cancel(err)
+	}
+	return controlOperationContext{Context: operation, control: control, source: ctx, cancel: cancel}, func() { stop(); cancel(context.Canceled) }
+}
+
+// A database transaction may return Canceled even when its parent timed out.
+func operationError(ctx context.Context, err error) error {
+	if errors.Is(err, context.Canceled) && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return errors.Join(err, context.DeadlineExceeded)
+	}
+	return err
 }
 
 func (c *Controller) Create(ctx context.Context, cmd contract.CreateTestCommand) (contract.CommandStatus, error) {
@@ -162,6 +267,10 @@ func (c *Controller) Confirm(ctx context.Context, id, action uuid.UUID, cmd cont
 	return c.engine.confirm(ctx, id, action, cmd, c)
 }
 
+func (c *Controller) Stop(ctx context.Context, id, commandID uuid.UUID) (contract.CommandStatus, error) {
+	return c.engine.stop(ctx, id, commandID, c)
+}
+
 // Revoke fences late commands before requesting the system stop.
 func (c *Controller) Revoke(reason string) {
 	e := c.engine
@@ -171,6 +280,10 @@ func (c *Controller) Revoke(reason string) {
 		return
 	}
 	c.revoked = true
+	c.cancel()
+	if c.timer != nil {
+		c.timer.Stop()
+	}
 	current := e.stopForLossLocked(reason)
 	resolve := e.unresolvedCreate != nil
 	e.mu.Unlock()
@@ -204,6 +317,10 @@ func (e *Engine) Shutdown(ctx context.Context, reason string) error {
 	e.lifeCancel()
 	if e.controller != nil {
 		e.controller.revoked = true
+		e.controller.cancel()
+		if e.controller.timer != nil {
+			e.controller.timer.Stop()
+		}
 	}
 	current := e.stopForLossLocked(reason)
 	e.mu.Unlock()
@@ -380,6 +497,9 @@ func (e *Engine) create(ctx context.Context, command contract.CreateTestCommand,
 	}
 	if !errors.Is(lookupErr, storage.ErrCommandNotFound) {
 		e.abortOnLookupError(ctx, lookupErr)
+		if !e.allowed(control) {
+			return contract.CommandStatus{}, ErrControlRevoked
+		}
 		return known, lookupErr
 	}
 	e.mu.Lock()
@@ -401,14 +521,17 @@ func (e *Engine) create(ctx context.Context, command contract.CreateTestCommand,
 	}
 	pending := pendingCreate{command: command, identity: identity}
 	e.unresolvedCreate = &pending
+	opCtx, cancelOperation := operationContextLocked(commandCtx, control)
 	e.mu.Unlock()
+	defer cancelOperation()
 	var result contract.CommandStatus
 	var err error
 	if identity == nil {
-		result, err = e.store.Create(commandCtx, command)
+		result, err = e.store.Create(opCtx, command)
 	} else {
-		result, err = e.store.CreateExact(commandCtx, command, identity)
+		result, err = e.store.CreateExact(opCtx, command, identity)
 	}
+	err = operationError(opCtx, err)
 	if err != nil || result.TestId == nil {
 		if definiteDecision(err) {
 			e.mu.Lock()
@@ -646,6 +769,9 @@ func (e *Engine) start(ctx context.Context, testID uuid.UUID, command contract.S
 	previous, lookupErr := e.store.LookupStart(ctx, testID, command)
 	if !errors.Is(lookupErr, storage.ErrCommandNotFound) {
 		e.abortOnLookupError(ctx, lookupErr)
+		if !e.allowed(control) {
+			return contract.CommandStatus{}, ErrControlRevoked
+		}
 		return previous, lookupErr
 	}
 	e.mu.Lock()
@@ -654,14 +780,36 @@ func (e *Engine) start(ctx context.Context, testID uuid.UUID, command contract.S
 		return contract.CommandStatus{}, ErrControlRevoked
 	}
 	current := e.active
-	if current == nil || current.record.TestId != testID {
+	if control != nil && current != nil && current.stopping && !current.finalized {
 		e.mu.Unlock()
-		result, err := e.store.RejectStartUnavailable(ctx, testID, command)
-		e.abortOnRejectedError(ctx, err)
+		return contract.CommandStatus{}, ErrBusy
+	}
+	if current == nil || current.record.TestId != testID {
+		opCtx, cancel := operationContextLocked(ctx, control)
+		e.mu.Unlock()
+		defer cancel()
+		result, err := e.store.RejectStartUnavailable(opCtx, testID, command)
+		err = operationError(opCtx, err)
+		e.abortOnRejectedError(opCtx, err)
+		if !e.allowed(control) {
+			return contract.CommandStatus{}, ErrControlRevoked
+		}
 		return result, err
 	}
 	if current.stopping {
 		done := current.stopDone
+		if control != nil {
+			opCtx, cancel := operationContextLocked(ctx, control)
+			e.mu.Unlock()
+			defer cancel()
+			action := contract.PendingAction{ActionId: uuid.New(), TestId: testID, Instruction: "Подтвердите начало демонстрационного измерения"}
+			result, err := e.store.Start(opCtx, testID, command, action)
+			err = operationError(opCtx, err)
+			if !e.allowed(control) {
+				return contract.CommandStatus{}, ErrControlRevoked
+			}
+			return result, err
+		}
 		e.mu.Unlock()
 		if err := waitForStop(ctx, done); err != nil {
 			return contract.CommandStatus{}, err
@@ -676,16 +824,20 @@ func (e *Engine) start(ctx context.Context, testID uuid.UUID, command contract.S
 		return e.store.Start(ctx, testID, command, action)
 	}
 	notReady := current.record.Stage == "preparing" && !e.equipment.Ready()
-	opCtx, cancel := context.WithTimeout(current.ctx, 2*time.Second)
+	baseCtx, cancelBase := context.WithTimeout(current.ctx, 2*time.Second)
+	opCtx, cancel := operationContextLocked(baseCtx, control)
 	e.mu.Unlock()
 	defer cancel()
+	defer cancelBase()
 	if notReady {
 		result, err := e.store.RejectStartNotReady(opCtx, testID, command)
+		err = operationError(opCtx, err)
 		e.abortOnStorageError(err)
 		return result, err
 	}
 	action := contract.PendingAction{ActionId: uuid.New(), TestId: testID, Instruction: "Подтвердите начало демонстрационного измерения"}
 	status, err := e.store.Start(opCtx, testID, command, action)
+	err = operationError(opCtx, err)
 	if err != nil {
 		if unexpectedStorageError(err) {
 			e.requestStop(current, "storage_error")
@@ -723,6 +875,9 @@ func (e *Engine) confirm(ctx context.Context, testID, actionID uuid.UUID, comman
 	previous, lookupErr := e.store.LookupConfirm(ctx, testID, actionID, command)
 	if !errors.Is(lookupErr, storage.ErrCommandNotFound) {
 		e.abortOnLookupError(ctx, lookupErr)
+		if !e.allowed(control) {
+			return contract.CommandStatus{}, ErrControlRevoked
+		}
 		return previous, lookupErr
 	}
 	e.mu.Lock()
@@ -731,14 +886,35 @@ func (e *Engine) confirm(ctx context.Context, testID, actionID uuid.UUID, comman
 		return contract.CommandStatus{}, ErrControlRevoked
 	}
 	current := e.active
-	if current == nil || current.record.TestId != testID {
+	if control != nil && current != nil && current.stopping && !current.finalized {
 		e.mu.Unlock()
-		result, err := e.store.RejectConfirmUnavailable(ctx, testID, actionID, command)
-		e.abortOnRejectedError(ctx, err)
+		return contract.CommandStatus{}, ErrBusy
+	}
+	if current == nil || current.record.TestId != testID {
+		opCtx, cancel := operationContextLocked(ctx, control)
+		e.mu.Unlock()
+		defer cancel()
+		result, err := e.store.RejectConfirmUnavailable(opCtx, testID, actionID, command)
+		err = operationError(opCtx, err)
+		e.abortOnRejectedError(opCtx, err)
+		if !e.allowed(control) {
+			return contract.CommandStatus{}, ErrControlRevoked
+		}
 		return result, err
 	}
 	if current.stopping {
 		done := current.stopDone
+		if control != nil {
+			opCtx, cancel := operationContextLocked(ctx, control)
+			e.mu.Unlock()
+			defer cancel()
+			result, err := e.store.Confirm(opCtx, testID, actionID, command)
+			err = operationError(opCtx, err)
+			if !e.allowed(control) {
+				return contract.CommandStatus{}, ErrControlRevoked
+			}
+			return result, err
+		}
 		e.mu.Unlock()
 		if err := waitForStop(ctx, done); err != nil {
 			return contract.CommandStatus{}, err
@@ -751,10 +927,13 @@ func (e *Engine) confirm(ctx context.Context, testID, actionID uuid.UUID, comman
 		}
 		return e.store.Confirm(ctx, testID, actionID, command)
 	}
-	opCtx, cancel := context.WithTimeout(current.ctx, 2*time.Second)
+	baseCtx, cancelBase := context.WithTimeout(current.ctx, 2*time.Second)
+	opCtx, cancel := operationContextLocked(baseCtx, control)
 	e.mu.Unlock()
 	defer cancel()
+	defer cancelBase()
 	status, err := e.store.Confirm(opCtx, testID, actionID, command)
+	err = operationError(opCtx, err)
 	if err != nil {
 		if unexpectedStorageError(err) {
 			e.requestStop(current, "storage_error")
@@ -805,7 +984,7 @@ func (e *Engine) confirm(ctx context.Context, testID, actionID uuid.UUID, comman
 }
 
 func unexpectedStorageError(err error) bool {
-	return err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, storage.ErrInvalidCommand) && !errors.Is(err, storage.ErrRevision) && !errors.Is(err, storage.ErrActiveTest) && !errors.Is(err, storage.ErrInvalidState) && !errors.Is(err, storage.ErrActionMismatch) && !errors.Is(err, storage.ErrTestNotFound) && !errors.Is(err, storage.ErrCommandConflict) && !errors.Is(err, storage.ErrNotReady)
+	return err != nil && (!errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) && !errors.Is(err, storage.ErrInvalidCommand) && !errors.Is(err, storage.ErrRevision) && !errors.Is(err, storage.ErrActiveTest) && !errors.Is(err, storage.ErrInvalidState) && !errors.Is(err, storage.ErrActionMismatch) && !errors.Is(err, storage.ErrTestNotFound) && !errors.Is(err, storage.ErrCommandConflict) && !errors.Is(err, storage.ErrNotReady)
 }
 
 func definiteDecision(err error) bool {
@@ -840,11 +1019,26 @@ func (e *Engine) abortOnRejectedError(ctx context.Context, err error) {
 
 // Stop marks acceptance without waiting for SQLite or the ordinary command queue.
 func (e *Engine) Stop(ctx context.Context, testID, commandID uuid.UUID) (contract.CommandStatus, error) {
+	return e.stop(ctx, testID, commandID, nil)
+}
+
+func (e *Engine) stop(ctx context.Context, testID, commandID uuid.UUID, control *Controller) (contract.CommandStatus, error) {
 	e.mu.Lock()
+	if !e.allowedLocked(control) {
+		e.mu.Unlock()
+		return contract.CommandStatus{}, ErrControlRevoked
+	}
 	current := e.active
 	if current == nil || current.record.TestId != testID || current.record.StopCommandId != commandID {
 		e.mu.Unlock()
-		return e.store.LookupStop(ctx, testID, commandID)
+		result, err := e.store.LookupStop(ctx, testID, commandID)
+		e.mu.Lock()
+		allowed := e.allowedLocked(control)
+		e.mu.Unlock()
+		if !allowed {
+			return contract.CommandStatus{}, ErrControlRevoked
+		}
+		return result, err
 	}
 	if current.stopping {
 		result := copyCommand(*current.stopStatus)

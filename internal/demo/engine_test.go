@@ -1160,8 +1160,12 @@ func TestRevocationStopsCreateCommittedBeforeResponse(t *testing.T) {
 		t.Fatal("create did not enter")
 	}
 	controller.Revoke("ui_lost")
-	if _, err := engine.GrantControl(); !errors.Is(err, ErrBusy) {
-		t.Fatalf("pending create admitted another controller: %v", err)
+	next, err := engine.GrantControl()
+	if err != nil {
+		t.Fatalf("new client cannot observe pending create: %v", err)
+	}
+	if _, err := next.Create(context.Background(), command(1)); !errors.Is(err, ErrBusy) {
+		t.Fatalf("pending create admitted another action: %v", err)
 	}
 	close(held.release)
 	<-done
@@ -1706,4 +1710,411 @@ func TestShutdownCancelsPostCreateLookup(t *testing.T) {
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("create: %v", err)
 	}
+}
+
+func TestRevokedControllerCannotIssueStop(t *testing.T) {
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	engine := newTestEngine(t, store, &countedSimulator{}, uuid.New())
+	controller, err := engine.GrantControl()
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := controller.Create(context.Background(), command(1))
+	if err != nil || created.TestId == nil {
+		t.Fatalf("create: %v", err)
+	}
+	stopID := engine.State().Record.StopCommandId
+	controller.Revoke("ui_lost")
+	if _, err := controller.Stop(context.Background(), *created.TestId, stopID); !errors.Is(err, ErrControlRevoked) {
+		t.Fatalf("stale stop: %v", err)
+	}
+	waitFor(t, engine, func(state State) bool {
+		return state.Record != nil && state.Record.Stage == "finished" && state.Record.SaveStatus == "saved"
+	})
+}
+
+type heldStopLookup struct {
+	*storage.Store
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *heldStopLookup) LookupStop(ctx context.Context, id, commandID uuid.UUID) (contract.CommandStatus, error) {
+	close(s.entered)
+	<-s.release
+	return s.Store.LookupStop(ctx, id, commandID)
+}
+
+func TestStopLookupCannotReturnAfterRevocation(t *testing.T) {
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	wrapped := &heldStopLookup{Store: store, entered: make(chan struct{}), release: make(chan struct{})}
+	engine := newTestEngine(t, wrapped, &countedSimulator{}, uuid.New())
+	controller, err := engine.GrantControl()
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := controller.Stop(context.Background(), uuid.New(), uuid.New()); done <- err }()
+	select {
+	case <-wrapped.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("lookup did not start")
+	}
+	controller.Revoke("ui_lost")
+	close(wrapped.release)
+	if err := <-done; !errors.Is(err, ErrControlRevoked) {
+		t.Fatalf("stop lookup: %v", err)
+	}
+}
+
+type heldStartLookup struct {
+	*storage.Store
+	block   atomic.Bool
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *heldStartLookup) LookupStart(ctx context.Context, id uuid.UUID, cmd contract.StartTestCommand) (contract.CommandStatus, error) {
+	result, err := s.Store.LookupStart(ctx, id, cmd)
+	if s.block.Load() {
+		close(s.entered)
+		<-s.release
+	}
+	return result, err
+}
+
+func TestStartReplayCannotReturnAfterRevocation(t *testing.T) {
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	wrapped := &heldStartLookup{Store: store, entered: make(chan struct{}), release: make(chan struct{})}
+	engine := newTestEngine(t, wrapped, &countedSimulator{}, uuid.New())
+	controller, err := engine.GrantControl()
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := controller.Create(context.Background(), command(1))
+	if err != nil || created.TestId == nil {
+		t.Fatalf("create: %v", err)
+	}
+	start := contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: 1, ValveClosed: true, ConnectionConfirmed: true}
+	if _, err := controller.Start(context.Background(), *created.TestId, start); err != nil {
+		t.Fatal(err)
+	}
+	wrapped.block.Store(true)
+	done := make(chan error, 1)
+	go func() { _, err := controller.Start(context.Background(), *created.TestId, start); done <- err }()
+	select {
+	case <-wrapped.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("lookup did not start")
+	}
+	controller.Revoke("ui_lost")
+	close(wrapped.release)
+	if err := <-done; !errors.Is(err, ErrControlRevoked) {
+		t.Fatalf("replay: %v", err)
+	}
+	waitFor(t, engine, func(state State) bool {
+		return state.Record != nil && state.Record.Stage == "finished" && state.Record.SaveStatus == "saved"
+	})
+}
+
+func TestRevocationCancelsUnavailableRejectionBeforeWrite(t *testing.T) {
+	for _, operation := range []string{"start", "confirm"} {
+		t.Run(operation, func(t *testing.T) {
+			store, err := storage.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = store.Close() }()
+			blocked := &blockedRejection{Store: store, entered: make(chan struct{}), result: "not_started"}
+			engine := newTestEngine(t, blocked, &countedSimulator{}, uuid.New())
+			controller, err := engine.GrantControl()
+			if err != nil {
+				t.Fatal(err)
+			}
+			id, commandID := uuid.New(), uuid.New()
+			done := make(chan error, 1)
+			go func() {
+				var err error
+				if operation == "start" {
+					_, err = controller.Start(context.Background(), id, contract.StartTestCommand{CommandId: commandID})
+				} else {
+					_, err = controller.Confirm(context.Background(), id, uuid.New(), contract.ConfirmActionCommand{CommandId: commandID})
+				}
+				done <- err
+			}()
+			waitForRejectionEntry(t, blocked.entered, done)
+			controller.Revoke("ui_lost")
+			if err := rejectionResult(t, done); !errors.Is(err, ErrControlRevoked) {
+				t.Fatalf("rejection: %v", err)
+			}
+			if _, err := store.Command(context.Background(), commandID); !errors.Is(err, storage.ErrCommandNotFound) {
+				t.Fatalf("unexpected command: %v", err)
+			}
+		})
+	}
+}
+
+func TestControllerRejectsStartAfterConfirmedStop(t *testing.T) {
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	engine := newTestEngine(t, store, &countedSimulator{}, uuid.New())
+	controller, err := engine.GrantControl()
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := controller.Create(context.Background(), command(1))
+	if err != nil || created.TestId == nil {
+		t.Fatalf("create: %v", err)
+	}
+	stopID := engine.State().Record.StopCommandId
+	if _, err := controller.Stop(context.Background(), *created.TestId, stopID); err != nil {
+		t.Fatal(err)
+	}
+	state := waitFor(t, engine, func(state State) bool {
+		return state.Record != nil && state.Record.Stage == "finished" && state.Record.SaveStatus == "saved"
+	})
+	start := contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: state.Revision, ValveClosed: true, ConnectionConfirmed: true}
+	if _, err := controller.Start(context.Background(), *created.TestId, start); !errors.Is(err, storage.ErrInvalidState) && !errors.Is(err, storage.ErrRevision) {
+		t.Fatalf("start after stop: %v", err)
+	}
+	status, err := store.Command(context.Background(), start.CommandId)
+	if err != nil || status.Status != "rejected" {
+		t.Fatalf("rejection not saved: %+v %v", status, err)
+	}
+}
+
+type heldUnavailableRejection struct {
+	*storage.Store
+	entered     chan struct{}
+	release     chan struct{}
+	beforeWrite chan struct{}
+}
+
+func (s *heldUnavailableRejection) RejectStartUnavailable(ctx context.Context, id uuid.UUID, cmd contract.StartTestCommand) (contract.CommandStatus, error) {
+	close(s.entered)
+	select {
+	case <-s.release:
+		if s.beforeWrite != nil {
+			close(s.beforeWrite)
+		}
+		return s.Store.RejectStartUnavailable(ctx, id, cmd)
+	case <-ctx.Done():
+		return contract.CommandStatus{}, ctx.Err()
+	}
+}
+
+func TestExpiredControlStopsWaitingWriteBeforeTimerRuns(t *testing.T) {
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	held := &heldUnavailableRejection{Store: store, entered: make(chan struct{}), release: make(chan struct{}), beforeWrite: make(chan struct{})}
+	engine := newTestEngine(t, held, &countedSimulator{}, uuid.New())
+	controller, err := engine.GrantControl()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := controller.Renew(time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	cmd := contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: 1, ValveClosed: true, ConnectionConfirmed: true}
+	done := make(chan error, 1)
+	go func() { _, err := controller.Start(context.Background(), uuid.New(), cmd); done <- err }()
+	select {
+	case <-held.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("rejection did not start")
+	}
+	engine.mu.Lock()
+	controller.expiresAt = time.Now().Add(-time.Second)
+	close(held.release)
+	select {
+	case <-held.beforeWrite:
+	case <-time.After(5 * time.Second):
+		engine.mu.Unlock()
+		t.Fatal("write was not reached")
+	}
+	engine.mu.Unlock()
+	if err := <-done; !errors.Is(err, ErrControlRevoked) {
+		t.Fatalf("expired rejection: %v", err)
+	}
+	if _, err := store.Command(context.Background(), cmd.CommandId); !errors.Is(err, storage.ErrCommandNotFound) {
+		t.Fatalf("unexpected command: %v", err)
+	}
+}
+
+type heldStartWrite struct {
+	*storage.Store
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *heldStartWrite) Start(ctx context.Context, id uuid.UUID, cmd contract.StartTestCommand, action contract.PendingAction) (contract.CommandStatus, error) {
+	close(s.entered)
+	<-s.release
+	return s.Store.Start(ctx, id, cmd, action)
+}
+
+func TestExpiredControlStopsWaitingStartBeforeTimerRuns(t *testing.T) {
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	held := &heldStartWrite{Store: store, entered: make(chan struct{}), release: make(chan struct{})}
+	engine := newTestEngine(t, held, &countedSimulator{}, uuid.New())
+	controller, err := engine.GrantControl()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := controller.Renew(time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	created, err := controller.Create(context.Background(), command(1))
+	if err != nil || created.TestId == nil {
+		t.Fatalf("create: %v", err)
+	}
+	cmd := contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: 1, ValveClosed: true, ConnectionConfirmed: true}
+	done := make(chan error, 1)
+	go func() { _, err := controller.Start(context.Background(), *created.TestId, cmd); done <- err }()
+	select {
+	case <-held.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("start did not reach writer")
+	}
+	engine.mu.Lock()
+	controller.expiresAt = time.Now().Add(-time.Second)
+	close(held.release)
+	engine.mu.Unlock()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("start: %v", err)
+	}
+	if _, err := store.Command(context.Background(), cmd.CommandId); !errors.Is(err, storage.ErrCommandNotFound) {
+		t.Fatalf("unexpected command: %v", err)
+	}
+	waitFor(t, engine, func(state State) bool {
+		return state.Record != nil && state.Record.Stage == "finished" && state.Record.SaveStatus == "saved"
+	})
+}
+
+type timedOutOperation struct {
+	*storage.Store
+	operation string
+}
+
+func (s *timedOutOperation) Start(ctx context.Context, id uuid.UUID, cmd contract.StartTestCommand, action contract.PendingAction) (contract.CommandStatus, error) {
+	if s.operation == "start" {
+		<-ctx.Done()
+		return contract.CommandStatus{}, context.Canceled
+	}
+	return s.Store.Start(ctx, id, cmd, action)
+}
+
+func (s *timedOutOperation) Confirm(ctx context.Context, id, action uuid.UUID, cmd contract.ConfirmActionCommand) (contract.CommandStatus, error) {
+	if s.operation == "confirm" {
+		<-ctx.Done()
+		return contract.CommandStatus{}, context.Canceled
+	}
+	return s.Store.Confirm(ctx, id, action, cmd)
+}
+
+func TestControllerStorageTimeoutStillStopsRun(t *testing.T) {
+	for _, operation := range []string{"start", "confirm"} {
+		t.Run(operation, func(t *testing.T) {
+			store, err := storage.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = store.Close() }()
+			sim := &countedSimulator{}
+			engine := newTestEngine(t, &timedOutOperation{Store: store, operation: operation}, sim, uuid.New())
+			controller, err := engine.GrantControl()
+			if err != nil {
+				t.Fatal(err)
+			}
+			created, err := controller.Create(context.Background(), command(1))
+			if err != nil || created.TestId == nil {
+				t.Fatalf("create: %v", err)
+			}
+			id := *created.TestId
+			_, err = controller.Start(context.Background(), id, contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: 1, ValveClosed: true, ConnectionConfirmed: true})
+			if operation == "confirm" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				action := engine.State().PendingAction
+				if action == nil {
+					t.Fatal("missing action")
+				}
+				_, err = controller.Confirm(context.Background(), id, action.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: 2})
+			}
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("operation: %v", err)
+			}
+			state := waitFor(t, engine, func(state State) bool {
+				return state.Stop != nil && state.Stop.Status == "completed" && state.Record.SaveStatus == "saved"
+			})
+			if state.Record.Outcome != "interrupted" || sim.stops.Load() != 1 {
+				t.Fatalf("stop: %+v", state)
+			}
+		})
+	}
+}
+
+func TestRenewedControlKeepsPendingRejection(t *testing.T) {
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	held := &heldUnavailableRejection{Store: store, entered: make(chan struct{}), release: make(chan struct{})}
+	engine := newTestEngine(t, held, &countedSimulator{}, uuid.New())
+	controller, err := engine.GrantControl()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := controller.Renew(time.Second); err != nil {
+		t.Fatal(err)
+	}
+	cmd := contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: 1, ValveClosed: true, ConnectionConfirmed: true}
+	done := make(chan error, 1)
+	go func() { _, err := controller.Start(context.Background(), uuid.New(), cmd); done <- err }()
+	select {
+	case <-held.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("rejection did not start")
+	}
+	if _, err := controller.Renew(5 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("renewed operation ended: %v", err)
+	case <-time.After(1200 * time.Millisecond):
+	}
+	close(held.release)
+	if err := <-done; !errors.Is(err, storage.ErrTestNotFound) {
+		t.Fatalf("rejection: %v", err)
+	}
+	status, err := store.Command(context.Background(), cmd.CommandId)
+	if err != nil || status.Status != "rejected" {
+		t.Fatalf("rejection not saved: %+v %v", status, err)
+	}
+	controller.Revoke("ui_lost")
 }
