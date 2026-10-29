@@ -1,0 +1,33 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.6.3/schema.json",
+  "files": {
+    "includes": [
+      "**",
+      "!!docs",
+      "!!scripts",
+      "!!dist",
+      "!!node_modules",
+      "!!.tmp",
+      "!!.cache",
+      "!!.impeccable",
+      "!!.playwright-mcp",
+      "!!test-results",
+      "!!playwright-report",
+      "!**/*.md",
+      "!package-lock.json"
+    ]
+  },
+  "formatter": { "indentStyle": "space", "indentWidth": 2, "lineWidth": 100 },
+  "javascript": { "formatter": { "quoteStyle": "single" } },
+  "css": { "parser": { "tailwindDirectives": true } },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "preset": "recommended",
+      "suspicious": { "noExplicitAny": "error" },
+      "nursery": { "noFloatingPromises": "error", "noMisusedPromises": "error" },
+      "style": { "noNonNullAssertion": "error" },
+      "complexity": { "useLiteralKeys": "off" }
+    }
+  }
+}

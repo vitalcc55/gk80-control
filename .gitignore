@@ -19,6 +19,12 @@ wails_windows_*.syso
 # Local Codex task artifacts
 /.tmp/.codex/
 
+# Playwright output
+/test-results/
+/playwright-report/
+/.playwright-mcp/
+/.impeccable/review/
+
 # Windows generated files
 Thumbs.db
 Thumbs.db:encryptable
@@ -27,6 +33,7 @@ ehthumbs_vista.db
 [Dd]esktop.ini
 $RECYCLE.BIN/
 *.stackdump
+*.dmp
 
 # Logs
 logs
