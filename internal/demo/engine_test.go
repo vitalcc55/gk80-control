@@ -1115,3 +1115,595 @@ func TestStopPreventsSimulatorStartAfterDelayedConfirmation(t *testing.T) {
 		return state.Record != nil && state.Record.SaveStatus == "saved" && state.Record.Stage == "finished"
 	})
 }
+
+type heldExactCreate struct {
+	*storage.Store
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *heldExactCreate) CreateExact(ctx context.Context, cmd contract.CreateTestCommand, identity []byte) (contract.CommandStatus, error) {
+	result, err := s.Store.CreateExact(ctx, cmd, identity)
+	close(s.entered)
+	<-s.release
+	return result, err
+}
+
+func TestRevocationStopsCreateCommittedBeforeResponse(t *testing.T) {
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	held := &heldExactCreate{Store: store, entered: make(chan struct{}), release: make(chan struct{})}
+	sim := &countedSimulator{}
+	engine := newTestEngine(t, held, sim, uuid.New())
+	controller, err := engine.GrantControl()
+	if err != nil {
+		t.Fatal(err)
+	}
+	validator, err := contract.NewInputValidator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`
+	var cmd contract.CreateTestCommand
+	input, err := validator.Inspect("CreateTestCommand", []byte(body), &cmd)
+	if err != nil || !input.Valid {
+		t.Fatalf("input: %v", err)
+	}
+	done := make(chan struct{})
+	go func() { _, _ = controller.CreateExact(context.Background(), cmd, input.Identity); close(done) }()
+	select {
+	case <-held.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("create did not enter")
+	}
+	controller.Revoke("ui_lost")
+	if _, err := engine.GrantControl(); !errors.Is(err, ErrBusy) {
+		t.Fatalf("pending create admitted another controller: %v", err)
+	}
+	close(held.release)
+	<-done
+	state := waitFor(t, engine, func(state State) bool {
+		return state.Record != nil && state.Record.Stage == "finished" && state.Record.SaveStatus == "saved"
+	})
+	if state.Record.Outcome != "interrupted" || sim.stops.Load() != 1 || sim.starts.Load() != 0 {
+		t.Fatalf("stop: %+v", state)
+	}
+	audit, err := store.Audit(context.Background(), state.Record.TestId, 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range audit {
+		if event.Action == "stop" && event.Outcome == "accepted" && event.OperatorId == "system" && event.Reason != nil && *event.Reason == "ui_lost" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing system stop audit: %+v", audit)
+	}
+	if _, err := controller.Start(context.Background(), state.Record.TestId, contract.StartTestCommand{CommandId: uuid.New()}); !errors.Is(err, ErrControlRevoked) {
+		t.Fatalf("stale control: %v", err)
+	}
+}
+
+func TestRevocationResolvesCreateAfterUnknownResponse(t *testing.T) {
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	sim := &countedSimulator{}
+	engine := newTestEngine(t, &lostExactCreateResponse{Store: store}, sim, uuid.New())
+	controller, err := engine.GrantControl()
+	if err != nil {
+		t.Fatal(err)
+	}
+	validator, err := contract.NewInputValidator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`
+	var cmd contract.CreateTestCommand
+	input, err := validator.Inspect("CreateTestCommand", []byte(body), &cmd)
+	if err != nil || !input.Valid {
+		t.Fatalf("input: %v", err)
+	}
+	if _, err := controller.CreateExact(context.Background(), cmd, input.Identity); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("create: %v", err)
+	}
+	controller.Revoke("ui_lost")
+	state := waitFor(t, engine, func(state State) bool {
+		return state.Record != nil && state.Record.Stage == "finished" && state.Record.SaveStatus == "saved"
+	})
+	if state.Record.Outcome != "interrupted" || sim.stops.Load() != 1 {
+		t.Fatalf("stop: %+v", state)
+	}
+}
+
+func TestRevocationPreventsLateConfirmation(t *testing.T) {
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	delayed := &stalledConfirm{Store: store, entered: make(chan struct{}), release: make(chan struct{})}
+	sim := &countedSimulator{}
+	engine := newTestEngine(t, delayed, sim, uuid.New())
+	controller, err := engine.GrantControl()
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := controller.Create(context.Background(), command(1))
+	if err != nil || created.TestId == nil {
+		t.Fatalf("create: %v", err)
+	}
+	id := *created.TestId
+	_, err = controller.Start(context.Background(), id, contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: 1, ValveClosed: true, ConnectionConfirmed: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	action := engine.State().PendingAction
+	if action == nil {
+		t.Fatal("missing action")
+	}
+	done := make(chan struct{})
+	go func() {
+		_, _ = controller.Confirm(context.Background(), id, action.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: 2})
+		close(done)
+	}()
+	select {
+	case <-delayed.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("confirm did not enter")
+	}
+	controller.Revoke("ui_lost")
+	close(delayed.release)
+	<-done
+	waitFor(t, engine, func(state State) bool {
+		return state.Record != nil && state.Record.Stage == "finished" && state.Record.SaveStatus == "saved"
+	})
+	if sim.starts.Load() != 0 || sim.stops.Load() != 1 {
+		t.Fatalf("late action: starts=%d stops=%d", sim.starts.Load(), sim.stops.Load())
+	}
+}
+
+func TestShutdownStopsSimulatorWithoutWaitingForBlockedWriter(t *testing.T) {
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	blocked := &blockedSamples{Store: store, entered: make(chan struct{}), release: make(chan struct{})}
+	sim := &countedSimulator{}
+	engine := newTestEngine(t, blocked, sim, uuid.New())
+	created, err := engine.Create(context.Background(), command(1))
+	if err != nil || created.TestId == nil {
+		t.Fatalf("create: %v", err)
+	}
+	id := *created.TestId
+	if _, err = engine.Start(context.Background(), id, contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: 1, ValveClosed: true, ConnectionConfirmed: true}); err != nil {
+		t.Fatal(err)
+	}
+	action := engine.State().PendingAction
+	if action == nil {
+		t.Fatal("missing action")
+	}
+	if _, err = engine.Confirm(context.Background(), id, action.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: 2}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-blocked.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("writer did not enter")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	err = engine.Shutdown(ctx, "owner_lost")
+	cancel()
+	if !errors.Is(err, ErrShutdownUnconfirmed) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("shutdown: %v", err)
+	}
+	if sim.stops.Load() != 1 || engine.State().Record.SaveStatus == "saved" {
+		t.Fatalf("shutdown falsely confirmed: %+v", engine.State())
+	}
+	close(blocked.release)
+	waitFor(t, engine, func(state State) bool {
+		return state.Record != nil && state.Record.Stage == "finished" && state.Record.SaveStatus == "saved"
+	})
+}
+
+func TestShutdownReportsFailedSimulatorStop(t *testing.T) {
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	engine := newTestEngine(t, store, &failingStopSimulator{}, uuid.New())
+	if _, err := engine.Create(context.Background(), command(1)); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := engine.Shutdown(ctx, "owner_lost"); !errors.Is(err, ErrShutdownUnconfirmed) {
+		t.Fatalf("shutdown: %v", err)
+	}
+	if state := engine.State(); state.Stop == nil || state.Stop.Status != "failed" || state.Record.SaveStatus != "saved" {
+		t.Fatalf("failed stop and audit: %+v", state)
+	}
+}
+
+type heldComplete struct {
+	*storage.Store
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *heldComplete) Complete(ctx context.Context, id uuid.UUID, elapsed time.Duration) error {
+	close(s.entered)
+	<-s.release
+	return s.Store.Complete(ctx, id, elapsed)
+}
+
+func TestShutdownWaitsForNaturalCompletion(t *testing.T) {
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	held := &heldComplete{Store: store, entered: make(chan struct{}), release: make(chan struct{})}
+	engine := newTestEngine(t, held, &countedSimulator{}, uuid.New())
+	created, err := engine.Create(context.Background(), command(0.05))
+	if err != nil || created.TestId == nil {
+		t.Fatalf("create: %v", err)
+	}
+	id := *created.TestId
+	if _, err := engine.Start(context.Background(), id, contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: 1, ValveClosed: true, ConnectionConfirmed: true}); err != nil {
+		t.Fatal(err)
+	}
+	action := engine.State().PendingAction
+	if action == nil {
+		t.Fatal("missing action")
+	}
+	if _, err := engine.Confirm(context.Background(), id, action.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: 2}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-held.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("complete did not enter")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- engine.Shutdown(ctx, "owner_lost") }()
+	select {
+	case err := <-done:
+		t.Fatalf("shutdown returned before completion: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(held.release)
+	if err := <-done; err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+}
+
+type transientExactLookup struct {
+	*lostExactCreateResponse
+	fail      atomic.Bool
+	calls     atomic.Int32
+	attempted chan struct{}
+	once      sync.Once
+}
+
+func (s *transientExactLookup) LookupCreateExact(ctx context.Context, cmd contract.CreateTestCommand, identity []byte) (contract.CommandStatus, error) {
+	s.calls.Add(1)
+	if s.fail.Load() {
+		s.once.Do(func() { close(s.attempted) })
+		return contract.CommandStatus{}, storage.ErrStorageUnavailable
+	}
+	return s.Store.LookupCreateExact(ctx, cmd, identity)
+}
+
+func TestShutdownRetriesLookupUntilRecoveryOrDeadline(t *testing.T) {
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	wrapped := &transientExactLookup{lostExactCreateResponse: &lostExactCreateResponse{Store: store}, attempted: make(chan struct{})}
+	engine := newTestEngine(t, wrapped, &countedSimulator{}, uuid.New())
+	validator, err := contract.NewInputValidator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`
+	var cmd contract.CreateTestCommand
+	input, err := validator.Inspect("CreateTestCommand", []byte(body), &cmd)
+	if err != nil || !input.Valid {
+		t.Fatalf("input: %v", err)
+	}
+	if _, err := engine.CreateExact(context.Background(), cmd, input.Identity); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("create: %v", err)
+	}
+	wrapped.fail.Store(true)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- engine.Shutdown(ctx, "owner_lost") }()
+	select {
+	case <-wrapped.attempted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("lookup did not fail")
+	}
+	wrapped.fail.Store(false)
+	if err := <-done; err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+}
+
+func TestRevocationResolverStopsAtShutdown(t *testing.T) {
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	wrapped := &transientExactLookup{lostExactCreateResponse: &lostExactCreateResponse{Store: store}, attempted: make(chan struct{})}
+	engine := newTestEngine(t, wrapped, &countedSimulator{}, uuid.New())
+	controller, err := engine.GrantControl()
+	if err != nil {
+		t.Fatal(err)
+	}
+	validator, err := contract.NewInputValidator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`
+	var cmd contract.CreateTestCommand
+	input, err := validator.Inspect("CreateTestCommand", []byte(body), &cmd)
+	if err != nil || !input.Valid {
+		t.Fatalf("input: %v", err)
+	}
+	if _, err := controller.CreateExact(context.Background(), cmd, input.Identity); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("create: %v", err)
+	}
+	wrapped.fail.Store(true)
+	controller.Revoke("ui_lost")
+	select {
+	case <-wrapped.attempted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("lookup did not fail")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	err = engine.Shutdown(ctx, "owner_lost")
+	cancel()
+	if !errors.Is(err, ErrShutdownUnconfirmed) {
+		t.Fatalf("shutdown: %v", err)
+	}
+	calls := wrapped.calls.Load()
+	time.Sleep(600 * time.Millisecond)
+	if got := wrapped.calls.Load(); got != calls {
+		t.Fatalf("lookup continued after shutdown: %d -> %d", calls, got)
+	}
+}
+
+func TestRevocationResolvesAfterTransientLookupFailure(t *testing.T) {
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	wrapped := &transientExactLookup{lostExactCreateResponse: &lostExactCreateResponse{Store: store}, attempted: make(chan struct{})}
+	engine := newTestEngine(t, wrapped, &countedSimulator{}, uuid.New())
+	controller, err := engine.GrantControl()
+	if err != nil {
+		t.Fatal(err)
+	}
+	validator, err := contract.NewInputValidator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`
+	var cmd contract.CreateTestCommand
+	input, err := validator.Inspect("CreateTestCommand", []byte(body), &cmd)
+	if err != nil || !input.Valid {
+		t.Fatalf("input: %v", err)
+	}
+	if _, err := controller.CreateExact(context.Background(), cmd, input.Identity); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("create: %v", err)
+	}
+	wrapped.fail.Store(true)
+	controller.Revoke("ui_lost")
+	select {
+	case <-wrapped.attempted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("lookup did not fail")
+	}
+	wrapped.fail.Store(false)
+	waitFor(t, engine, func(state State) bool {
+		return state.Record != nil && state.Record.Stage == "finished" && state.Record.SaveStatus == "saved"
+	})
+}
+
+type heldExactLookup struct {
+	*lostExactCreateResponse
+	block   atomic.Bool
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *heldExactLookup) LookupCreateExact(ctx context.Context, cmd contract.CreateTestCommand, identity []byte) (contract.CommandStatus, error) {
+	if s.block.Load() {
+		s.once.Do(func() { close(s.entered) })
+		<-s.release
+	}
+	return s.Store.LookupCreateExact(ctx, cmd, identity)
+}
+
+func TestShutdownDeadlineIncludesUnresponsiveCreateLookup(t *testing.T) {
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	held := &heldExactLookup{lostExactCreateResponse: &lostExactCreateResponse{Store: store}, entered: make(chan struct{}), release: make(chan struct{})}
+	engine := newTestEngine(t, held, &countedSimulator{}, uuid.New())
+	validator, err := contract.NewInputValidator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`
+	var cmd contract.CreateTestCommand
+	input, err := validator.Inspect("CreateTestCommand", []byte(body), &cmd)
+	if err != nil || !input.Valid {
+		t.Fatalf("input: %v", err)
+	}
+	if _, err := engine.CreateExact(context.Background(), cmd, input.Identity); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("create: %v", err)
+	}
+	held.block.Store(true)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- engine.Shutdown(ctx, "owner_lost") }()
+	select {
+	case <-held.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("lookup did not enter")
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrShutdownUnconfirmed) || !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("shutdown: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("shutdown exceeded deadline")
+	}
+	held.block.Store(false)
+	close(held.release)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		err := engine.Refresh(context.Background())
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, ErrBusy) || time.Now().After(deadline) {
+			t.Fatalf("refresh after lookup returned: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	waitFor(t, engine, func(state State) bool {
+		return state.Record != nil && state.Record.Stage == "finished" && state.Record.SaveStatus == "saved"
+	})
+}
+
+type cancelableExactLookup struct {
+	*lostExactCreateResponse
+	block   atomic.Bool
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (s *cancelableExactLookup) LookupCreateExact(ctx context.Context, cmd contract.CreateTestCommand, identity []byte) (contract.CommandStatus, error) {
+	if s.block.Swap(false) {
+		s.once.Do(func() { close(s.entered) })
+		<-ctx.Done()
+		return contract.CommandStatus{}, ctx.Err()
+	}
+	return s.Store.LookupCreateExact(ctx, cmd, identity)
+}
+
+func TestShutdownCancelsRevocationLookup(t *testing.T) {
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	wrapped := &cancelableExactLookup{lostExactCreateResponse: &lostExactCreateResponse{Store: store}, entered: make(chan struct{})}
+	engine := newTestEngine(t, wrapped, &countedSimulator{}, uuid.New())
+	controller, err := engine.GrantControl()
+	if err != nil {
+		t.Fatal(err)
+	}
+	validator, err := contract.NewInputValidator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`
+	var cmd contract.CreateTestCommand
+	input, err := validator.Inspect("CreateTestCommand", []byte(body), &cmd)
+	if err != nil || !input.Valid {
+		t.Fatalf("input: %v", err)
+	}
+	if _, err := controller.CreateExact(context.Background(), cmd, input.Identity); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("create: %v", err)
+	}
+	wrapped.block.Store(true)
+	controller.Revoke("ui_lost")
+	select {
+	case <-wrapped.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("lookup did not enter")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := engine.Shutdown(ctx, "owner_lost"); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+}
+
+type cancelablePostCreateLookup struct {
+	*storage.Store
+	calls   atomic.Int32
+	entered chan struct{}
+}
+
+func (s *cancelablePostCreateLookup) LookupCreateExact(ctx context.Context, cmd contract.CreateTestCommand, identity []byte) (contract.CommandStatus, error) {
+	if s.calls.Add(1) == 2 {
+		close(s.entered)
+		<-ctx.Done()
+		return contract.CommandStatus{}, ctx.Err()
+	}
+	return s.Store.LookupCreateExact(ctx, cmd, identity)
+}
+
+func TestShutdownCancelsPostCreateLookup(t *testing.T) {
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	wrapped := &cancelablePostCreateLookup{Store: store, entered: make(chan struct{})}
+	engine := newTestEngine(t, wrapped, &countedSimulator{}, uuid.New())
+	controller, err := engine.GrantControl()
+	if err != nil {
+		t.Fatal(err)
+	}
+	validator, err := contract.NewInputValidator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`
+	var cmd contract.CreateTestCommand
+	input, err := validator.Inspect("CreateTestCommand", []byte(body), &cmd)
+	if err != nil || !input.Valid {
+		t.Fatalf("input: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := controller.CreateExact(context.Background(), cmd, input.Identity); done <- err }()
+	select {
+	case <-wrapped.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("post-create lookup did not enter")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := engine.Shutdown(ctx, "owner_lost"); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("create: %v", err)
+	}
+}

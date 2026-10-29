@@ -3,6 +3,7 @@ package demo
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"sync"
 	"time"
@@ -54,6 +55,7 @@ type run struct {
 	started        bool
 	stopping       bool
 	naturalDone    bool
+	finishDone     chan struct{}
 	finishElapsed  time.Duration
 	finalized      bool
 	stopStatus     *contract.CommandStatus
@@ -67,8 +69,9 @@ type run struct {
 }
 
 type pendingCreate struct {
-	command  contract.CreateTestCommand
-	identity []byte
+	command    contract.CreateTestCommand
+	identity   []byte
+	stopReason string
 }
 
 type Engine struct {
@@ -81,6 +84,11 @@ type Engine struct {
 	unresolvedCreate *pendingCreate
 	active           *run
 	changed          chan struct{}
+	controller       *Controller
+	closed           bool
+	resolving        bool
+	lifeCtx          context.Context
+	lifeCancel       context.CancelFunc
 }
 
 func NewEngine(ctx context.Context, store Repository, equipment Equipment, runID uuid.UUID) (*Engine, error) {
@@ -88,7 +96,8 @@ func NewEngine(ctx context.Context, store Repository, equipment Equipment, runID
 	if err != nil {
 		return nil, err
 	}
-	return &Engine{store: store, equipment: equipment, runID: runID, revision: revision, ordinary: make(chan struct{}, 1), changed: make(chan struct{}, 1)}, nil
+	lifeCtx, lifeCancel := context.WithCancel(context.Background())
+	return &Engine{store: store, equipment: equipment, runID: runID, revision: revision, ordinary: make(chan struct{}, 1), changed: make(chan struct{}, 1), lifeCtx: lifeCtx, lifeCancel: lifeCancel}, nil
 }
 
 func (e *Engine) acquire(ctx context.Context) error {
@@ -106,6 +115,167 @@ func (e *Engine) acquire(ctx context.Context) error {
 }
 
 var ErrBusy = errors.New("another command is being processed")
+var ErrControlRevoked = errors.New("control has been revoked")
+var ErrShutdownUnconfirmed = errors.New("engine shutdown is unconfirmed")
+
+// Controller ties mutating commands to one UI ownership period.
+type Controller struct {
+	engine  *Engine
+	revoked bool // guarded by engine.mu
+}
+
+func (e *Engine) GrantControl() (*Controller, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.closed {
+		return nil, ErrControlRevoked
+	}
+	if (e.controller != nil && !e.controller.revoked) || e.unresolvedCreate != nil ||
+		(e.active != nil && (!e.active.finalized || (e.active.stopStatus != nil && e.active.stopStatus.Status != "completed"))) {
+		return nil, ErrBusy
+	}
+	control := &Controller{engine: e}
+	e.controller = control
+	return control, nil
+}
+
+func (e *Engine) allowedLocked(control *Controller) bool {
+	return !e.closed && (control == nil || (e.controller == control && !control.revoked))
+}
+
+func (c *Controller) Create(ctx context.Context, cmd contract.CreateTestCommand) (contract.CommandStatus, error) {
+	return c.engine.create(ctx, cmd, nil, c)
+}
+
+func (c *Controller) CreateExact(ctx context.Context, cmd contract.CreateTestCommand, identity []byte) (contract.CommandStatus, error) {
+	if len(identity) == 0 {
+		return contract.CommandStatus{}, storage.ErrInvalidCommand
+	}
+	return c.engine.create(ctx, cmd, append([]byte(nil), identity...), c)
+}
+
+func (c *Controller) Start(ctx context.Context, id uuid.UUID, cmd contract.StartTestCommand) (contract.CommandStatus, error) {
+	return c.engine.start(ctx, id, cmd, c)
+}
+
+func (c *Controller) Confirm(ctx context.Context, id, action uuid.UUID, cmd contract.ConfirmActionCommand) (contract.CommandStatus, error) {
+	return c.engine.confirm(ctx, id, action, cmd, c)
+}
+
+// Revoke fences late commands before requesting the system stop.
+func (c *Controller) Revoke(reason string) {
+	e := c.engine
+	e.mu.Lock()
+	if e.controller != c || c.revoked {
+		e.mu.Unlock()
+		return
+	}
+	c.revoked = true
+	current := e.stopForLossLocked(reason)
+	resolve := e.unresolvedCreate != nil
+	e.mu.Unlock()
+	if current != nil {
+		go e.finishStop(current)
+	}
+	if resolve {
+		go e.resolveRevokedCreate()
+	}
+}
+
+// stopForLossLocked records the stop intent even while creation is unresolved.
+func (e *Engine) stopForLossLocked(reason string) *run {
+	if e.unresolvedCreate != nil && e.unresolvedCreate.stopReason == "" {
+		e.unresolvedCreate.stopReason = reason
+	}
+	current := e.active
+	if current == nil || current.stopping || current.naturalDone || current.finalized {
+		return nil
+	}
+	e.acceptStopLocked(current, "system", reason)
+	return current
+}
+
+// Shutdown fences new commands and waits only until ctx for confirmed persistence.
+func (e *Engine) Shutdown(ctx context.Context, reason string) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	e.mu.Lock()
+	e.closed = true
+	e.lifeCancel()
+	if e.controller != nil {
+		e.controller.revoked = true
+	}
+	current := e.stopForLossLocked(reason)
+	e.mu.Unlock()
+	if current != nil {
+		go e.finishStop(current)
+	}
+	resolved := make(chan error, 1)
+	go func() {
+		for {
+			if err := ctx.Err(); err != nil {
+				resolved <- err
+				return
+			}
+			select {
+			case e.ordinary <- struct{}{}:
+				if err := ctx.Err(); err != nil {
+					<-e.ordinary
+					resolved <- err
+					return
+				}
+				err := e.refreshCreated(ctx)
+				<-e.ordinary
+				if err == nil {
+					resolved <- nil
+					return
+				}
+			case <-ctx.Done():
+				resolved <- ctx.Err()
+				return
+			}
+			timer := time.NewTimer(250 * time.Millisecond)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				resolved <- ctx.Err()
+				return
+			}
+		}
+	}()
+	select {
+	case err := <-resolved:
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrShutdownUnconfirmed, err)
+		}
+	case <-ctx.Done():
+		return fmt.Errorf("%w: %w", ErrShutdownUnconfirmed, ctx.Err())
+	}
+	e.mu.Lock()
+	current = e.active
+	var done <-chan struct{}
+	if current != nil && current.stopping {
+		done = current.stopDone
+	} else if current != nil && current.naturalDone {
+		done = current.finishDone
+	}
+	e.mu.Unlock()
+	if done != nil {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return fmt.Errorf("%w: %w", ErrShutdownUnconfirmed, ctx.Err())
+		}
+	}
+	e.mu.Lock()
+	confirmed := e.unresolvedCreate == nil && (e.active == nil || (e.active.finalized && (e.active.stopStatus == nil || e.active.stopStatus.Status == "completed")))
+	e.mu.Unlock()
+	if !confirmed {
+		return ErrShutdownUnconfirmed
+	}
+	return nil
+}
 
 func (e *Engine) Changes() <-chan struct{} { return e.changed }
 func (e *Engine) signal() {
@@ -165,7 +335,7 @@ func copyCommand(status contract.CommandStatus) contract.CommandStatus {
 }
 
 func (e *Engine) Create(ctx context.Context, command contract.CreateTestCommand) (contract.CommandStatus, error) {
-	return e.create(ctx, command, nil)
+	return e.create(ctx, command, nil, nil)
 }
 
 // CreateExact retains the identity of the validated JSON received by core.
@@ -173,14 +343,28 @@ func (e *Engine) CreateExact(ctx context.Context, command contract.CreateTestCom
 	if len(identity) == 0 {
 		return contract.CommandStatus{}, storage.ErrInvalidCommand
 	}
-	return e.create(ctx, command, append([]byte(nil), identity...))
+	return e.create(ctx, command, append([]byte(nil), identity...), nil)
 }
 
-func (e *Engine) create(ctx context.Context, command contract.CreateTestCommand, identity []byte) (contract.CommandStatus, error) {
+func (e *Engine) create(ctx context.Context, command contract.CreateTestCommand, identity []byte, control *Controller) (contract.CommandStatus, error) {
 	if err := e.acquire(ctx); err != nil {
 		return contract.CommandStatus{}, err
 	}
-	defer func() { <-e.ordinary }()
+	defer func() {
+		<-e.ordinary
+		e.mu.Lock()
+		resolve := e.unresolvedCreate != nil && e.unresolvedCreate.stopReason != ""
+		e.mu.Unlock()
+		if resolve {
+			go e.resolveRevokedCreate()
+		}
+	}()
+	e.mu.Lock()
+	allowed := e.allowedLocked(control)
+	e.mu.Unlock()
+	if !allowed {
+		return contract.CommandStatus{}, ErrControlRevoked
+	}
 	if err := ctx.Err(); err != nil {
 		return contract.CommandStatus{}, err
 	}
@@ -200,13 +384,21 @@ func (e *Engine) create(ctx context.Context, command contract.CreateTestCommand,
 	}
 	e.mu.Lock()
 	uncertain := e.active != nil && (e.active.naturalDone || e.active.stopping) && !e.active.finalized
+	allowed = e.allowedLocked(control)
 	e.mu.Unlock()
+	if !allowed {
+		return contract.CommandStatus{}, ErrControlRevoked
+	}
 	if uncertain {
 		return contract.CommandStatus{}, ErrBusy
 	}
 	commandCtx, cancelCommand := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancelCommand()
 	e.mu.Lock()
+	if !e.allowedLocked(control) {
+		e.mu.Unlock()
+		return contract.CommandStatus{}, ErrControlRevoked
+	}
 	pending := pendingCreate{command: command, identity: identity}
 	e.unresolvedCreate = &pending
 	e.mu.Unlock()
@@ -226,13 +418,54 @@ func (e *Engine) create(ctx context.Context, command contract.CreateTestCommand,
 		e.abortOnStorageError(err)
 		return result, err
 	}
-	readCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	e.mu.Lock()
+	closed := e.closed
+	e.mu.Unlock()
+	if closed {
+		return result, ErrShutdownUnconfirmed
+	}
+	readCtx, cancel := context.WithTimeout(e.lifeCtx, 2*time.Second)
 	defer cancel()
 	err = e.refreshCreated(readCtx)
 	if err != nil {
 		return result, err
 	}
 	return result, nil
+}
+
+func (e *Engine) resolveRevokedCreate() {
+	e.mu.Lock()
+	if e.resolving || e.closed {
+		e.mu.Unlock()
+		return
+	}
+	e.resolving = true
+	e.mu.Unlock()
+	for {
+		ctx, cancel := context.WithTimeout(e.lifeCtx, 2*time.Second)
+		select {
+		case e.ordinary <- struct{}{}:
+			e.mu.Lock()
+			closed := e.closed
+			e.mu.Unlock()
+			if !closed {
+				_ = e.refreshCreated(ctx)
+			}
+			<-e.ordinary
+		case <-ctx.Done():
+		}
+		cancel()
+		e.mu.Lock()
+		pending := !e.closed && e.unresolvedCreate != nil && e.unresolvedCreate.stopReason != ""
+		if !pending {
+			e.resolving = false
+		}
+		e.mu.Unlock()
+		if !pending {
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
 }
 
 // Refresh resolves a committed create after an interrupted response without resending it.
@@ -309,6 +542,9 @@ func (e *Engine) refreshFinished(ctx context.Context) error {
 }
 
 func (e *Engine) refreshCreated(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	e.mu.Lock()
 	pending := e.unresolvedCreate
 	e.mu.Unlock()
@@ -322,8 +558,15 @@ func (e *Engine) refreshCreated(ctx context.Context) error {
 	} else {
 		status, err = e.store.LookupCreateExact(ctx, pending.command, pending.identity)
 	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	if errors.Is(err, storage.ErrCommandNotFound) || definiteDecision(err) {
 		e.mu.Lock()
+		if ctx.Err() != nil {
+			e.mu.Unlock()
+			return ctx.Err()
+		}
 		e.unresolvedCreate = nil
 		e.mu.Unlock()
 		return nil
@@ -338,18 +581,33 @@ func (e *Engine) refreshCreated(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	revision, err := e.store.Revision(ctx)
 	if err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	e.unresolvedCreate = nil
 	if record.Stage == "preparing" && (e.active == nil || e.active.record.TestId != record.TestId) {
 		runCtx, cancel := context.WithCancel(context.Background())
 		e.active = &run{record: record, revision: revision, latest: make([]contract.Measurement, 0), ctx: runCtx, cancel: cancel}
 		e.revision = e.active.revision
 		e.signal()
+		if pending.stopReason != "" {
+			current := e.stopForLossLocked(pending.stopReason)
+			if current != nil {
+				go e.finishStop(current)
+			}
+		}
 	}
 	return nil
 }
@@ -371,16 +629,30 @@ func (e *Engine) Readiness(testID uuid.UUID) (contract.Readiness, error) {
 }
 
 func (e *Engine) Start(ctx context.Context, testID uuid.UUID, command contract.StartTestCommand) (contract.CommandStatus, error) {
+	return e.start(ctx, testID, command, nil)
+}
+
+func (e *Engine) start(ctx context.Context, testID uuid.UUID, command contract.StartTestCommand, control *Controller) (contract.CommandStatus, error) {
 	if err := e.acquire(ctx); err != nil {
 		return contract.CommandStatus{}, err
 	}
 	defer func() { <-e.ordinary }()
+	e.mu.Lock()
+	allowed := e.allowedLocked(control)
+	e.mu.Unlock()
+	if !allowed {
+		return contract.CommandStatus{}, ErrControlRevoked
+	}
 	previous, lookupErr := e.store.LookupStart(ctx, testID, command)
 	if !errors.Is(lookupErr, storage.ErrCommandNotFound) {
 		e.abortOnLookupError(ctx, lookupErr)
 		return previous, lookupErr
 	}
 	e.mu.Lock()
+	if !e.allowedLocked(control) {
+		e.mu.Unlock()
+		return contract.CommandStatus{}, ErrControlRevoked
+	}
 	current := e.active
 	if current == nil || current.record.TestId != testID {
 		e.mu.Unlock()
@@ -434,16 +706,30 @@ func (e *Engine) Start(ctx context.Context, testID uuid.UUID, command contract.S
 }
 
 func (e *Engine) Confirm(ctx context.Context, testID, actionID uuid.UUID, command contract.ConfirmActionCommand) (contract.CommandStatus, error) {
+	return e.confirm(ctx, testID, actionID, command, nil)
+}
+
+func (e *Engine) confirm(ctx context.Context, testID, actionID uuid.UUID, command contract.ConfirmActionCommand, control *Controller) (contract.CommandStatus, error) {
 	if err := e.acquire(ctx); err != nil {
 		return contract.CommandStatus{}, err
 	}
 	defer func() { <-e.ordinary }()
+	e.mu.Lock()
+	allowed := e.allowedLocked(control)
+	e.mu.Unlock()
+	if !allowed {
+		return contract.CommandStatus{}, ErrControlRevoked
+	}
 	previous, lookupErr := e.store.LookupConfirm(ctx, testID, actionID, command)
 	if !errors.Is(lookupErr, storage.ErrCommandNotFound) {
 		e.abortOnLookupError(ctx, lookupErr)
 		return previous, lookupErr
 	}
 	e.mu.Lock()
+	if !e.allowedLocked(control) {
+		e.mu.Unlock()
+		return contract.CommandStatus{}, ErrControlRevoked
+	}
 	current := e.active
 	if current == nil || current.record.TestId != testID {
 		e.mu.Unlock()
@@ -476,7 +762,7 @@ func (e *Engine) Confirm(ctx context.Context, testID, actionID uuid.UUID, comman
 		return status, err
 	}
 	e.mu.Lock()
-	if e.active != current || current.stopping || current.started {
+	if e.active != current || current.stopping || current.started || !e.allowedLocked(control) {
 		e.mu.Unlock()
 		return status, nil
 	}
@@ -806,6 +1092,8 @@ flush:
 		return
 	}
 	current.naturalDone = true
+	current.finishDone = make(chan struct{})
+	defer close(current.finishDone)
 	current.finishElapsed = elapsed
 	current.record.Stage = "finished"
 	current.record.Outcome = "completed"
