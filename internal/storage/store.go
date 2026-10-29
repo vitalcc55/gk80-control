@@ -454,22 +454,38 @@ func (s *Store) Revision(ctx context.Context) (int64, error) {
 func (s *Store) Test(ctx context.Context, id uuid.UUID) (contract.TestRecord, error) {
 	var body []byte
 	if err := s.db.QueryRowContext(ctx, `SELECT record FROM tests WHERE id = ?`, id.String()).Scan(&body); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return contract.TestRecord{}, ErrTestNotFound
+		}
 		return contract.TestRecord{}, err
 	}
 	var record contract.TestRecord
 	if err := json.Unmarshal(body, &record); err != nil {
 		return contract.TestRecord{}, fmt.Errorf("invalid stored test: %w", err)
 	}
+	if record.TestId != id {
+		return contract.TestRecord{}, errors.New("invalid stored test identity")
+	}
 	return record, nil
 }
 
 func (s *Store) Audit(ctx context.Context, id uuid.UUID, after int64, limit int) ([]contract.AuditEvent, error) {
+	page, err := s.AuditPage(ctx, id, after, limit)
+	return page.Items, err
+}
+
+func (s *Store) AuditPage(ctx context.Context, id uuid.UUID, after int64, limit int) (contract.AuditPage, error) {
 	if after < 0 || limit < 1 || limit > 500 {
-		return nil, errors.New("invalid audit page")
+		return contract.AuditPage{}, errors.New("invalid audit page")
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT a.sequence, a.occurred_at, a.operator_id, a.action, a.outcome, a.revision, a.command_id, a.action_id, a.reason, t.instruction FROM audit a LEFT JOIN test_actions t ON t.action_id = a.action_id AND t.test_id = a.test_id WHERE a.test_id = ? AND a.sequence > ? ORDER BY a.sequence LIMIT ?`, id.String(), after, limit)
+	tx, err := s.beginTestRead(ctx, id)
 	if err != nil {
-		return nil, err
+		return contract.AuditPage{}, readError(ctx, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.QueryContext(ctx, `SELECT a.sequence, a.occurred_at, a.operator_id, a.action, a.outcome, a.revision, a.command_id, a.action_id, a.reason, t.instruction FROM audit a LEFT JOIN test_actions t ON t.action_id = a.action_id AND t.test_id = a.test_id WHERE a.test_id = ? AND a.sequence > ? ORDER BY a.sequence LIMIT ?`, id.String(), after, limit+1)
+	if err != nil {
+		return contract.AuditPage{}, readError(ctx, err)
 	}
 	defer func() { _ = rows.Close() }()
 	events := make([]contract.AuditEvent, 0)
@@ -478,24 +494,24 @@ func (s *Store) Audit(ctx context.Context, id uuid.UUID, after int64, limit int)
 		var when string
 		var commandID, actionID, reason, instruction sql.NullString
 		if err := rows.Scan(&event.Sequence, &when, &event.OperatorId, &event.Action, &event.Outcome, &event.Revision, &commandID, &actionID, &reason, &instruction); err != nil {
-			return nil, err
+			return contract.AuditPage{}, readError(ctx, err)
 		}
 		event.TestId = id
 		event.OccurredAt, err = time.Parse(time.RFC3339Nano, when)
 		if err != nil {
-			return nil, err
+			return contract.AuditPage{}, readError(ctx, err)
 		}
 		if commandID.Valid {
 			parsed, err := uuid.Parse(commandID.String)
 			if err != nil {
-				return nil, err
+				return contract.AuditPage{}, readError(ctx, err)
 			}
 			event.CommandId = &parsed
 		}
 		if actionID.Valid {
 			parsed, err := uuid.Parse(actionID.String)
 			if err != nil {
-				return nil, err
+				return contract.AuditPage{}, readError(ctx, err)
 			}
 			event.ActionId = &parsed
 		}
@@ -508,7 +524,19 @@ func (s *Store) Audit(ctx context.Context, id uuid.UUID, after int64, limit int)
 		events = append(events, event)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return contract.AuditPage{}, readError(ctx, err)
 	}
-	return events, nil
+	if err := rows.Close(); err != nil {
+		return contract.AuditPage{}, readError(ctx, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return contract.AuditPage{}, readError(ctx, err)
+	}
+	page := contract.AuditPage{Items: events}
+	if len(events) > limit {
+		page.Items = events[:limit]
+		next := page.Items[len(page.Items)-1].Sequence
+		page.NextAfter = &next
+	}
+	return page, nil
 }

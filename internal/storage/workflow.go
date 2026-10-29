@@ -473,30 +473,53 @@ func (s *Store) RecordMeasurements(ctx context.Context, testID uuid.UUID, measur
 }
 
 func (s *Store) Measurements(ctx context.Context, testID uuid.UUID, after int64, limit int) ([]contract.Measurement, error) {
+	page, err := s.MeasurementsPage(ctx, testID, after, limit)
+	return page.Items, err
+}
+
+func (s *Store) MeasurementsPage(ctx context.Context, testID uuid.UUID, after int64, limit int) (contract.MeasurementPage, error) {
 	if after < 0 || limit < 1 || limit > 500 {
-		return nil, errors.New("invalid measurement page")
+		return contract.MeasurementPage{}, errors.New("invalid measurement page")
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT payload FROM measurements WHERE test_id = ? AND sequence > ? ORDER BY sequence LIMIT ?`, testID.String(), after, limit)
+	tx, err := s.beginTestRead(ctx, testID)
 	if err != nil {
-		return nil, err
+		return contract.MeasurementPage{}, readError(ctx, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.QueryContext(ctx, `SELECT sequence, payload FROM measurements WHERE test_id = ? AND sequence > ? ORDER BY sequence LIMIT ?`, testID.String(), after, limit+1)
+	if err != nil {
+		return contract.MeasurementPage{}, readError(ctx, err)
 	}
 	defer func() { _ = rows.Close() }()
 	result := make([]contract.Measurement, 0)
 	for rows.Next() {
+		var sequence int64
 		var body []byte
-		if err := rows.Scan(&body); err != nil {
-			return nil, err
+		if err := rows.Scan(&sequence, &body); err != nil {
+			return contract.MeasurementPage{}, readError(ctx, err)
 		}
 		var measurement contract.Measurement
-		if err := json.Unmarshal(body, &measurement); err != nil || !validMeasurement(measurement) {
-			return nil, errors.New("invalid stored measurement")
+		if err := json.Unmarshal(body, &measurement); err != nil || !validMeasurement(measurement) || measurement.Sequence != sequence {
+			return contract.MeasurementPage{}, errors.New("invalid stored measurement")
 		}
 		result = append(result, measurement)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return contract.MeasurementPage{}, readError(ctx, err)
 	}
-	return result, nil
+	if err := rows.Close(); err != nil {
+		return contract.MeasurementPage{}, readError(ctx, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return contract.MeasurementPage{}, readError(ctx, err)
+	}
+	page := contract.MeasurementPage{Items: result}
+	if len(result) > limit {
+		page.Items = result[:limit]
+		next := page.Items[len(page.Items)-1].Sequence
+		page.NextAfter = &next
+	}
+	return page, nil
 }
 
 // Complete receives the elapsed interval measured by the engine's monotonic clock.

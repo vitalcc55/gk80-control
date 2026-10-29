@@ -575,6 +575,18 @@ func TestMigrationKeepsVersionOneHistory(t *testing.T) {
 	if err != nil || reopened != old {
 		t.Fatalf("old record: %+v %v", reopened, err)
 	}
+	items, next, err := store.ListTests(context.Background(), nil, 1)
+	if err != nil || len(items) != 1 || items[0] != old || next != nil {
+		t.Fatalf("old history page: %+v %v", items, err)
+	}
+	storedCommand, err := store.Command(context.Background(), command.CommandId)
+	if err != nil || storedCommand.Status != "completed" || storedCommand.TestId == nil || *storedCommand.TestId != testID {
+		t.Fatalf("old stored command: %+v %v", storedCommand, err)
+	}
+	oldAudit, err := store.AuditPage(context.Background(), testID, 0, 1)
+	if err != nil || len(oldAudit.Items) != 1 || oldAudit.NextAfter != nil {
+		t.Fatalf("old audit: %+v %v", oldAudit, err)
+	}
 	repeated, err := store.Create(context.Background(), command)
 	if err != nil || repeated.TestId == nil || *repeated.TestId != testID {
 		t.Fatalf("old command: %+v %v", repeated, err)
