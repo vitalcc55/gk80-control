@@ -33,6 +33,7 @@ const (
 	ConnectionFailed    Event = "connection.failed"
 	ConnectionConfirmed Event = "connection.confirmed"
 	DiagnosticDegraded  Event = "diagnostics.degraded"
+	StorageReady        Event = "storage.ready"
 	CommandAccepted     Event = "command.accepted"
 	CommandRejected     Event = "command.rejected"
 	CommandCompleted    Event = "command.completed"
@@ -53,6 +54,7 @@ var eventCatalog = map[Event]eventSpec{
 	ConnectionFailed:    {slog.LevelError, "Core connection failed"},
 	ConnectionConfirmed: {slog.LevelInfo, "Core identity confirmed"},
 	DiagnosticDegraded:  {slog.LevelWarn, "Diagnostic writer degraded"},
+	StorageReady:        {slog.LevelInfo, "SQLite settings confirmed"},
 	CommandAccepted:     {slog.LevelInfo, "Command accepted"},
 	CommandRejected:     {slog.LevelInfo, "Command rejected"},
 	CommandCompleted:    {slog.LevelInfo, "Command completed"},
@@ -188,10 +190,11 @@ func newLogger(role Role, runID uuid.UUID, writer io.WriteCloser, fallback io.Wr
 }
 
 type fields struct {
-	command, test, action, backendRun uuid.UUID
-	errorCode                         string
-	exitCode                          *int64
-	grouped                           bool
+	command, test, action, backendRun       uuid.UUID
+	errorCode                               string
+	sqliteVersion, journalMode, synchronous string
+	exitCode                                *int64
+	grouped                                 bool
 }
 
 func (f *fields) add(attr slog.Attr) {
@@ -230,6 +233,27 @@ func (f *fields) add(attr slog.Attr) {
 			case "unavailable", "invalid_command", "command_id_conflict", "storage_unavailable":
 				f.errorCode = value
 			}
+		case "sqlite_version":
+			if len(value) > 0 && len(value) <= 32 {
+				valid := true
+				for _, c := range value {
+					if (c < '0' || c > '9') && c != '.' {
+						valid = false
+						break
+					}
+				}
+				if valid {
+					f.sqliteVersion = value
+				}
+			}
+		case "journal_mode":
+			if value == "wal" {
+				f.journalMode = value
+			}
+		case "synchronous":
+			if value == "FULL" {
+				f.synchronous = value
+			}
 		}
 	}
 	if attr.Key == "exit_code" && attr.Value.Kind() == slog.KindInt64 {
@@ -257,6 +281,15 @@ func (l *Logger) emit(event Event, spec eventSpec, component Component, values f
 	}
 	if values.errorCode != "" {
 		record.AddAttrs(slog.String("error_code", values.errorCode))
+	}
+	if values.sqliteVersion != "" {
+		record.AddAttrs(slog.String("sqlite_version", values.sqliteVersion))
+	}
+	if values.journalMode != "" {
+		record.AddAttrs(slog.String("journal_mode", values.journalMode))
+	}
+	if values.synchronous != "" {
+		record.AddAttrs(slog.String("synchronous", values.synchronous))
 	}
 	if values.exitCode != nil {
 		record.AddAttrs(slog.Int64("exit_code", *values.exitCode))

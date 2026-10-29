@@ -350,16 +350,17 @@ type ApiError struct {
 
 // AuditEvent defines model for AuditEvent.
 type AuditEvent struct {
-	Action     string              `json:"action"`
-	ActionId   *openapi_types.UUID `json:"actionId,omitempty"`
-	CommandId  *openapi_types.UUID `json:"commandId,omitempty"`
-	OccurredAt time.Time           `json:"occurredAt"`
-	OperatorId string              `json:"operatorId"`
-	Outcome    string              `json:"outcome"`
-	Reason     *string             `json:"reason,omitempty"`
-	Revision   int64               `json:"revision"`
-	Sequence   int64               `json:"sequence"`
-	TestId     openapi_types.UUID  `json:"testId"`
+	Action      string              `json:"action"`
+	ActionId    *openapi_types.UUID `json:"actionId,omitempty"`
+	CommandId   *openapi_types.UUID `json:"commandId,omitempty"`
+	Instruction *string             `json:"instruction,omitempty"`
+	OccurredAt  time.Time           `json:"occurredAt"`
+	OperatorId  string              `json:"operatorId"`
+	Outcome     string              `json:"outcome"`
+	Reason      *string             `json:"reason,omitempty"`
+	Revision    int64               `json:"revision"`
+	Sequence    int64               `json:"sequence"`
+	TestId      openapi_types.UUID  `json:"testId"`
 }
 
 // AuditPage defines model for AuditPage.
@@ -554,12 +555,14 @@ type TestList struct {
 
 // TestParameters defines model for TestParameters.
 type TestParameters struct {
-	Actuator           bool                    `json:"actuator"`
-	AreaM2             float64                 `json:"areaM2"`
-	Direction          TestParametersDirection `json:"direction"`
-	MeasurementSeconds float64                 `json:"measurementSeconds"`
-	PmaxPa             float64                 `json:"pmaxPa"`
-	Valve              string                  `json:"valve"`
+	Actuator  bool                    `json:"actuator"`
+	AreaM2    float64                 `json:"areaM2"`
+	Direction TestParametersDirection `json:"direction"`
+
+	// MeasurementSeconds Для нового demo-испытания максимум 3600 секунд; точный повтор ранее принятой команды сохраняет прежний результат.
+	MeasurementSeconds float64 `json:"measurementSeconds"`
+	PmaxPa             float64 `json:"pmaxPa"`
+	Valve              string  `json:"valve"`
 }
 
 // TestParametersDirection defines model for TestParameters.Direction.

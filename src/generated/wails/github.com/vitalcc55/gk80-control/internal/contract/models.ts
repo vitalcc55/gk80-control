@@ -12,6 +12,7 @@ export interface AuditEvent {
     "action": string;
     "actionId"?: types$0.UUID | null;
     "commandId"?: types$0.UUID | null;
+    "instruction"?: string | null;
     "occurredAt": string;
     "operatorId": string;
     "outcome": string;
@@ -375,6 +376,10 @@ export interface TestParameters {
     "actuator": boolean;
     "areaM2": number;
     "direction": TestParametersDirection;
+
+    /**
+     * MeasurementSeconds Для нового demo-испытания максимум 3600 секунд; точный повтор ранее принятой команды сохраняет прежний результат.
+     */
     "measurementSeconds": number;
     "pmaxPa": number;
     "valve": string;

@@ -17,7 +17,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/vitalcc55/gk80-control/internal/contract"
 	"github.com/vitalcc55/gk80-control/internal/profile"
+	"github.com/vitalcc55/gk80-control/internal/storage"
 )
 
 func init() {
@@ -112,6 +115,20 @@ func TestCoreProcessHandshakeAuthorizationAndProfileOwnership(t *testing.T) {
 	}
 	if !strings.Contains(string(data), handshake.BackendRunId.String()) {
 		t.Fatal("core log is not correlated with run ID")
+	}
+	foundSQLite := false
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event["event"] == "storage.ready" {
+			version, ok := event["sqlite_version"].(string)
+			foundSQLite = ok && version != "" && event["journal_mode"] == "wal" && event["synchronous"] == "FULL"
+		}
+	}
+	if !foundSQLite {
+		t.Fatal("confirmed SQLite version and settings absent from core log")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -412,5 +429,40 @@ func TestFailedStartRetainsDiagnosticSignal(t *testing.T) {
 	retained, _, err := process.failedStart(startErr)
 	if retained != process || !errors.Is(err, startErr) {
 		t.Fatalf("diagnostic startup failure lost: %v", err)
+	}
+}
+
+func TestCoreRecoversUnfinishedRecordWithoutResuming(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := storage.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{Valve: "Демо", AreaM2: 0.01, PmaxPa: 1000, MeasurementSeconds: 1, Direction: "pressure"}}
+	created, err := store.Create(ctx, command)
+	if err != nil || created.TestId == nil {
+		_ = store.Close()
+		t.Fatalf("create: %v", err)
+	}
+	testID := *created.TestId
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	process, _, err := Start(ctx, buildCore(t), dir, "test", "0.1.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	store, err = storage.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	record, err := store.Test(ctx, testID)
+	if err != nil || record.Stage != "finished" || record.Outcome != "unknown" || record.DataQuality != "incomplete" {
+		t.Fatalf("recovered: %+v %v", record, err)
 	}
 }

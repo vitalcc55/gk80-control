@@ -374,3 +374,17 @@ func TestCompletedWriterDoesNotWaitForUnneededFallback(t *testing.T) {
 		t.Fatalf("completed writer reported unconfirmed while fallback was unnecessary: %v %+v", err, logger.Status())
 	}
 }
+
+func TestSQLiteSettingsUseSafeFields(t *testing.T) {
+	var output memoryWriter
+	logger := newLogger(RoleCore, uuid.New(), &output, io.Discard, Config{})
+	logger.Application(ComponentCore).Info(string(StorageReady), "sqlite_version", "3.54.1", "journal_mode", "wal", "synchronous", "FULL", "path", "secret-marker")
+	closeLogger(t, logger)
+	var record map[string]any
+	if err := json.Unmarshal(output.Bytes(), &record); err != nil {
+		t.Fatal(err)
+	}
+	if record["sqlite_version"] != "3.54.1" || record["journal_mode"] != "wal" || record["synchronous"] != "FULL" || strings.Contains(output.contents(), "secret-marker") {
+		t.Fatalf("unexpected settings diagnostic: %s", output.contents())
+	}
+}

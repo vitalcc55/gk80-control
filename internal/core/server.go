@@ -55,6 +55,9 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, fallback io.Wri
 		return errors.New("demo storage unavailable")
 	}
 	defer func() { _ = store.Close() }()
+	if err := store.Recover(ctx); err != nil {
+		return errors.New("demo storage recovery unavailable")
+	}
 	runID, err := uuid.NewRandom()
 	if err != nil {
 		return errors.New("core identity unavailable")
@@ -77,6 +80,8 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, fallback io.Wri
 		}
 	}()
 	logger.Application(diagnostics.ComponentCore).Info(string(diagnostics.ProcessStarted))
+	settings := store.Settings()
+	logger.Application(diagnostics.ComponentCore).Info(string(diagnostics.StorageReady), "sqlite_version", settings.Version, "journal_mode", settings.JournalMode, "synchronous", settings.Synchronous)
 	certificate, fingerprint, err := ephemeralCertificate()
 	if err != nil {
 		return errors.New("core certificate unavailable")

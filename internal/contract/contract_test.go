@@ -149,3 +149,12 @@ func TestDesktopReadyRequiresConfirmedDemoHandshake(t *testing.T) {
 	status.Status = DesktopStatusStatusExited
 	validateJSON(t, schema, status, false)
 }
+
+func TestHistoricalMeasurementDurationRemainsValid(t *testing.T) {
+	schema := schemaFor(t, "TestParameters")
+	parameters := TestParameters{Valve: "Демо", AreaM2: 0.01, PmaxPa: 1000, MeasurementSeconds: 3600, Direction: "pressure"}
+	validateJSON(t, schema, parameters, true)
+	parameters.MeasurementSeconds = 3601
+	validateJSON(t, schema, parameters, true)
+	validateJSON(t, schemaFor(t, "CreateTestCommand"), CreateTestCommand{CommandId: uuid.New(), Parameters: parameters}, true)
+}

@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/vitalcc55/gk80-control/internal/contract"
@@ -291,5 +293,174 @@ func TestOpenRejectsUnknownDatabaseVersion(t *testing.T) {
 	}
 	if _, err := Open(dir); err == nil {
 		t.Fatalf("unknown schema in %s accepted", filepath.Join(dir, "demo.sqlite"))
+	}
+}
+
+func TestMigrationKeepsVersionOneHistory(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(dir, "demo.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	statements := []string{
+		`CREATE TABLE meta (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL CHECK (revision >= 0))`,
+		`INSERT INTO meta VALUES (1, 7)`,
+		`CREATE TABLE tests (id TEXT PRIMARY KEY, record BLOB NOT NULL, stage TEXT NOT NULL)`,
+		`CREATE TABLE commands (id TEXT PRIMARY KEY, operation TEXT NOT NULL, request BLOB NOT NULL, status TEXT NOT NULL, test_id TEXT REFERENCES tests(id), reason TEXT, operator_id TEXT NOT NULL, occurred_at TEXT NOT NULL)`,
+		`CREATE TABLE audit (sequence INTEGER PRIMARY KEY AUTOINCREMENT, test_id TEXT NOT NULL REFERENCES tests(id), occurred_at TEXT NOT NULL, operator_id TEXT NOT NULL, action TEXT NOT NULL, outcome TEXT NOT NULL, revision INTEGER NOT NULL, command_id TEXT, action_id TEXT, reason TEXT)`,
+		`CREATE INDEX audit_by_test ON audit(test_id, sequence)`,
+		`PRAGMA user_version = 1`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	command := createCommand()
+	command.Parameters.MeasurementSeconds = 7200
+	testID, stopID := uuid.New(), uuid.New()
+	old := contract.TestRecord{TestId: testID, StopCommandId: stopID, Demo: true, OperatorId: "demo-operator", Parameters: command.Parameters, Stage: "preparing", Outcome: "pending", DataQuality: "pending", SaveStatus: "saved", CreatedAt: time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)}
+	oldJSON, err := json.Marshal(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := json.Marshal(command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO tests(id, record, stage) VALUES (?, ?, 'preparing')`, testID.String(), oldJSON); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO commands(id, operation, request, status, test_id, operator_id, occurred_at) VALUES (?, 'create', ?, 'completed', ?, 'demo-operator', '2026-10-29T12:00:00Z')`, command.CommandId.String(), request, testID.String()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO commands(id, operation, request, status, test_id, operator_id, occurred_at) VALUES (?, 'stop', x'', 'reserved', ?, 'demo-operator', '2026-10-29T12:00:00Z')`, stopID.String(), testID.String()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO audit(test_id, occurred_at, operator_id, action, outcome, revision) VALUES (?, '2026-10-29T12:00:00Z', 'demo-operator', 'create', 'completed', 7)`, testID.String()); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	var version, revision, events int
+	var operation, status string
+	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 2 {
+		t.Fatalf("version %d: %v", version, err)
+	}
+	if err := store.db.QueryRow(`SELECT revision FROM meta WHERE id = 1`).Scan(&revision); err != nil || revision != 7 {
+		t.Fatalf("revision %d: %v", revision, err)
+	}
+	reopened, err := store.Test(context.Background(), testID)
+	if err != nil || reopened != old {
+		t.Fatalf("old record: %+v %v", reopened, err)
+	}
+	repeated, err := store.Create(context.Background(), command)
+	if err != nil || repeated.TestId == nil || *repeated.TestId != testID {
+		t.Fatalf("old command: %+v %v", repeated, err)
+	}
+	if err := store.db.QueryRow(`SELECT operation, status FROM commands WHERE id = ?`, stopID.String()).Scan(&operation, &status); err != nil || operation != "stop" || status != "reserved" {
+		t.Fatalf("reservation %s %s: %v", operation, status, err)
+	}
+	if err := store.db.QueryRow(`SELECT count(*) FROM audit WHERE test_id = ? AND sequence = 1`, testID.String()).Scan(&events); err != nil || events != 1 {
+		t.Fatalf("audit %d: %v", events, err)
+	}
+	if err := store.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := store.Test(context.Background(), testID)
+	if err != nil || recovered.Stage != "finished" || recovered.Outcome != "unknown" || recovered.Parameters.MeasurementSeconds != 7200 {
+		t.Fatalf("recovered old record: %+v %v", recovered, err)
+	}
+}
+
+func TestFailedMigrationLeavesVersionOneUntouched(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(dir, "demo.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE measurements (unrelated TEXT); PRAGMA user_version = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if store, err := Open(dir); err == nil {
+		_ = store.Close()
+		t.Fatal("conflicting migration succeeded")
+	}
+	db, err = sql.Open("sqlite", filepath.Join(dir, "demo.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	var version, pending int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 1 {
+		t.Fatalf("version %d: %v", version, err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE name = 'test_actions'`).Scan(&pending); err != nil || pending != 0 {
+		t.Fatalf("partial migration %d: %v", pending, err)
+	}
+}
+
+func TestSQLiteSettingsAreEnforcedAndReported(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	info := store.Settings()
+	var mode, version string
+	var synchronous, foreignKeys int
+	if err := store.db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow(`PRAGMA synchronous`).Scan(&synchronous); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow(`PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow(`SELECT sqlite_version()`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if mode != "wal" || synchronous != 2 || foreignKeys != 1 || info.Version != version || info.JournalMode != mode || info.Synchronous != "FULL" || version == "" {
+		t.Fatalf("settings: %+v, %s %d %d %s", info, mode, synchronous, foreignKeys, version)
+	}
+}
+
+func TestProfilePathWithHashUsesTheNamedDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "demo # профиль")
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "demo.sqlite")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNewDemoDurationIsBoundedAfterReplayLookup(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	command := createCommand()
+	command.Parameters.MeasurementSeconds = 3601
+	if _, err := store.Create(context.Background(), command); !errors.Is(err, ErrInvalidCommand) {
+		t.Fatalf("new oversized duration: %v", err)
 	}
 }

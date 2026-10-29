@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -26,22 +27,48 @@ var (
 	ErrActiveTest         = errors.New("another test is active")
 	ErrInvalidCommand     = errors.New("invalid create command")
 	ErrStorageUnavailable = errors.New("mandatory storage unavailable")
+	ErrInvalidState       = errors.New("invalid test state")
+	ErrActionMismatch     = errors.New("pending action does not match")
+	ErrTestNotFound       = errors.New("test not found")
 )
 
 const operatorID = "demo-operator"
 
 // Store is opened only while the core owns the corresponding profile lock.
 type Store struct {
-	db      *sql.DB
-	writeMu sync.Mutex
-	failed  bool
+	db       *sql.DB
+	writeMu  sync.Mutex
+	failed   bool
+	settings SQLiteSettings
+}
+
+type SQLiteSettings struct {
+	Version     string
+	JournalMode string
+	Synchronous string
 }
 
 func Open(profileDir string) (*Store, error) {
 	if !filepath.IsAbs(profileDir) {
 		return nil, errors.New("profile directory must be absolute")
 	}
-	db, err := sql.Open("sqlite", filepath.Join(profileDir, "demo.sqlite"))
+	path := filepath.ToSlash(filepath.Join(profileDir, "demo.sqlite"))
+	var address url.URL
+	if strings.HasPrefix(path, "//") {
+		parts := strings.SplitN(strings.TrimPrefix(path, "//"), "/", 2)
+		if len(parts) != 2 {
+			return nil, errors.New("invalid profile path")
+		}
+		address = url.URL{Scheme: "file", Host: parts[0], Path: "/" + parts[1]}
+	} else {
+		if !strings.HasPrefix(path, "/") {
+			path = "/" + path
+		}
+		address = url.URL{Scheme: "file", Path: path}
+	}
+	query := url.Values{"_foreign_keys": {"on"}, "_synchronous": {"full"}}
+	address.RawQuery = query.Encode()
+	db, err := sql.Open("sqlite", address.String())
 	if err != nil {
 		return nil, err
 	}
@@ -51,8 +78,36 @@ func Open(profileDir string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := store.configure(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return store, nil
 }
+
+func (s *Store) configure() error {
+	var mode, version string
+	var synchronous, foreignKeys int
+	if err := s.db.QueryRow(`PRAGMA journal_mode = WAL`).Scan(&mode); err != nil {
+		return err
+	}
+	if err := s.db.QueryRow(`PRAGMA synchronous`).Scan(&synchronous); err != nil {
+		return err
+	}
+	if err := s.db.QueryRow(`PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil {
+		return err
+	}
+	if err := s.db.QueryRow(`SELECT sqlite_version()`).Scan(&version); err != nil {
+		return err
+	}
+	if mode != "wal" || synchronous != 2 || foreignKeys != 1 || version == "" {
+		return errors.New("required SQLite settings unavailable")
+	}
+	s.settings = SQLiteSettings{Version: version, JournalMode: mode, Synchronous: "FULL"}
+	return nil
+}
+
+func (s *Store) Settings() SQLiteSettings { return s.settings }
 
 func (s *Store) initialize() error {
 	if _, err := s.db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
@@ -62,33 +117,44 @@ func (s *Store) initialize() error {
 	if err := s.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return err
 	}
-	if version == 1 {
+	if version == 2 {
 		return nil
 	}
-	if version != 0 {
+	if version != 0 && version != 1 {
 		return errors.New("unsupported database schema")
 	}
-	var objects int
-	if err := s.db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'`).Scan(&objects); err != nil {
-		return err
-	}
-	if objects != 0 {
-		return errors.New("unrecognized database")
+	if version == 0 {
+		var objects int
+		if err := s.db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'`).Scan(&objects); err != nil {
+			return err
+		}
+		if objects != 0 {
+			return errors.New("unrecognized database")
+		}
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	statements := []string{
-		`CREATE TABLE meta (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL CHECK (revision >= 0))`,
-		`INSERT INTO meta (id, revision) VALUES (1, 0)`,
-		`CREATE TABLE tests (id TEXT PRIMARY KEY, record BLOB NOT NULL, stage TEXT NOT NULL)`,
-		`CREATE TABLE commands (id TEXT PRIMARY KEY, operation TEXT NOT NULL, request BLOB NOT NULL, status TEXT NOT NULL, test_id TEXT REFERENCES tests(id), reason TEXT, operator_id TEXT NOT NULL, occurred_at TEXT NOT NULL)`,
-		`CREATE TABLE audit (sequence INTEGER PRIMARY KEY AUTOINCREMENT, test_id TEXT NOT NULL REFERENCES tests(id), occurred_at TEXT NOT NULL, operator_id TEXT NOT NULL, action TEXT NOT NULL, outcome TEXT NOT NULL, revision INTEGER NOT NULL, command_id TEXT, action_id TEXT, reason TEXT)`,
-		`CREATE INDEX audit_by_test ON audit(test_id, sequence)`,
-		`PRAGMA user_version = 1`,
+	var statements []string
+	if version == 0 {
+		statements = []string{
+			`CREATE TABLE meta (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL CHECK (revision >= 0))`,
+			`INSERT INTO meta (id, revision) VALUES (1, 0)`,
+			`CREATE TABLE tests (id TEXT PRIMARY KEY, record BLOB NOT NULL, stage TEXT NOT NULL)`,
+			`CREATE TABLE commands (id TEXT PRIMARY KEY, operation TEXT NOT NULL, request BLOB NOT NULL, status TEXT NOT NULL, test_id TEXT REFERENCES tests(id), reason TEXT, operator_id TEXT NOT NULL, occurred_at TEXT NOT NULL)`,
+			`CREATE TABLE audit (sequence INTEGER PRIMARY KEY AUTOINCREMENT, test_id TEXT NOT NULL REFERENCES tests(id), occurred_at TEXT NOT NULL, operator_id TEXT NOT NULL, action TEXT NOT NULL, outcome TEXT NOT NULL, revision INTEGER NOT NULL, command_id TEXT, action_id TEXT, reason TEXT)`,
+			`CREATE INDEX audit_by_test ON audit(test_id, sequence)`,
+		}
 	}
+	statements = append(statements,
+		`CREATE TABLE test_actions (action_id TEXT PRIMARY KEY, test_id TEXT NOT NULL REFERENCES tests(id), instruction TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('pending', 'confirmed', 'canceled', 'unknown')))`,
+		`CREATE UNIQUE INDEX one_pending_action ON test_actions(test_id) WHERE state = 'pending'`,
+		`CREATE TABLE measurements (test_id TEXT NOT NULL REFERENCES tests(id), sequence INTEGER NOT NULL CHECK(sequence > 0), elapsed_ns INTEGER NOT NULL CHECK(elapsed_ns >= 0), channel TEXT NOT NULL, quality TEXT NOT NULL, payload BLOB NOT NULL, PRIMARY KEY(test_id, sequence))`,
+		`ALTER TABLE tests ADD COLUMN measurement_elapsed_ns INTEGER`,
+		`PRAGMA user_version = 2`,
+	)
 	for _, statement := range statements {
 		if _, err := tx.Exec(statement); err != nil {
 			return err
@@ -102,7 +168,7 @@ func (s *Store) Close() error { return s.db.Close() }
 func valid(command contract.CreateTestCommand) bool {
 	p := command.Parameters
 	number := func(v float64) bool { return v > 0 && !math.IsInf(v, 0) && !math.IsNaN(v) }
-	return command.CommandId != uuid.Nil && command.ExpectedRevision >= 0 && strings.TrimSpace(p.Valve) != "" && utf8.RuneCountInString(p.Valve) <= 200 && p.Direction == "pressure" && !p.Actuator && number(p.AreaM2) && number(p.PmaxPa) && number(p.MeasurementSeconds)
+	return command.CommandId != uuid.Nil && command.ExpectedRevision >= 0 && strings.TrimSpace(p.Valve) != "" && utf8.RuneCountInString(p.Valve) <= 200 && p.Direction == "pressure" && !p.Actuator && number(p.AreaM2) && number(p.PmaxPa) && number(p.MeasurementSeconds) && p.MeasurementSeconds <= 3600
 }
 
 // Create commits the immutable parameters, command, reserved stop ID and audit together.
@@ -116,7 +182,7 @@ func (s *Store) Create(ctx context.Context, command contract.CreateTestCommand) 
 	if err := ctx.Err(); err != nil {
 		return contract.CommandStatus{}, err
 	}
-	status, err := s.lookup(ctx, command.CommandId, request)
+	status, err := s.lookup(ctx, command.CommandId, "create", request)
 	if err == nil || errors.Is(err, ErrCommandConflict) || errors.Is(err, ErrRevision) || errors.Is(err, ErrActiveTest) || errors.Is(err, ErrInvalidCommand) {
 		return status, err
 	}
@@ -147,7 +213,7 @@ func (s *Store) Create(ctx context.Context, command contract.CreateTestCommand) 
 }
 
 func (s *Store) noteWriteError(ctx context.Context, err error, writeAttempted bool) {
-	if err == nil || errors.Is(err, ErrRevision) || errors.Is(err, ErrActiveTest) || errors.Is(err, ErrInvalidCommand) {
+	if err == nil || errors.Is(err, ErrRevision) || errors.Is(err, ErrActiveTest) || errors.Is(err, ErrInvalidCommand) || errors.Is(err, ErrInvalidState) || errors.Is(err, ErrActionMismatch) || errors.Is(err, ErrTestNotFound) {
 		return
 	}
 	if !writeAttempted && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || (ctx.Err() != nil && errors.Is(err, sql.ErrTxDone))) {
@@ -156,7 +222,7 @@ func (s *Store) noteWriteError(ctx context.Context, err error, writeAttempted bo
 	s.failed = true
 }
 
-func (s *Store) lookup(ctx context.Context, id uuid.UUID, request []byte) (contract.CommandStatus, error) {
+func (s *Store) lookup(ctx context.Context, id uuid.UUID, expectedOperation string, request []byte) (contract.CommandStatus, error) {
 	var operation, state string
 	var testID, reason sql.NullString
 	var stored []byte
@@ -164,7 +230,7 @@ func (s *Store) lookup(ctx context.Context, id uuid.UUID, request []byte) (contr
 	if err != nil {
 		return contract.CommandStatus{}, err
 	}
-	if operation != "create" || !bytes.Equal(stored, request) {
+	if operation != expectedOperation || !bytes.Equal(stored, request) {
 		return contract.CommandStatus{}, ErrCommandConflict
 	}
 	status := contract.CommandStatus{CommandId: id, Status: contract.CommandStatusStatus(state)}
@@ -184,6 +250,12 @@ func (s *Store) lookup(ctx context.Context, id uuid.UUID, request []byte) (contr
 			return status, ErrActiveTest
 		case "invalid_command":
 			return status, ErrInvalidCommand
+		case "invalid_state":
+			return status, ErrInvalidState
+		case "action_mismatch":
+			return status, ErrActionMismatch
+		case "test_not_found":
+			return status, ErrTestNotFound
 		default:
 			return contract.CommandStatus{}, errors.New("invalid stored command reason")
 		}
@@ -277,7 +349,7 @@ func (s *Store) Audit(ctx context.Context, id uuid.UUID, after int64, limit int)
 	if after < 0 || limit < 1 || limit > 500 {
 		return nil, errors.New("invalid audit page")
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT sequence, occurred_at, operator_id, action, outcome, revision, command_id, action_id, reason FROM audit WHERE test_id = ? AND sequence > ? ORDER BY sequence LIMIT ?`, id.String(), after, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT a.sequence, a.occurred_at, a.operator_id, a.action, a.outcome, a.revision, a.command_id, a.action_id, a.reason, t.instruction FROM audit a LEFT JOIN test_actions t ON t.action_id = a.action_id AND t.test_id = a.test_id WHERE a.test_id = ? AND a.sequence > ? ORDER BY a.sequence LIMIT ?`, id.String(), after, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -286,8 +358,8 @@ func (s *Store) Audit(ctx context.Context, id uuid.UUID, after int64, limit int)
 	for rows.Next() {
 		var event contract.AuditEvent
 		var when string
-		var commandID, actionID, reason sql.NullString
-		if err := rows.Scan(&event.Sequence, &when, &event.OperatorId, &event.Action, &event.Outcome, &event.Revision, &commandID, &actionID, &reason); err != nil {
+		var commandID, actionID, reason, instruction sql.NullString
+		if err := rows.Scan(&event.Sequence, &when, &event.OperatorId, &event.Action, &event.Outcome, &event.Revision, &commandID, &actionID, &reason, &instruction); err != nil {
 			return nil, err
 		}
 		event.TestId = id
@@ -311,6 +383,9 @@ func (s *Store) Audit(ctx context.Context, id uuid.UUID, after int64, limit int)
 		}
 		if reason.Valid {
 			event.Reason = &reason.String
+		}
+		if instruction.Valid {
+			event.Instruction = &instruction.String
 		}
 		events = append(events, event)
 	}

@@ -380,7 +380,11 @@ components:
         valve: { type: string, minLength: 1, maxLength: 200 }
         areaM2: { type: number, format: double, exclusiveMinimum: 0 }
         pmaxPa: { type: number, format: double, exclusiveMinimum: 0 }
-        measurementSeconds: { type: number, format: double, exclusiveMinimum: 0 }
+        measurementSeconds:
+          type: number
+          format: double
+          exclusiveMinimum: 0
+          description: Для нового demo-испытания максимум 3600 секунд; точный повтор ранее принятой команды сохраняет прежний результат.
         direction: { type: string, enum: [pressure] }
         actuator: { type: boolean, const: false, x-go-type: bool }
     CreateTestCommand:
@@ -505,6 +509,7 @@ components:
         revision: { type: integer, format: int64, minimum: 0 }
         commandId: { type: [string, "null"], format: uuid }
         actionId: { type: [string, "null"], format: uuid }
+        instruction: { type: [string, "null"] }
         reason: { type: [string, "null"] }
     AuditPage:
       type: object
