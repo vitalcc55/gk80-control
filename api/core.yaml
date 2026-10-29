@@ -31,6 +31,12 @@ paths:
       operationId: acquireUiLease
       security:
         - coreSecret: []
+      parameters:
+        - name: X-GK80-UI-Lease
+          in: header
+          required: false
+          description: Ранее выданное право для восстановления того же клиента.
+          schema: { type: string, format: uuid }
       requestBody:
         required: true
         content:

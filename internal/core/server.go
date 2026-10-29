@@ -21,17 +21,28 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/vitalcc55/gk80-control/internal/contract"
+	"github.com/vitalcc55/gk80-control/internal/demo"
 	"github.com/vitalcc55/gk80-control/internal/diagnostics"
 	"github.com/vitalcc55/gk80-control/internal/profile"
 	"github.com/vitalcc55/gk80-control/internal/storage"
 	"github.com/vitalcc55/gk80-control/internal/transport"
 )
 
-// Run serves only a passive handshake until the owner pipe closes.
+// Unconfirmed operations retain their profile ownership until the process exits.
+var retainedCoreResources struct {
+	sync.Mutex
+	items []struct {
+		lock  *profile.Lock
+		store *storage.Store
+	}
+}
+
+// Run serves the core until the owner pipe closes or the server stops.
 func Run(ctx context.Context, input io.Reader, output io.Writer, fallback io.Writer) (runErr error) {
 	reader := bufio.NewReaderSize(input, 8193)
 	var bootstrap transport.Bootstrap
@@ -49,12 +60,21 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, fallback io.Wri
 		}
 		return errors.New("demo profile unavailable")
 	}
-	defer func() { _ = lock.Close() }()
+	retainResources := false
+	defer func() {
+		if !retainResources {
+			_ = lock.Close()
+		}
+	}()
 	store, err := storage.Open(bootstrap.ProfileDir)
 	if err != nil {
 		return errors.New("demo storage unavailable")
 	}
-	defer func() { _ = store.Close() }()
+	defer func() {
+		if !retainResources {
+			_ = store.Close()
+		}
+	}()
 	if err := store.Recover(ctx); err != nil {
 		return errors.New("demo storage recovery unavailable")
 	}
@@ -69,7 +89,7 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, fallback io.Wri
 	_ = logErr // Diagnostic failure is observable in logger status and must not block core.
 	defer func() {
 		logger.Application(diagnostics.ComponentCore).Info(string(diagnostics.ProcessStopped))
-		closeContext, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		closeContext, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 		if err := logger.Close(closeContext); err != nil {
 			if runErr == nil {
@@ -82,18 +102,78 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, fallback io.Wri
 	logger.Application(diagnostics.ComponentCore).Info(string(diagnostics.ProcessStarted))
 	settings := store.Settings()
 	logger.Application(diagnostics.ComponentCore).Info(string(diagnostics.StorageReady), "sqlite_version", settings.Version, "journal_mode", settings.JournalMode, "synchronous", settings.Synchronous)
+	engine, err := demo.NewEngine(ctx, store, demo.NewSimulator(), runID)
+	if err != nil {
+		return errors.New("demo engine unavailable")
+	}
+	validator, err := contract.NewInputValidator()
+	if err != nil {
+		return errors.New("core contract unavailable")
+	}
+	leases := newUILeases(engine, 30*time.Second)
+	feed := newEventFeed(engine)
+	feedCtx, stopFeed := context.WithCancel(context.Background())
+	feedDone := make(chan struct{})
+	go func() { feed.run(feedCtx); close(feedDone) }()
+	var server *http.Server
+	var listener net.Listener
+	defer func() {
+		leases.close()
+		stopFeed()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		defer cancel()
+		engineDone := make(chan error, 1)
+		go func() { engineDone <- engine.Shutdown(shutdownCtx, "owner_lost") }()
+		if server != nil {
+			httpCtx, cancelHTTP := context.WithTimeout(shutdownCtx, 2*time.Second)
+			if err := server.Shutdown(httpCtx); err != nil {
+				retainResources = true
+				_ = server.Close()
+				runErr = errors.Join(runErr, errors.New("core HTTP shutdown unconfirmed"))
+			}
+			cancelHTTP()
+		}
+		if listener != nil {
+			_ = listener.Close()
+		}
+		select {
+		case err := <-engineDone:
+			if err != nil {
+				retainResources = true
+				runErr = errors.Join(runErr, errors.New("core engine shutdown unconfirmed"))
+			}
+		case <-shutdownCtx.Done():
+			retainResources = true
+			runErr = errors.Join(runErr, errors.New("core engine shutdown unconfirmed"))
+		}
+		select {
+		case <-feedDone:
+		case <-shutdownCtx.Done():
+			retainResources = true
+			runErr = errors.Join(runErr, errors.New("core events shutdown unconfirmed"))
+		}
+		if retainResources {
+			retainedCoreResources.Lock()
+			retainedCoreResources.items = append(retainedCoreResources.items, struct {
+				lock  *profile.Lock
+				store *storage.Store
+			}{lock: lock, store: store})
+			retainedCoreResources.Unlock()
+		}
+	}()
 	certificate, fingerprint, err := ephemeralCertificate()
 	if err != nil {
 		return errors.New("core certificate unavailable")
 	}
-	listener, err := listen(ctx)
+	listener, err = listen(ctx)
 	if err != nil {
 		return errors.New("core listener unavailable")
 	}
-	defer func() { _ = listener.Close() }()
-	server := &http.Server{
-		Handler:           handshakeHandler(bootstrap.Secret, runID),
+	server = &http.Server{
+		Handler:           &coreHTTP{secret: bootstrap.Secret, handshake: handshakeHandler(bootstrap.Secret, runID), validator: validator, leases: leases, feed: feed},
 		ReadHeaderTimeout: 3 * time.Second,
+		ReadTimeout:       5 * time.Second,
+		MaxHeaderBytes:    16 * 1024,
 		TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{certificate}},
 	}
 	ready := transport.Ready{Address: listener.Addr().String(), Fingerprint: hex.EncodeToString(fingerprint[:]), APIVersion: "v1", BackendRunID: runID, Demo: true}
@@ -111,12 +191,6 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, fallback io.Wri
 		if !errors.Is(err, http.ErrServerClosed) {
 			return errors.New("core listener stopped")
 		}
-	}
-	shutdownContext, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := server.Shutdown(shutdownContext); err != nil {
-		_ = server.Close()
-		return errors.New("core shutdown incomplete")
 	}
 	return nil
 }

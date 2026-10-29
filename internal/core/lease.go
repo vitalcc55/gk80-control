@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/vitalcc55/gk80-control/internal/contract"
 	"github.com/vitalcc55/gk80-control/internal/demo"
 )
 
@@ -102,6 +103,41 @@ func (l *uiLeases) release(id uuid.UUID) error {
 	}
 	l.revokeLocked("ui_lost")
 	return nil
+}
+
+func (l *uiLeases) view(lease *uiLease) (contract.UiLease, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.expireLocked()
+	if l.closed || l.current != lease {
+		return contract.UiLease{}, errLeaseInvalid
+	}
+	return contract.UiLease{LeaseId: lease.id, ClientId: lease.clientID, ExpiresAt: lease.expiresAt}, nil
+}
+
+func (l *uiLeases) snapshot(id uuid.UUID, feed *eventFeed) (contract.Snapshot, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.expireLocked()
+	if l.closed || l.current == nil || l.current.id != id {
+		return contract.Snapshot{}, errLeaseInvalid
+	}
+	observation := feed.snapshot()
+	l.expireLocked()
+	if l.closed || l.current == nil || l.current.id != id {
+		return contract.Snapshot{}, errLeaseInvalid
+	}
+	select {
+	case <-l.current.done:
+		return contract.Snapshot{}, errLeaseInvalid
+	default:
+	}
+	state := observation.state
+	return contract.Snapshot{
+		ApiVersion: "v1", BackendRunId: state.BackendRunID, Revision: state.Revision,
+		LastEventSequence: observation.sequence, ActiveTest: state.Record,
+		PendingAction: state.PendingAction, Measurements: state.Measurements,
+	}, nil
 }
 
 func (l *uiLeases) expireLocked() {

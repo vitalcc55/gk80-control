@@ -627,6 +627,12 @@ type ListMeasurementsParams struct {
 	Limit *int   `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
+// AcquireUiLeaseParams defines parameters for AcquireUiLease.
+type AcquireUiLeaseParams struct {
+	// XGK80UILease Ранее выданное право для восстановления того же клиента.
+	XGK80UILease *openapi_types.UUID `json:"X-GK80-UI-Lease,omitempty"`
+}
+
 // CreateTestJSONRequestBody defines body for CreateTest for application/json ContentType.
 type CreateTestJSONRequestBody = CreateTestCommand
 

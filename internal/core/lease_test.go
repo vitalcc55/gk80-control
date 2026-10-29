@@ -144,3 +144,41 @@ func TestControllerRejectsExpiredLeaseBeforeTimer(t *testing.T) {
 		t.Fatalf("expired controller accepted stop: %v", err)
 	}
 }
+
+func TestSnapshotRejectsLeaseRevokedWhileReading(t *testing.T) {
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	engine, err := demo.NewEngine(context.Background(), store, demo.NewSimulator(), uuid.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	leases := newUILeases(engine, time.Minute)
+	defer leases.close()
+	lease, err := leases.acquire(uuid.New(), uuid.Nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	captured, release := make(chan struct{}), make(chan struct{})
+	source := &eventTestSource{state: engine.State(), changed: make(chan struct{}, 1), captured: captured, release: release}
+	feed := newEventFeed(source)
+	done := make(chan error, 1)
+	go func() { _, err := leases.snapshot(lease.id, feed); done <- err }()
+	select {
+	case <-captured:
+	case <-time.After(5 * time.Second):
+		t.Fatal("snapshot did not reach source")
+	}
+	lease.controller.Revoke("ui_lost")
+	close(release)
+	select {
+	case err := <-done:
+		if !errors.Is(err, errLeaseInvalid) {
+			t.Fatalf("revoked snapshot: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("snapshot did not return")
+	}
+}

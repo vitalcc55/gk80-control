@@ -18,9 +18,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/vitalcc55/gk80-control/internal/contract"
 	"github.com/vitalcc55/gk80-control/internal/profile"
 	"github.com/vitalcc55/gk80-control/internal/storage"
+	"go.yaml.in/yaml/v3"
 )
 
 func init() {
@@ -464,5 +466,167 @@ func TestCoreRecoversUnfinishedRecordWithoutResuming(t *testing.T) {
 	record, err := store.Test(ctx, testID)
 	if err != nil || record.Stage != "finished" || record.Outcome != "unknown" || record.DataQuality != "incomplete" {
 		t.Fatalf("recovered: %+v %v", record, err)
+	}
+}
+
+func TestCoreProcessLeaseAndSnapshot(t *testing.T) {
+	executable := buildCore(t)
+	profileDir := t.TempDir()
+	process, handshake, err := Start(context.Background(), executable, profileDir, "test", "0.1.0")
+	if process != nil {
+		initial := process
+		t.Cleanup(func() { _ = initial.Close(context.Background()) })
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := func(method, path, body, bearer, lease string) (int, []byte) {
+		t.Helper()
+		req, err := http.NewRequest(method, process.client.endpoint+path, strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if lease != "" {
+			req.Header.Set("X-GK80-UI-Lease", lease)
+		}
+		response, err := process.client.http.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = response.Body.Close() }()
+		data, err := io.ReadAll(io.LimitReader(response.Body, 8193))
+		if err != nil || len(data) > 8192 {
+			t.Fatalf("response: %v", err)
+		}
+		return response.StatusCode, data
+	}
+	secret := process.client.secret
+	if status, _ := request("GET", "/v1/snapshot", "", "", ""); status != http.StatusUnauthorized {
+		t.Fatalf("missing bearer: %d", status)
+	}
+	if status, _ := request("GET", "/v1/snapshot", "", secret, ""); status != http.StatusForbidden {
+		t.Fatalf("missing lease: %d", status)
+	}
+	client := uuid.New()
+	body := fmt.Sprintf(`{"clientId":%q}`, client.String())
+	wrongMedia, err := http.NewRequest(http.MethodPost, process.client.endpoint+"/v1/ui-lease", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongMedia.Header.Set("Authorization", "Bearer "+secret)
+	wrongMedia.Header.Set("Content-Type", "text/plain")
+	mediaResponse, err := process.client.http.Do(wrongMedia)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = mediaResponse.Body.Close()
+	if mediaResponse.StatusCode != http.StatusUnsupportedMediaType {
+		t.Fatalf("unsupported media type: %d", mediaResponse.StatusCode)
+	}
+	ambiguousMedia, err := http.NewRequest(http.MethodPost, process.client.endpoint+"/v1/ui-lease", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ambiguousMedia.Header.Set("Authorization", "Bearer "+secret)
+	ambiguousMedia.Header.Add("Content-Type", "application/json")
+	ambiguousMedia.Header.Add("Content-Type", "text/plain")
+	mediaResponse, err = process.client.http.Do(ambiguousMedia)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = mediaResponse.Body.Close()
+	if mediaResponse.StatusCode != http.StatusUnsupportedMediaType {
+		t.Fatalf("ambiguous media type: %d", mediaResponse.StatusCode)
+	}
+	for _, invalid := range []string{`{}`, `{"clientId":null}`, `{"clientId":"00000000-0000-0000-0000-000000000000"}`, fmt.Sprintf(`{"clientId":%q,"clientId":%q}`, client.String(), client.String())} {
+		if status, _ := request("POST", "/v1/ui-lease", invalid, secret, ""); status != http.StatusBadRequest {
+			t.Fatalf("invalid lease input: %d", status)
+		}
+	}
+	status, data := request("POST", "/v1/ui-lease", body, secret, "")
+	if status != http.StatusOK {
+		t.Fatalf("acquire: %d %s", status, data)
+	}
+	var lease contract.UiLease
+	if err := json.Unmarshal(data, &lease); err != nil || lease.ClientId != client || lease.LeaseId == uuid.Nil {
+		t.Fatalf("lease: %s %v", data, err)
+	}
+	token := lease.LeaseId.String()
+	if status, _ := request("GET", "/v1/snapshot", "", secret, "x"+token+"y"); status != http.StatusForbidden {
+		t.Fatalf("malformed lease accepted: %d", status)
+	}
+	if status, _ := request("POST", "/v1/ui-lease", body, secret, ""); status != http.StatusConflict {
+		t.Fatalf("same client without proof: %d", status)
+	}
+	if status, _ := request("POST", "/v1/ui-lease", body, secret, uuid.NewString()); status != http.StatusConflict {
+		t.Fatalf("wrong proof: %d", status)
+	}
+	status, data = request("POST", "/v1/ui-lease", body, secret, token)
+	var restored contract.UiLease
+	if status != http.StatusOK || json.Unmarshal(data, &restored) != nil || restored != lease {
+		t.Fatalf("restore: %d %s", status, data)
+	}
+	status, data = request("GET", "/v1/snapshot", "", secret, token)
+	var snapshot contract.Snapshot
+	if status != http.StatusOK || json.Unmarshal(data, &snapshot) != nil || snapshot.BackendRunId != handshake.BackendRunId || snapshot.ActiveTest != nil || snapshot.PendingAction != nil || snapshot.Measurements == nil || len(snapshot.Measurements) != 0 || snapshot.LastEventSequence != 0 {
+		t.Fatalf("snapshot: %d %s", status, data)
+	}
+	schemaData, err := os.ReadFile("../../api/core.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schemaDocument map[string]any
+	if err := yaml.Unmarshal(schemaData, &schemaDocument); err != nil {
+		t.Fatal(err)
+	}
+	schemaDocument["$schema"] = "https://json-schema.org/draft/2020-12/schema"
+	compiler := jsonschema.NewCompiler()
+	compiler.AssertFormat()
+	if err := compiler.AddResource("https://gk80.invalid/core.json", schemaDocument); err != nil {
+		t.Fatal(err)
+	}
+	schema, err := compiler.Compile("https://gk80.invalid/core.json#/components/schemas/Snapshot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var actual any
+	if err := json.Unmarshal(data, &actual); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.Validate(actual); err != nil {
+		t.Fatalf("snapshot schema: %v", err)
+	}
+	if status, _ := request("PUT", "/v1/ui-lease", "", secret, token); status != http.StatusOK {
+		t.Fatalf("renew: %d", status)
+	}
+	if status, _ := request("DELETE", "/v1/ui-lease", "", secret, token); status != http.StatusNoContent {
+		t.Fatalf("release: %d", status)
+	}
+	if status, _ := request("GET", "/v1/snapshot", "", secret, token); status != http.StatusForbidden {
+		t.Fatalf("revoked lease: %d", status)
+	}
+	if err := process.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	next, nextHandshake, err := Start(context.Background(), executable, profileDir, "test", "0.1.0")
+	if next != nil {
+		t.Cleanup(func() { _ = next.Close(context.Background()) })
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	process, handshake = next, nextHandshake
+	if handshake.BackendRunId == snapshot.BackendRunId {
+		t.Fatal("core restart reused run identity")
+	}
+	secret = process.client.secret
+	if status, _ := request("GET", "/v1/snapshot", "", secret, token); status != http.StatusForbidden {
+		t.Fatalf("previous run lease accepted: %d", status)
 	}
 }
