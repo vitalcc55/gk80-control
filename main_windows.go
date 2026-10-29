@@ -42,6 +42,20 @@ func showFatal(cleanupUnconfirmed bool) {
 	_, _ = windows.MessageBox(0, message, title, windows.MB_OK|windows.MB_ICONERROR)
 }
 
+func showDiagnosticWarning() {
+	message, _ := windows.UTF16PtrFromString("Журнал диагностики недоступен, неполон или его завершение не подтверждено. Состояние сохранения испытания определяется отдельно.")
+	title, _ := windows.UTF16PtrFromString("ГК80 — диагностика")
+	done := make(chan struct{})
+	go func() {
+		_, _ = windows.MessageBox(0, message, title, windows.MB_OK|windows.MB_ICONWARNING)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+	}
+}
+
 func runSafely() (err error) {
 	defer func() {
 		if recover() != nil {
@@ -75,15 +89,19 @@ func run() (resultErr error) {
 	if logger == nil {
 		return errors.New("desktop diagnostics unavailable")
 	}
+	var owner *desktop.Owner
 	defer func() {
 		logger.Application(diagnostics.ComponentDesktop).Info(string(diagnostics.ProcessStopped))
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		_ = logger.Close(ctx)
+		closeErr := logger.Close(ctx)
+		if closeErr != nil || logger.Status().Degraded || (owner != nil && owner.Status().DiagnosticsDegraded) {
+			showDiagnosticWarning()
+		}
 	}()
 	logger.Application(diagnostics.ComponentDesktop).Info(string(diagnostics.ProcessStarted))
 	var app *application.App
-	owner := desktop.NewOwner(hostID, filepath.Join(filepath.Dir(executable), "gk80-core.exe"), profileDir, profileID, appVersion, logger.Application(diagnostics.ComponentTransport), logger.Degraded(), logErr != nil, func(status contract.DesktopStatus) {
+	owner = desktop.NewOwner(hostID, filepath.Join(filepath.Dir(executable), "gk80-core.exe"), profileDir, profileID, appVersion, logger.Application(diagnostics.ComponentTransport), logger.Degraded(), logErr != nil, func(status contract.DesktopStatus) {
 		app.Event.Emit("desktop:status", status)
 	})
 	defer func() {
@@ -113,8 +131,11 @@ func run() (resultErr error) {
 				}
 				logger.Application(diagnostics.ComponentDesktop).Error(string(diagnostics.ProcessStopped), "exit_code", 1)
 				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-				_ = logger.Close(ctx)
+				logCloseErr := logger.Close(ctx)
 				cancel()
+				if logCloseErr != nil || logger.Status().Degraded || owner.Status().DiagnosticsDegraded {
+					showDiagnosticWarning()
+				}
 				showFatal(errors.Is(closeErr, transport.ErrCleanupUnconfirmed))
 			}
 		},

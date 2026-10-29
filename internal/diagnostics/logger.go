@@ -86,6 +86,9 @@ type Status struct {
 	DroppedError uint64
 }
 
+// ErrCloseUnconfirmed means the diagnostic writer did not finish within its bound.
+var ErrCloseUnconfirmed = errors.New("diagnostic writer shutdown unconfirmed")
+
 type entry struct {
 	data  []byte
 	level slog.Level
@@ -100,6 +103,8 @@ type Logger struct {
 	queue        chan entry
 	done         chan struct{}
 	fallbackDone chan struct{}
+	fallbackStop chan struct{}
+	stopFallback sync.Once
 	degraded     chan struct{}
 	maxBytes     int64
 	appVersion   string
@@ -163,14 +168,14 @@ func newLogger(role Role, runID uuid.UUID, writer io.WriteCloser, fallback io.Wr
 	}
 	logger := &Logger{
 		role: role, runID: runID, writer: writer, maxBytes: config.MaxBytes, appVersion: config.AppVersion, profileID: config.ProfileID,
-		queue: make(chan entry, config.QueueSize), done: make(chan struct{}), fallbackDone: make(chan struct{}), degraded: make(chan struct{}), fallback: make(chan struct{}, 1),
+		queue: make(chan entry, config.QueueSize), done: make(chan struct{}), fallbackDone: make(chan struct{}), fallbackStop: make(chan struct{}), degraded: make(chan struct{}), fallback: make(chan struct{}, 1),
 	}
 	go func() {
 		defer close(logger.fallbackDone)
 		select {
 		case <-logger.fallback:
 			_, _ = io.WriteString(fallback, "GK80 diagnostic writer unavailable or records dropped\n")
-		case <-logger.done:
+		case <-logger.fallbackStop:
 			select {
 			case <-logger.fallback:
 				_, _ = io.WriteString(fallback, "GK80 diagnostic writer unavailable or records dropped\n")
@@ -425,8 +430,18 @@ func (l *Logger) Status() Status {
 	return l.status
 }
 
-// Degraded closes once on the first writer failure or dropped record.
+// Degraded closes on the first writer failure, dropped record or unconfirmed shutdown.
 func (l *Logger) Degraded() <-chan struct{} { return l.degraded }
+
+func (l *Logger) markUnconfirmed() {
+	l.mu.Lock()
+	if !l.status.Degraded {
+		close(l.degraded)
+	}
+	l.status.Degraded = true
+	l.signalFallbackLocked()
+	l.mu.Unlock()
+}
 
 // Close waits at most two seconds or until ctx is done; blocked I/O may outlive it.
 func (l *Logger) Close(ctx context.Context) error {
@@ -440,13 +455,29 @@ func (l *Logger) Close(ctx context.Context) error {
 	l.mu.Unlock()
 	select {
 	case <-l.done:
+	case <-ctx.Done():
+		select {
+		case <-l.done:
+		default:
+			l.markUnconfirmed()
+			l.stopFallback.Do(func() { close(l.fallbackStop) })
+			return ctx.Err()
+		}
+	}
+	l.stopFallback.Do(func() { close(l.fallbackStop) })
+	if !l.Status().Degraded {
+		return nil
+	}
+	select {
+	case <-l.fallbackDone:
+		return nil
+	case <-ctx.Done():
 		select {
 		case <-l.fallbackDone:
 			return nil
-		case <-ctx.Done():
+		default:
+			l.markUnconfirmed()
 			return ctx.Err()
 		}
-	case <-ctx.Done():
-		return ctx.Err()
 	}
 }

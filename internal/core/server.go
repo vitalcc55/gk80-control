@@ -32,7 +32,7 @@ import (
 )
 
 // Run serves only a passive handshake until the owner pipe closes.
-func Run(ctx context.Context, input io.Reader, output io.Writer, fallback io.Writer) error {
+func Run(ctx context.Context, input io.Reader, output io.Writer, fallback io.Writer) (runErr error) {
 	reader := bufio.NewReaderSize(input, 8193)
 	var bootstrap transport.Bootstrap
 	if err := transport.ReadFrame(reader, &bootstrap); err != nil {
@@ -68,7 +68,13 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, fallback io.Wri
 		logger.Application(diagnostics.ComponentCore).Info(string(diagnostics.ProcessStopped))
 		closeContext, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		_ = logger.Close(closeContext)
+		if err := logger.Close(closeContext); err != nil {
+			if runErr == nil {
+				runErr = diagnostics.ErrCloseUnconfirmed
+			} else {
+				runErr = errors.Join(runErr, diagnostics.ErrCloseUnconfirmed)
+			}
+		}
 	}()
 	logger.Application(diagnostics.ComponentCore).Info(string(diagnostics.ProcessStarted))
 	certificate, fingerprint, err := ephemeralCertificate()
@@ -118,10 +124,14 @@ func handshakeHandler(secret string, runID uuid.UUID) http.Handler {
 		}
 		provided := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || subtle.ConstantTimeCompare([]byte(provided), []byte(secret)) != 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("WWW-Authenticate", "Bearer")
 			w.WriteHeader(http.StatusUnauthorized)
+			_ = json.NewEncoder(w).Encode(contract.ApiError{Code: "unauthorized", Message: "Authentication required"})
 			return
 		}
 		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}

@@ -32,6 +32,10 @@ type Process struct {
 var ErrProfileInUse = errors.New("demo profile is already in use")
 var ErrCleanupUnconfirmed = errors.New("core process cleanup could not be confirmed")
 
+// Core exit codes distinguish diagnostic shutdown from a failure of the core itself.
+const CoreExitDiagnostics = 70
+const CoreExitFailureAndDiagnostics = 71
+
 // stderrSignal observes only the fixed diagnostics fallback, never raw child output.
 type stderrSignal struct {
 	mu       sync.Mutex
@@ -80,6 +84,7 @@ func Start(ctx context.Context, executable, profileDir, profileID, appVersion st
 	}
 	secret := base64.RawURLEncoding.EncodeToString(secretBytes)
 	cmd := exec.Command(executable)
+	configureCoreProcess(cmd)
 	input, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, empty, errors.New("core input unavailable")
@@ -104,18 +109,9 @@ func Start(ctx context.Context, executable, profileDir, profileID, appVersion st
 		err := ReadFrame(reader, &ready)
 		readyChannel <- readyResult{value: ready, err: err}
 		_, _ = io.Copy(io.Discard, reader)
-		process.waitErr = cmd.Wait()
-		close(process.done)
+		process.wait()
 	}()
-	fail := func(err error) (*Process, contract.Handshake, error) {
-		_ = process.Close(context.Background())
-		select {
-		case <-process.done:
-		default:
-			return process, empty, ErrCleanupUnconfirmed
-		}
-		return nil, empty, err
-	}
+	fail := process.failedStart
 	startupContext, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	bootstrap := Bootstrap{Secret: secret, ProfileDir: profileDir, ProfileID: profileID, AppVersion: appVersion}
@@ -176,6 +172,32 @@ func Start(ctx context.Context, executable, profileDir, profileID, appVersion st
 		return fail(errors.New("core identity could not be confirmed"))
 	}
 	return process, handshake, nil
+}
+
+func (p *Process) failedStart(err error) (*Process, contract.Handshake, error) {
+	_ = p.Close(context.Background())
+	select {
+	case <-p.done:
+		select {
+		case <-p.DiagnosticsDegraded():
+			return p, contract.Handshake{}, err
+		default:
+			return nil, contract.Handshake{}, err
+		}
+	default:
+		return p, contract.Handshake{}, ErrCleanupUnconfirmed
+	}
+}
+
+func (p *Process) wait() {
+	p.waitErr = p.cmd.Wait()
+	if code := p.cmd.ProcessState.ExitCode(); code == CoreExitDiagnostics || code == CoreExitFailureAndDiagnostics {
+		p.diagnostics.once.Do(func() { close(p.diagnostics.notify) })
+		if code == CoreExitDiagnostics {
+			p.waitErr = nil
+		}
+	}
+	close(p.done)
 }
 
 func (p *Process) Handshake(ctx context.Context) (contract.Handshake, error) {

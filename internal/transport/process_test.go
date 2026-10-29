@@ -369,3 +369,48 @@ func TestOwnerExitHelper(t *testing.T) {
 	}
 	os.Exit(0)
 }
+
+func TestCoreDiagnosticExitIsObservableAndKeepsCoreFailureDistinct(t *testing.T) {
+	for _, code := range []int{CoreExitDiagnostics, CoreExitFailureAndDiagnostics} {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestDiagnosticExitHelper$")
+		cmd.Env = append(os.Environ(), fmt.Sprintf("GK80_TEST_DIAGNOSTIC_EXIT=%d", code))
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		process := &Process{cmd: cmd, done: make(chan struct{}), diagnostics: &stderrSignal{notify: make(chan struct{})}}
+		process.wait()
+		select {
+		case <-process.DiagnosticsDegraded():
+		default:
+			t.Fatal("diagnostic exit was not observed")
+		}
+		if (process.waitErr == nil) != (code == CoreExitDiagnostics) {
+			t.Fatalf("core exit %d lost its distinction: %v", code, process.waitErr)
+		}
+	}
+}
+
+func TestDiagnosticExitHelper(t *testing.T) {
+	value := os.Getenv("GK80_TEST_DIAGNOSTIC_EXIT")
+	if value == "" {
+		return
+	}
+	code, err := strconv.Atoi(value)
+	if err != nil {
+		os.Exit(1)
+	}
+	os.Exit(code)
+}
+
+func TestFailedStartRetainsDiagnosticSignal(t *testing.T) {
+	done := make(chan struct{})
+	close(done)
+	signal := &stderrSignal{notify: make(chan struct{})}
+	close(signal.notify)
+	process := &Process{input: noopCloser{}, done: done, diagnostics: signal}
+	startErr := errors.New("startup failed")
+	retained, _, err := process.failedStart(startErr)
+	if retained != process || !errors.Is(err, startErr) {
+		t.Fatalf("diagnostic startup failure lost: %v", err)
+	}
+}

@@ -310,3 +310,67 @@ func TestCloseHasLimitWithoutCallerDeadline(t *testing.T) {
 	close(writer.release)
 	closeLogger(t, logger)
 }
+
+func TestCloseReportsUnconfirmedWriterWithoutQueueOverflow(t *testing.T) {
+	writer := &blockedWriter{started: make(chan struct{}), release: make(chan struct{})}
+	notice := noticeWriter{delivered: make(chan string, 1)}
+	logger := newLogger(RoleCore, uuid.New(), writer, notice, Config{QueueSize: 4})
+	logger.Application(ComponentCore).Info(string(ProcessStarted))
+	<-writer.started
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if !errors.Is(logger.Close(ctx), context.DeadlineExceeded) {
+		t.Fatal("expected bounded close error")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("close exceeded bound: %v", elapsed)
+	}
+	status := logger.Status()
+	if !status.Degraded || status.DroppedInfo != 0 || status.WriterErrors != 0 {
+		t.Fatalf("unconfirmed close not distinguished: %+v", status)
+	}
+	select {
+	case message := <-notice.delivered:
+		if message != "GK80 diagnostic writer unavailable or records dropped\n" {
+			t.Fatalf("unexpected notice: %q", message)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fallback was not attempted")
+	}
+	close(writer.release)
+	closeLogger(t, logger)
+}
+
+func TestCloseStaysBoundedWhenWriterAndFallbackBlock(t *testing.T) {
+	writer := &blockedWriter{started: make(chan struct{}), release: make(chan struct{})}
+	fallback := &blockedWriter{started: make(chan struct{}), release: make(chan struct{})}
+	logger := newLogger(RoleCore, uuid.New(), writer, fallback, Config{QueueSize: 4})
+	logger.Application(ComponentCore).Info(string(ProcessStarted))
+	<-writer.started
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	if !errors.Is(logger.Close(ctx), context.DeadlineExceeded) || time.Since(started) > time.Second {
+		t.Fatal("blocked fallback exceeded close bound")
+	}
+	select {
+	case <-fallback.started:
+	case <-time.After(time.Second):
+		t.Fatal("safe fallback was not attempted")
+	}
+	close(fallback.release)
+	close(writer.release)
+	closeLogger(t, logger)
+}
+
+func TestCompletedWriterDoesNotWaitForUnneededFallback(t *testing.T) {
+	done := make(chan struct{})
+	close(done)
+	logger := &Logger{queue: make(chan entry), done: done, fallback: make(chan struct{}, 1), fallbackStop: make(chan struct{}), fallbackDone: make(chan struct{}), degraded: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := logger.Close(ctx); err != nil || logger.Status().Degraded {
+		t.Fatalf("completed writer reported unconfirmed while fallback was unnecessary: %v %+v", err, logger.Status())
+	}
+}
