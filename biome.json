@@ -5,6 +5,7 @@
       "**",
       "!!docs",
       "!!scripts",
+      "!!src/generated",
       "!!dist",
       "!!node_modules",
       "!!.tmp",

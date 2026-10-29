@@ -1,0 +1,2 @@
+internal/contract/*.gen.go text eol=lf
+src/generated/wails/** text eol=lf

@@ -5,6 +5,9 @@
   "type": "module",
   "scripts": {
     "ui:fixtures": "vite --host 127.0.0.1 --port 5173 --strictPort",
+    "contract:generate": "node scripts/contract-generation.mjs --write",
+    "contract:check": "node scripts/contract-generation.mjs",
+    "contract:test": "node --test scripts/verify-contract-generation.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "biome check . --error-on-warnings",
     "build": "npm run typecheck && vite build",
@@ -14,6 +17,7 @@
     "check:pr": "npm run check:quick && npm run build && npm run test:e2e"
   },
   "dependencies": {
+    "@wailsio/runtime": "3.0.0",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "lucide-react": "1.64.0",

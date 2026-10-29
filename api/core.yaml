@@ -1,0 +1,631 @@
+openapi: 3.1.2
+info:
+  title: ГК80 demo core
+  version: 0.1.0
+  description: >-
+    Первый упрощённый демонстрационный проход ручного клапана на нагнетание.
+    Схемы событий потока находятся в этом же документе. Контракт не описывает
+    полную методику испытания и не подтверждает состояние реального стенда.
+servers:
+  - url: https://127.0.0.1
+security:
+  - coreSecret: []
+    uiLease: []
+paths:
+  /v1/handshake:
+    get:
+      operationId: getHandshake
+      security:
+        - coreSecret: []
+      responses:
+        "200":
+          description: Версия и идентичность запущенного demo core.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Handshake"
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/ui-lease:
+    post:
+      operationId: acquireUiLease
+      security:
+        - coreSecret: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LeaseRequest"
+      responses:
+        "200":
+          description: Право единственного UI-клиента получено или восстановлено.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UiLease"
+        default:
+          $ref: "#/components/responses/Error"
+    put:
+      operationId: renewUiLease
+      responses:
+        "200":
+          description: Право активного UI-клиента продлено.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UiLease"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: releaseUiLease
+      responses:
+        "204":
+          description: Право UI-клиента освобождено.
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/snapshot:
+    get:
+      operationId: getSnapshot
+      responses:
+        "200":
+          description: Согласованный снимок состояния и границы потока событий.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Snapshot"
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/tests:
+    get:
+      operationId: listTests
+      responses:
+        "200":
+          description: Список сохранённых испытаний.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TestList"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      operationId: createTest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTestCommand"
+      responses:
+        "200":
+          $ref: "#/components/responses/CommandResult"
+        "202":
+          $ref: "#/components/responses/CommandAccepted"
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/tests/{testId}:
+    parameters:
+      - $ref: "#/components/parameters/TestId"
+    get:
+      operationId: getTest
+      responses:
+        "200":
+          description: Сохранённая запись испытания.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TestRecord"
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/tests/{testId}/readiness:
+    parameters:
+      - $ref: "#/components/parameters/TestId"
+    get:
+      operationId: getReadiness
+      responses:
+        "200":
+          description: Demo-проверки готовности ядра.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Readiness"
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/tests/{testId}/start:
+    parameters:
+      - $ref: "#/components/parameters/TestId"
+    post:
+      operationId: startTest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartTestCommand"
+      responses:
+        "200":
+          $ref: "#/components/responses/CommandResult"
+        "202":
+          $ref: "#/components/responses/CommandAccepted"
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/tests/{testId}/stop:
+    parameters:
+      - $ref: "#/components/parameters/TestId"
+    post:
+      operationId: stopTest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StopTestCommand"
+      responses:
+        "200":
+          $ref: "#/components/responses/CommandResult"
+        "202":
+          $ref: "#/components/responses/CommandAccepted"
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/tests/{testId}/actions/{actionId}/confirm:
+    parameters:
+      - $ref: "#/components/parameters/TestId"
+      - name: actionId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: confirmAction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfirmActionCommand"
+      responses:
+        "200":
+          $ref: "#/components/responses/CommandResult"
+        "202":
+          $ref: "#/components/responses/CommandAccepted"
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/tests/{testId}/measurements:
+    parameters:
+      - $ref: "#/components/parameters/TestId"
+      - name: after
+        in: query
+        required: false
+        description: Последняя прочитанная последовательность; 0 или отсутствие означает начало.
+        schema:
+          type: integer
+          format: int64
+          minimum: 0
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+          default: 100
+    get:
+      operationId: listMeasurements
+      responses:
+        "200":
+          description: Ограниченная страница сохранённых отсчётов.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeasurementPage"
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/tests/{testId}/audit:
+    parameters:
+      - $ref: "#/components/parameters/TestId"
+      - name: after
+        in: query
+        required: false
+        description: Последняя прочитанная последовательность; 0 или отсутствие означает начало.
+        schema: { type: integer, format: int64, minimum: 0 }
+      - name: limit
+        in: query
+        required: false
+        schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+    get:
+      operationId: listAudit
+      responses:
+        "200":
+          description: Ограниченная страница сохранённых событий аудита испытания.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditPage"
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/commands/{commandId}:
+    parameters:
+      - name: commandId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getCommand
+      responses:
+        "200":
+          description: Последнее подтверждённое состояние команды.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandStatus"
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/events:
+    get:
+      operationId: subscribeEvents
+      description: >-
+        Авторизованный WebSocket. Первым приходит StreamReady; затем Event.
+        Порядок восстановления описан в документации контракта.
+      responses:
+        "101":
+          description: Подключение WebSocket установлено.
+        default:
+          $ref: "#/components/responses/Error"
+components:
+  securitySchemes:
+    coreSecret:
+      type: http
+      scheme: bearer
+    uiLease:
+      type: apiKey
+      in: header
+      name: X-GK80-UI-Lease
+  parameters:
+    TestId:
+      name: testId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  responses:
+    CommandResult:
+      description: Ранее обработанная команда; повтор не выполняет действие заново.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/CommandStatus"
+    CommandAccepted:
+      description: Команда принята; выполнение и сохранение подтверждаются отдельно.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/CommandAccepted"
+    Error:
+      description: Запрос отклонён или состояние недоступно.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+  schemas:
+    LeaseRequest:
+      type: object
+      additionalProperties: false
+      required: [clientId]
+      properties:
+        clientId: { type: string, format: uuid }
+    UiLease:
+      type: object
+      additionalProperties: false
+      required: [leaseId, clientId, expiresAt]
+      properties:
+        leaseId: { type: string, format: uuid }
+        clientId: { type: string, format: uuid }
+        expiresAt: { type: string, format: date-time }
+    ConnectionState:
+      type: object
+      additionalProperties: false
+      required: [hostRunId, revision, status]
+      properties:
+        hostRunId: { type: string, format: uuid }
+        revision: { type: integer, format: int64, minimum: 0 }
+        status: { type: string, enum: [disconnected, recovering, live] }
+    Handshake:
+      type: object
+      additionalProperties: false
+      required: [apiVersion, backendRunId, demo]
+      properties:
+        apiVersion: { type: string }
+        backendRunId: { type: string, format: uuid }
+        demo: { type: boolean, const: true, x-go-type: bool }
+    TestParameters:
+      type: object
+      additionalProperties: false
+      required: [valve, areaM2, pmaxPa, measurementSeconds, direction, actuator]
+      properties:
+        valve: { type: string, minLength: 1, maxLength: 200 }
+        areaM2: { type: number, format: double, exclusiveMinimum: 0 }
+        pmaxPa: { type: number, format: double, exclusiveMinimum: 0 }
+        measurementSeconds: { type: number, format: double, exclusiveMinimum: 0 }
+        direction: { type: string, enum: [pressure] }
+        actuator: { type: boolean, const: false, x-go-type: bool }
+    CreateTestCommand:
+      type: object
+      additionalProperties: false
+      required: [commandId, expectedRevision, parameters]
+      properties:
+        commandId: { type: string, format: uuid }
+        expectedRevision: { type: integer, format: int64, minimum: 0 }
+        parameters:
+          $ref: "#/components/schemas/TestParameters"
+    StartTestCommand:
+      type: object
+      additionalProperties: false
+      required: [commandId, expectedRevision, valveClosed, connectionConfirmed]
+      properties:
+        commandId: { type: string, format: uuid }
+        expectedRevision: { type: integer, format: int64, minimum: 0 }
+        valveClosed: { type: boolean, const: true, x-go-type: bool }
+        connectionConfirmed: { type: boolean, const: true, x-go-type: bool }
+    StopTestCommand:
+      type: object
+      additionalProperties: false
+      required: [commandId]
+      properties:
+        commandId: { type: string, format: uuid }
+    ConfirmActionCommand:
+      type: object
+      additionalProperties: false
+      required: [commandId, expectedRevision]
+      properties:
+        commandId: { type: string, format: uuid }
+        expectedRevision: { type: integer, format: int64, minimum: 0 }
+    CommandStatus:
+      type: object
+      additionalProperties: false
+      required: [commandId, status]
+      properties:
+        commandId: { type: string, format: uuid }
+        status: { type: string, enum: [accepted, completed, rejected, failed, unknown] }
+        testId: { type: [string, "null"], format: uuid }
+        reason: { type: [string, "null"] }
+    CommandAccepted:
+      type: object
+      additionalProperties: false
+      required: [commandId, status]
+      properties:
+        commandId: { type: string, format: uuid }
+        status: { type: string, const: accepted, x-go-type: string }
+        testId: { type: [string, "null"], format: uuid }
+        reason: { type: [string, "null"] }
+    ApiError:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code: { type: string }
+        message: { type: string }
+    Measurement:
+      type: object
+      additionalProperties: false
+      required: [sequence, channel, quantity, value, unit, observedAt, measuredAt, quality, source]
+      allOf:
+        - if:
+            properties: { channel: { const: dd1 } }
+          then:
+            properties: { quantity: { const: pressure } }
+          else:
+            properties: { quantity: { const: differentialPressure } }
+        - if:
+            properties: { quality: { const: unavailable } }
+          then:
+            properties:
+              value: { type: "null" }
+              measuredAt: { type: "null" }
+          else:
+            properties:
+              value: { type: number }
+              measuredAt: { type: string, format: date-time }
+      properties:
+        sequence: { type: integer, format: int64, minimum: 1 }
+        channel: { type: string, enum: [dd1, dd2, dd3] }
+        quantity: { type: string, enum: [pressure, differentialPressure] }
+        value: { type: [number, "null"], format: double }
+        unit: { type: string, enum: [Pa] }
+        observedAt: { type: string, format: date-time }
+        measuredAt: { type: [string, "null"], format: date-time, x-go-type: string }
+        quality: { type: string, enum: [valid, stale, unavailable] }
+        source: { type: string, enum: [simulator] }
+    MeasurementPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextAfter]
+      allOf:
+        - if:
+            properties: { nextAfter: { type: integer } }
+          then:
+            properties: { items: { minItems: 1 } }
+      properties:
+        items:
+          type: array
+          maxItems: 500
+          items: { $ref: "#/components/schemas/Measurement" }
+        nextAfter:
+          {
+            type: [integer, "null"],
+            format: int64,
+            minimum: 1,
+            description: Последовательность последнего выданного отсчёта или null в конце.,
+          }
+    AuditEvent:
+      type: object
+      additionalProperties: false
+      required: [sequence, testId, occurredAt, operatorId, action, outcome, revision]
+      properties:
+        sequence: { type: integer, format: int64, minimum: 1 }
+        testId: { type: string, format: uuid }
+        occurredAt: { type: string, format: date-time }
+        operatorId: { type: string }
+        action: { type: string }
+        outcome: { type: string }
+        revision: { type: integer, format: int64, minimum: 0 }
+        commandId: { type: [string, "null"], format: uuid }
+        actionId: { type: [string, "null"], format: uuid }
+        reason: { type: [string, "null"] }
+    AuditPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextAfter]
+      allOf:
+        - if:
+            properties: { nextAfter: { type: integer } }
+          then:
+            properties: { items: { minItems: 1 } }
+      properties:
+        items:
+          type: array
+          maxItems: 500
+          items: { $ref: "#/components/schemas/AuditEvent" }
+        nextAfter:
+          {
+            type: [integer, "null"],
+            format: int64,
+            minimum: 1,
+            description: Последовательность последнего выданного события или null в конце.,
+          }
+    Readiness:
+      type: object
+      additionalProperties: false
+      required: [testId, revision, ready, checks]
+      properties:
+        testId: { type: string, format: uuid }
+        revision: { type: integer, format: int64, minimum: 0 }
+        ready: { type: boolean }
+        checks:
+          type: array
+          items: { $ref: "#/components/schemas/ReadinessCheck" }
+    ReadinessCheck:
+      type: object
+      additionalProperties: false
+      required: [code, label, ready, source]
+      properties:
+        code: { type: string }
+        label: { type: string }
+        ready: { type: boolean }
+        source: { type: string, enum: [simulator, core] }
+    PendingAction:
+      type: object
+      additionalProperties: false
+      required: [actionId, testId, instruction]
+      properties:
+        actionId: { type: string, format: uuid }
+        testId: { type: string, format: uuid }
+        instruction: { type: string }
+    TestRecord:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          testId,
+          demo,
+          operatorId,
+          parameters,
+          stopCommandId,
+          stage,
+          outcome,
+          dataQuality,
+          saveStatus,
+          createdAt,
+        ]
+      properties:
+        testId: { type: string, format: uuid }
+        demo: { type: boolean, const: true, x-go-type: bool }
+        operatorId: { type: string }
+        parameters: { $ref: "#/components/schemas/TestParameters" }
+        stopCommandId:
+          type: string
+          format: uuid
+          description: Заранее сохранённый идентификатор единственной команды остановки этого испытания.
+        stage: { type: string, enum: [preparing, running, stopping, finished] }
+        outcome: { type: string, enum: [pending, completed, interrupted, unknown] }
+        dataQuality: { type: string, enum: [pending, complete, incomplete, unknown] }
+        saveStatus: { type: string, enum: [saved, pending, failed, unknown] }
+        createdAt: { type: string, format: date-time }
+        finishedAt: { type: [string, "null"], format: date-time }
+    TestList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/TestRecord" }
+    Snapshot:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          apiVersion,
+          backendRunId,
+          revision,
+          lastEventSequence,
+          activeTest,
+          pendingAction,
+          measurements,
+        ]
+      properties:
+        apiVersion: { type: string }
+        backendRunId: { type: string, format: uuid }
+        revision: { type: integer, format: int64, minimum: 0 }
+        lastEventSequence: { type: integer, format: int64, minimum: 0 }
+        activeTest:
+          oneOf:
+            - $ref: "#/components/schemas/TestRecord"
+            - type: "null"
+        pendingAction:
+          oneOf:
+            - $ref: "#/components/schemas/PendingAction"
+            - type: "null"
+        measurements:
+          type: array
+          maxItems: 3
+          items: { $ref: "#/components/schemas/Measurement" }
+    StreamReady:
+      type: object
+      additionalProperties: false
+      required: [type, backendRunId]
+      properties:
+        type: { type: string, enum: [ready] }
+        backendRunId: { type: string, format: uuid }
+    Event:
+      type: object
+      additionalProperties: false
+      required: [type, backendRunId, sequence, revision]
+      allOf:
+        - if:
+            properties: { type: { const: measurement } }
+          then:
+            required: [testId, measurement]
+            properties: { testId: { type: string, format: uuid } }
+            not: { required: [command] }
+        - if:
+            properties: { type: { const: commandChanged } }
+          then:
+            required: [command]
+            not: { required: [measurement] }
+        - if:
+            properties: { type: { const: stateChanged } }
+          then:
+            not:
+              anyOf:
+                - required: [measurement]
+                - required: [command]
+      properties:
+        type: { type: string, enum: [stateChanged, measurement, commandChanged] }
+        backendRunId: { type: string, format: uuid }
+        sequence: { type: integer, format: int64, minimum: 1 }
+        revision: { type: integer, format: int64, minimum: 0 }
+        testId: { type: [string, "null"], format: uuid }
+        measurement: { $ref: "#/components/schemas/Measurement" }
+        command: { $ref: "#/components/schemas/CommandStatus" }
