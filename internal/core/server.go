@@ -27,6 +27,7 @@ import (
 	"github.com/vitalcc55/gk80-control/internal/contract"
 	"github.com/vitalcc55/gk80-control/internal/diagnostics"
 	"github.com/vitalcc55/gk80-control/internal/profile"
+	"github.com/vitalcc55/gk80-control/internal/storage"
 	"github.com/vitalcc55/gk80-control/internal/transport"
 )
 
@@ -49,6 +50,11 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, fallback io.Wri
 		return errors.New("demo profile unavailable")
 	}
 	defer func() { _ = lock.Close() }()
+	store, err := storage.Open(bootstrap.ProfileDir)
+	if err != nil {
+		return errors.New("demo storage unavailable")
+	}
+	defer func() { _ = store.Close() }()
 	runID, err := uuid.NewRandom()
 	if err != nil {
 		return errors.New("core identity unavailable")
