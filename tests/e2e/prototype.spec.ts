@@ -141,6 +141,160 @@ for (const viewport of [
       await expect(page.locator('.main-reading')).toContainText('устарело');
     });
 
+    test('график и таблица показывают только доступные показания', async ({ page }) => {
+      await page.goto('/?fixture=measuring');
+      await expect(page.getByText('Ряд: 30 с · период усреднения утечки: 60 с')).toBeVisible();
+      const legend = page.locator('.chart-legend');
+      const chart = page.locator('.chart-container');
+      const chartBounds = await chart.boundingBox();
+      const legendBounds = await legend.boundingBox();
+      expect(chartBounds).not.toBeNull();
+      expect(legendBounds).not.toBeNull();
+      if (!chartBounds || !legendBounds) throw new Error('Chart or legend is not visible');
+      expect(legendBounds.y).toBeGreaterThanOrEqual(chartBounds.y + chartBounds.height);
+      await page.getByText('Таблица показаний').click();
+      const rows = page
+        .getByRole('table', { name: 'Подготовленные показания по времени' })
+        .getByRole('row');
+      await expect(rows).toHaveCount(8);
+      await expect(rows.last()).toContainText('30');
+      await expect(rows.last()).toContainText('10 010');
+      await expect(rows.last()).toContainText('83');
+
+      await page.goto('/?fixture=sensor-lost');
+      await page.getByText('Таблица показаний').click();
+      const lostRows = page
+        .getByRole('table', { name: 'Подготовленные показания по времени' })
+        .getByRole('row');
+      await expect(lostRows.last()).toContainText('Нет данных');
+      await expect(page.locator('.main-reading')).toContainText('устарело');
+    });
+
+    test('выбранный период усреднения виден на протяжении примера', async ({ page }) => {
+      await page.goto('/?fixture=empty');
+      await page.getByRole('button', { name: 'Новое испытание' }).click();
+      await page
+        .getByRole('textbox', { name: 'Обозначение или наименование клапана' })
+        .fill('Клапан 100');
+      await page.getByRole('textbox', { name: 'Период усреднения утечки, с' }).fill('100');
+      await page.getByRole('button', { name: 'Проверить готовность' }).click();
+      await page.getByRole('checkbox', { name: /Клапан закрыт/ }).check();
+      await page.getByRole('checkbox', { name: /Подключение соответствует направлению/ }).check();
+      await page.getByRole('button', { name: 'Перейти к проведению' }).click();
+      for (const action of [
+        'Подтверждаю завершение серии',
+        'Показать стабилизацию',
+        'Показать следующий этап',
+        'Подтверждаю открытие',
+        'Подтверждаю закрытие',
+        'Показать измерение',
+      ]) {
+        await page.getByRole('button', { name: action }).click();
+      }
+      await expect(page.getByText('Ряд: 50 с · период усреднения утечки: 100 с')).toBeVisible();
+      await expect(page.getByText('Пример: прошло 50 с · осталось 50 с')).toBeVisible();
+      await page.getByText('Таблица показаний').click();
+      const rows = page
+        .getByRole('table', { name: 'Подготовленные показания по времени' })
+        .getByRole('row');
+      await expect(rows.last()).toContainText('50');
+    });
+
+    test('подписи осей сохраняют различимость малых и обычных величин', async ({ page }) => {
+      const errors: string[] = [];
+      page.on('pageerror', (error) => errors.push(error.message));
+      // Захватываем текст, реально отрисованный uPlot в Canvas, а не внутренние данные графика.
+      await page.addInitScript(() => {
+        const drawText = CanvasRenderingContext2D.prototype.fillText;
+        CanvasRenderingContext2D.prototype.fillText = function (
+          this: CanvasRenderingContext2D,
+          text: string,
+          x: number,
+          y: number,
+          maxWidth?: number,
+        ) {
+          this.canvas.dataset['axisText'] = `${this.canvas.dataset['axisText'] ?? ''}\u001f${text}`;
+          if (maxWidth === undefined) drawText.call(this, text, x, y);
+          else drawText.call(this, text, x, y, maxWidth);
+        };
+      });
+
+      for (const example of [
+        { pressure: '10000', period: '60', expectedX: 60, expectedY: 10_000 },
+        { pressure: '10000', period: '100', expectedX: 100, expectedY: 10_000 },
+        { pressure: '0,0001', period: '0,0001', expectedX: 0.0001, expectedY: 0.0001 },
+        { pressure: `0,${'0'.repeat(14)}1`, period: '60', expectedX: 60, expectedY: 1e-15 },
+        { pressure: `0,${'0'.repeat(99)}1`, period: '60', expectedX: 60, expectedY: 1e-100 },
+        { pressure: '10000', period: `0,${'0'.repeat(99)}1`, expectedX: 1e-100, expectedY: 10_000 },
+        { pressure: '10000', period: `1${'0'.repeat(307)}`, expectedX: 1e307, expectedY: 10_000 },
+      ]) {
+        await page.goto('/?fixture=empty');
+        await page.getByRole('button', { name: 'Новое испытание' }).click();
+        await page
+          .getByRole('textbox', { name: 'Обозначение или наименование клапана' })
+          .fill('Клапан для проверки осей');
+        await page.getByRole('textbox', { name: 'Pmax производителя, Па' }).fill(example.pressure);
+        await page
+          .getByRole('textbox', { name: 'Период усреднения утечки, с' })
+          .fill(example.period);
+        await page.getByRole('button', { name: 'Проверить готовность' }).click();
+        await page.getByRole('checkbox', { name: /Клапан закрыт/ }).check();
+        await page.getByRole('checkbox', { name: /Подключение соответствует направлению/ }).check();
+        await page.getByRole('button', { name: 'Перейти к проведению' }).click();
+        for (const action of [
+          'Подтверждаю завершение серии',
+          'Показать стабилизацию',
+          'Показать следующий этап',
+          'Подтверждаю открытие',
+          'Подтверждаю закрытие',
+          'Показать измерение',
+        ]) {
+          await page.getByRole('button', { name: action }).click();
+        }
+        const canvas = page.locator('.chart-container canvas').first();
+        await expect(canvas).toHaveAttribute('data-axis-text', /Перепад, Па/);
+        const painted = (await canvas.getAttribute('data-axis-text'))?.split('\u001f') ?? [];
+        const xStart = painted.lastIndexOf('Время, с');
+        const yStart = painted.indexOf('Давление, Па', xStart);
+        const yEnd = painted.indexOf('Перепад, Па', yStart);
+        expect(xStart).toBeGreaterThanOrEqual(0);
+        expect(yStart).toBeGreaterThan(xStart);
+        expect(yEnd).toBeGreaterThan(yStart);
+        const xLabels = painted.slice(xStart + 1, yStart);
+        const yLabels = painted.slice(yStart + 1, yEnd);
+        expect(xLabels.length).toBeGreaterThan(1);
+        expect(yLabels.length).toBeGreaterThan(1);
+        expect(new Set(xLabels).size).toBe(xLabels.length);
+        expect(new Set(yLabels).size).toBe(yLabels.length);
+        const parseLabel = (label: string) => Number(label.replace(/\s/g, '').replace(',', '.'));
+        const xValues = xLabels.map(parseLabel);
+        const yValues = yLabels.map(parseLabel);
+        expect(xValues.every(Number.isFinite)).toBe(true);
+        expect(yValues.every(Number.isFinite)).toBe(true);
+        expect(new Set(xValues).size).toBe(xValues.length);
+        expect(new Set(yValues).size).toBe(yValues.length);
+        expect(xValues.filter((value) => value === 0)).toHaveLength(1);
+        expect(xValues).toContain(example.expectedX);
+        expect(yValues).toContain(example.expectedY);
+        expect(yValues).not.toContain(0);
+        await page.getByText('Таблица показаний').click();
+        const lastTime = await page
+          .locator('.chart-data-table tbody tr:last-child td:first-child')
+          .textContent();
+        expect(lastTime).not.toBeNull();
+        if (lastTime === null) throw new Error('Последний момент времени отсутствует');
+        expect(parseLabel(lastTime)).toBe(example.expectedX / 2);
+        const lastPressure = await page
+          .locator('.chart-data-table tbody tr:last-child td:nth-child(2)')
+          .textContent();
+        if (lastPressure === null) throw new Error('Последнее давление отсутствует');
+        expect(Math.abs(parseLabel(lastPressure) / (example.expectedY * 1.001) - 1)).toBeLessThan(
+          1e-12,
+        );
+      }
+      expect(errors).toEqual([]);
+    });
+
     test('остановка сохраняет подготовленные показания по умолчанию после обновления', async ({
       page,
     }) => {

@@ -17,6 +17,7 @@ export interface TestParameters {
 export type FixtureId =
   | 'empty'
   | 'readiness'
+  | 'readiness-failed'
   | 'waiting'
   | 'measuring'
   | 'sensor-lost'

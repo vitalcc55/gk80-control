@@ -19,6 +19,16 @@ export const fixtureSource: PreviewSource = {
   find: getFixture,
 };
 
+/** Точность входных данных сохраняется по умолчанию; для подготовленных значений её можно указать отдельно. */
+export function formatNumber(value: number, maximumSignificantDigits = 21): string {
+  const magnitude = Math.abs(value);
+  const scientific = magnitude >= 1e12 || (magnitude > 0 && magnitude < 1e-9);
+  return new Intl.NumberFormat('ru-RU', {
+    notation: scientific ? 'scientific' : 'standard',
+    maximumSignificantDigits,
+  }).format(value);
+}
+
 /** Переходы предназначены только для просмотра; это не алгоритм core. */
 export const demoSteps: readonly {
   stage: StageId;
@@ -78,30 +88,44 @@ export const demoSteps: readonly {
 
 /** Подгоняет синтетический ряд для обсуждения выбранной точки, не выполняя измерение. */
 export function prepareRunDisplay(fixture: Fixture, parameters: TestParameters, stage: StageId) {
-  const factor = parameters.pmax / defaultParameters.pmax;
+  const scale = (value: number): number | null => {
+    if (parameters.pmax === defaultParameters.pmax) return value;
+    const scaled = (value / defaultParameters.pmax) * parameters.pmax;
+    return Number.isFinite(scaled) && (scaled !== 0 || value === 0) ? scaled : null;
+  };
+  const released = (ratio: number): number | null => {
+    const scaled = parameters.pmax * ratio;
+    return Number.isFinite(scaled) && (scaled !== 0 || ratio === 0) ? scaled : null;
+  };
   const noData = stage === 'cycles';
   const releasing =
     stage === 'release' && fixture.pressure.quality === 'valid' && fixture.pressure.value !== null;
   return {
-    graph: fixture.graph.map((point) => ({
-      ...point,
-      pressure:
-        noData || point.pressure === null
-          ? null
-          : releasing
-            ? parameters.pmax * (1 - point.seconds / 75)
-            : point.pressure * factor,
-      differential: noData ? null : point.differential,
-    })),
+    graph: fixture.graph
+      .filter((point) => stage !== 'measurement' || point.seconds <= 30)
+      .map((point) => ({
+        ...point,
+        seconds:
+          stage === 'measurement'
+            ? (point.seconds / 60) * parameters.measurementSeconds
+            : point.seconds,
+        pressure:
+          noData || point.pressure === null
+            ? null
+            : releasing
+              ? released(1 - point.seconds / 75)
+              : scale(point.pressure),
+        differential: noData ? null : point.differential,
+      })),
     pressureValue:
       noData || fixture.pressure.quality !== 'valid'
         ? null
         : releasing
-          ? parameters.pmax * 0.2
+          ? released(0.2)
           : fixture.pressure.value === null
             ? null
-            : fixture.pressure.value * factor,
-    lastPressure: fixture.pressure.lastValue === null ? null : fixture.pressure.lastValue * factor,
+            : scale(fixture.pressure.value),
+    lastPressure: fixture.pressure.lastValue === null ? null : scale(fixture.pressure.lastValue),
     differentialValue: noData ? null : fixture.differential.value,
   };
 }

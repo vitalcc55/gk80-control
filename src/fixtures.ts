@@ -26,7 +26,7 @@ export const defaultParameters: TestParameters = {
 
 const pressure: Measurement = {
   channel: 'ДД1',
-  value: 9950,
+  value: 10010,
   lastValue: null,
   quality: 'valid',
   time: '10:42:18',
@@ -36,7 +36,7 @@ const pressure: Measurement = {
 
 const differential: Measurement = {
   channel: 'ДД2',
-  value: 84,
+  value: 83,
   lastValue: null,
   quality: 'valid',
   time: '10:42:18',
@@ -57,7 +57,7 @@ const graph: readonly GraphPoint[] = [
   { seconds: 45, pressure: 9940, differential: 85 },
   { seconds: 50, pressure: 9930, differential: 84 },
   { seconds: 55, pressure: 9940, differential: 85 },
-  { seconds: 60, pressure: 9950, differential: 84 },
+  { seconds: 60, pressure: 10010, differential: 83 },
 ];
 
 const base: Fixture = {
@@ -88,6 +88,12 @@ export const fixtures: Record<FixtureId, Fixture> = {
     label: 'Неполная готовность',
     screen: 'readiness',
   },
+  'readiness-failed': {
+    ...base,
+    id: 'readiness-failed',
+    label: 'Ошибка автоматической проверки',
+    screen: 'readiness',
+  },
   waiting: base,
   measuring: {
     ...base,
@@ -103,8 +109,8 @@ export const fixtures: Record<FixtureId, Fixture> = {
     id: 'sensor-lost',
     label: 'Потеря ДД1',
     stage: 'measurement',
-    pressure: { ...pressure, value: null, lastValue: pressure.value, quality: 'stale' },
-    graph: graph.map((point) => (point.seconds >= 50 ? { ...point, pressure: null } : point)),
+    pressure: { ...pressure, value: null, lastValue: 10040, quality: 'stale' },
+    graph: graph.map((point) => (point.seconds >= 30 ? { ...point, pressure: null } : point)),
     instruction: 'Данные ДД1 недоступны. Текущее давление неизвестно.',
     actionLabel: 'Показать остановку',
     status: 'Потеря данных ДД1',
@@ -143,6 +149,7 @@ export const fixtures: Record<FixtureId, Fixture> = {
 export const fixtureIds: readonly FixtureId[] = [
   'empty',
   'readiness',
+  'readiness-failed',
   'waiting',
   'measuring',
   'sensor-lost',

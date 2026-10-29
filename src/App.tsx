@@ -11,7 +11,7 @@ import {
 } from './components/OtherScreens';
 import { PressureNotation } from './components/PressureNotation';
 import { Button } from './components/ui/button';
-import { demoSteps, fixtureSource, prepareRunDisplay } from './fixtureAdapter';
+import { demoSteps, fixtureSource, formatNumber, prepareRunDisplay } from './fixtureAdapter';
 import type { Fixture, FixtureId, Screen, TestParameters } from './model';
 
 const headings: Record<Screen, string> = {
@@ -22,9 +22,7 @@ const headings: Record<Screen, string> = {
   result: 'Результат',
 };
 
-function number(value: number): string {
-  return new Intl.NumberFormat('ru-RU', { maximumSignificantDigits: 12 }).format(value);
-}
+const number = (value: number) => formatNumber(value, 12);
 
 function initialFixture(): Fixture {
   const query = new URLSearchParams(window.location.search);
@@ -65,6 +63,7 @@ function RunScreen({
   step: number;
   onAdvance: () => void;
 }) {
+  const actionHeadingRef = useRef<HTMLHeadingElement>(null);
   const item = demoSteps[step] ?? demoSteps[0];
   if (!item) return null;
   const stageIndex = fixtureSource.stages.findIndex((stage) => stage.id === item.stage);
@@ -154,7 +153,7 @@ function RunScreen({
               </div>
             </div>
             <div className="measurements">
-              <div className="reading main-reading">
+              <div className={`reading main-reading${isLost ? ' reading-unavailable' : ''}`}>
                 <span>
                   Давление в ёмкости <small>ДД1</small>
                 </span>
@@ -178,7 +177,7 @@ function RunScreen({
                   <PressureNotation /> производителя
                 </span>
                 <strong>
-                  {number(parameters.pmax)} <small>Па</small>
+                  {formatNumber(parameters.pmax)} <small>Па</small>
                 </strong>
               </div>
               <div className="reading differential-reading">
@@ -197,15 +196,18 @@ function RunScreen({
               <div>
                 <h2>Изменение показаний</h2>
                 <p>
-                  {parameters.measurementSeconds === 60
-                    ? 'Ряд и интервал измерения: 60 с'
-                    : `Ряд: 60 с · интервал измерения: ${parameters.measurementSeconds} с`}
+                  {item.stage === 'measurement'
+                    ? `Ряд: ${number(parameters.measurementSeconds / 2)} с · период усреднения утечки: ${number(parameters.measurementSeconds)} с`
+                    : 'Ряд: 60 с'}
                 </p>
               </div>
             </div>
             <MeasurementChart
               points={graph}
               target={parameters.pmax}
+              rangeSeconds={
+                item.stage === 'measurement' ? parameters.measurementSeconds : undefined
+              }
               tolerance={
                 item.stage === 'stabilization'
                   ? 2
@@ -218,7 +220,9 @@ function RunScreen({
         </section>
         <aside className="action-panel" aria-label="Текущее действие">
           <div>
-            <h2>{isStopping ? 'Остановка' : isLost ? 'Потеря данных ДД1' : item.title}</h2>
+            <h2 ref={actionHeadingRef} tabIndex={-1}>
+              {isStopping ? 'Остановка' : isLost ? 'Потеря данных ДД1' : item.title}
+            </h2>
             <p className="action-instruction">{instruction}</p>
             {!isLost && !isStopping && item.stage === 'measurement' && (
               <p className="action-instruction">
@@ -240,7 +244,10 @@ function RunScreen({
             <button
               className="stop-button full-width"
               type="button"
-              onClick={() => onFixture('stopping')}
+              onClick={() => {
+                actionHeadingRef.current?.focus();
+                onFixture('stopping');
+              }}
               disabled={isStopping}
             >
               <Pause size={16} />
@@ -266,6 +273,11 @@ export function App() {
   const [active, setActive] = useState(initial.screen === 'run');
   const [step, setStep] = useState(() => initialStep(initial));
   const [nextId, setNextId] = useState(2);
+  const [history, setHistory] = useState<readonly TestParameters[]>([]);
+  const [emptyHistory, setEmptyHistory] = useState(initial.id === 'empty');
+  const [showExample, setShowExample] = useState(
+    initial.id !== 'empty' && initial.id !== 'save-error',
+  );
   const mainRef = useRef<HTMLElement>(null);
   const activeRun = useRef<{ fixture: Fixture; parameters: TestParameters; step: number } | null>(
     initial.screen === 'run'
@@ -291,6 +303,9 @@ export function App() {
         : base;
     setFixture(selected);
     if (!preserveParameters) {
+      if (id === 'empty') setHistory([]);
+      setEmptyHistory(id === 'empty' || id === 'save-error');
+      setShowExample(id !== 'empty' && id !== 'save-error');
       setParameters(selected.parameters);
       setDraftBase(selected.parameters);
       setDraft(draftFrom(selected.parameters));
@@ -388,6 +403,9 @@ export function App() {
         : null;
   return (
     <div className="app-shell">
+      <span className="sr-only" role="status" aria-atomic="true">
+        {screen === 'run' ? (activeNotice ?? `Этап: ${demoSteps[step]?.title ?? ''}`) : ''}
+      </span>
       <div className="workspace">
         <nav className="sidebar" aria-label="Навигация">
           <div className="brand">
@@ -439,12 +457,15 @@ export function App() {
               onNew={draftAvailable ? openParameters : beginNew}
               draftAvailable={draftAvailable}
               onOpen={openRun}
-              onHistory={() => {
+              onHistory={(selected) => {
                 setFixture(fixtureSource.get('measuring'));
-                setParameters(fixtureSource.initial);
+                setParameters(selected);
                 setScreen('result');
               }}
-              empty={fixture.id === 'empty'}
+              empty={emptyHistory}
+              showExample={showExample}
+              history={history}
+              example={fixtureSource.initial}
               activeParameters={active ? (activeRun.current?.parameters ?? parameters) : null}
             />
           )}
@@ -469,6 +490,7 @@ export function App() {
           {screen === 'readiness' && (
             <ReadinessScreen
               parameters={parameters}
+              autoCheckFailed={fixture.id === 'readiness-failed'}
               onBack={() => setScreen('parameters')}
               onStart={startRun}
             />
@@ -487,6 +509,11 @@ export function App() {
                 window.history.replaceState(null, '', url);
               }}
               onResult={() => {
+                setEmptyHistory(false);
+                setHistory((current) => [
+                  parameters,
+                  ...current.filter((item) => item.id !== parameters.id),
+                ]);
                 setActive(false);
                 setDraftAvailable(false);
                 activeRun.current = null;
