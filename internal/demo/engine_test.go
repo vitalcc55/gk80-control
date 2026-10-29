@@ -3,6 +3,7 @@ package demo
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -140,6 +141,187 @@ type stalledStart struct {
 	*storage.Store
 	entered chan struct{}
 	release chan struct{}
+}
+
+type blockedRejection struct {
+	*storage.Store
+	entered chan struct{}
+	result  string
+}
+
+type controlledDeadline struct {
+	context.Context
+	done chan struct{}
+	once sync.Once
+}
+
+func (d *controlledDeadline) Done() <-chan struct{} { return d.done }
+func (d *controlledDeadline) Err() error {
+	select {
+	case <-d.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+func (d *controlledDeadline) expire() { d.once.Do(func() { close(d.done) }) }
+
+func waitForRejectionEntry(t *testing.T, entered <-chan struct{}, result <-chan error) {
+	t.Helper()
+	select {
+	case <-entered:
+	case err := <-result:
+		t.Fatalf("request ended before rejection: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("rejection was not reached")
+	}
+}
+
+func rejectionResult(t *testing.T, result <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-result:
+		return err
+	case <-time.After(5 * time.Second):
+		t.Fatal("rejection did not return")
+		return nil
+	}
+}
+
+func (s *blockedRejection) wait(ctx context.Context) (contract.CommandStatus, error) {
+	close(s.entered)
+	<-ctx.Done()
+	switch s.result {
+	case "not_started":
+		return contract.CommandStatus{}, fmt.Errorf("%w: %w", storage.ErrWriteNotStarted, ctx.Err())
+	case "storage_failure":
+		return contract.CommandStatus{}, storage.ErrStorageUnavailable
+	default:
+		return contract.CommandStatus{}, ctx.Err()
+	}
+}
+
+func (s *blockedRejection) RejectStartUnavailable(ctx context.Context, _ uuid.UUID, _ contract.StartTestCommand) (contract.CommandStatus, error) {
+	return s.wait(ctx)
+}
+
+func (s *blockedRejection) RejectConfirmUnavailable(ctx context.Context, _, _ uuid.UUID, _ contract.ConfirmActionCommand) (contract.CommandStatus, error) {
+	return s.wait(ctx)
+}
+
+func TestOtherTestRejectionDeadlineDoesNotStopActiveRun(t *testing.T) {
+	for _, operation := range []string{"start", "confirm"} {
+		t.Run(operation, func(t *testing.T) {
+			ctx := context.Background()
+			store, err := storage.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = store.Close() }()
+			blocked := &blockedRejection{Store: store, entered: make(chan struct{}), result: "not_started"}
+			simulator := &countedSimulator{}
+			engine := newTestEngine(t, blocked, simulator, uuid.New())
+			created, err := engine.Create(ctx, command(20))
+			if err != nil || created.TestId == nil {
+				t.Fatalf("create: %v", err)
+			}
+			id := *created.TestId
+			if _, err := engine.Start(ctx, id, contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: 1, ValveClosed: true, ConnectionConfirmed: true}); err != nil {
+				t.Fatal(err)
+			}
+			action := engine.State().PendingAction
+			if action == nil {
+				t.Fatal("missing action")
+			}
+			if _, err := engine.Confirm(ctx, id, action.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: 2}); err != nil {
+				t.Fatal(err)
+			}
+			initial := waitFor(t, engine, func(state State) bool { return len(state.Measurements) > 0 })
+			deadline := &controlledDeadline{Context: ctx, done: make(chan struct{})}
+			defer deadline.expire()
+			done := make(chan error, 1)
+			go func() {
+				if operation == "start" {
+					_, err := engine.Start(deadline, uuid.New(), contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: 4, ValveClosed: true, ConnectionConfirmed: true})
+					done <- err
+				} else {
+					_, err := engine.Confirm(deadline, uuid.New(), uuid.New(), contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: 4})
+					done <- err
+				}
+			}()
+			waitForRejectionEntry(t, blocked.entered, done)
+			deadline.expire()
+			if err := rejectionResult(t, done); !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("rejection: %v", err)
+			}
+			continued := waitFor(t, engine, func(state State) bool {
+				return len(state.Measurements) > 0 && state.Measurements[0].Sequence > initial.Measurements[0].Sequence
+			})
+			if continued.Record == nil || continued.Record.Stage != "running" || continued.Stop != nil || simulator.stops.Load() != 0 {
+				t.Fatalf("active run changed: %+v", continued)
+			}
+			if _, err := engine.Stop(ctx, id, continued.Record.StopCommandId); err != nil {
+				t.Fatal(err)
+			}
+			waitFor(t, engine, func(state State) bool {
+				return state.Record != nil && state.Record.SaveStatus == "saved" && state.Record.Stage == "finished"
+			})
+		})
+	}
+}
+
+func TestOtherTestRejectionFailureStillStopsActiveRun(t *testing.T) {
+	for _, failure := range []string{"storage_failure", "late_deadline"} {
+		t.Run(failure, func(t *testing.T) {
+			store, err := storage.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = store.Close() }()
+			blocked := &blockedRejection{Store: store, entered: make(chan struct{}), result: failure}
+			simulator := &countedSimulator{}
+			engine := newTestEngine(t, blocked, simulator, uuid.New())
+			created, err := engine.Create(context.Background(), command(20))
+			if err != nil || created.TestId == nil {
+				t.Fatalf("create: %v", err)
+			}
+			id := *created.TestId
+			if _, err := engine.Start(context.Background(), id, contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: 1, ValveClosed: true, ConnectionConfirmed: true}); err != nil {
+				t.Fatal(err)
+			}
+			action := engine.State().PendingAction
+			if action == nil {
+				t.Fatal("missing action")
+			}
+			if _, err := engine.Confirm(context.Background(), id, action.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: 2}); err != nil {
+				t.Fatal(err)
+			}
+			waitFor(t, engine, func(state State) bool { return len(state.Measurements) > 0 })
+			ctx := &controlledDeadline{Context: context.Background(), done: make(chan struct{})}
+			defer ctx.expire()
+			done := make(chan error, 1)
+			go func() {
+				_, err := engine.Start(ctx, uuid.New(), contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: 1, ValveClosed: true, ConnectionConfirmed: true})
+				done <- err
+			}()
+			waitForRejectionEntry(t, blocked.entered, done)
+			ctx.expire()
+			err = rejectionResult(t, done)
+			if failure == "storage_failure" && !errors.Is(err, storage.ErrStorageUnavailable) {
+				t.Fatalf("storage failure: %v", err)
+			}
+			if failure == "late_deadline" && !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("late deadline: %v", err)
+			}
+			state := waitFor(t, engine, func(state State) bool { return state.Stop != nil && state.Stop.Status == "completed" })
+			if state.Record == nil || state.Record.Outcome != "interrupted" || simulator.stops.Load() != 1 {
+				t.Fatalf("mandatory failure: %+v", state)
+			}
+			waitFor(t, engine, func(state State) bool {
+				return state.Record != nil && state.Record.Stage == "finished" && state.Record.SaveStatus == "saved"
+			})
+		})
+	}
 }
 
 type timedOutLookup struct{ *storage.Store }
@@ -336,7 +518,7 @@ func (s *stalledStart) Start(ctx context.Context, id uuid.UUID, cmd contract.Sta
 	return result, err
 }
 
-type countedSimulator struct{ starts, stops atomic.Int32 }
+type countedSimulator struct{ starts, stops, finishes atomic.Int32 }
 
 type failingStopSimulator struct{ countedSimulator }
 
@@ -385,8 +567,8 @@ func (s *countedSimulator) Start(float64) error { s.starts.Add(1); return nil }
 func (*countedSimulator) Observe(time.Duration) (float64, float64, float64, error) {
 	return 1, 2, 3, nil
 }
-func (s *countedSimulator) Stop() error { s.stops.Add(1); return nil }
-func (*countedSimulator) Finish() error { return nil }
+func (s *countedSimulator) Stop() error   { s.stops.Add(1); return nil }
+func (s *countedSimulator) Finish() error { s.finishes.Add(1); return nil }
 
 func TestStopDoesNotWaitForDelayedStartAndPreventsLateStart(t *testing.T) {
 	ctx := context.Background()
@@ -440,6 +622,84 @@ type blockedSamples struct {
 	once    sync.Once
 	entered chan struct{}
 	release chan struct{}
+}
+
+func TestNaturalCompletionStopsWhenMeasurementWriteStalls(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	blocked := &blockedSamples{Store: store, entered: make(chan struct{}), release: make(chan struct{})}
+	released := false
+	defer func() {
+		if !released {
+			close(blocked.release)
+		}
+	}()
+	simulator := &countedSimulator{}
+	engine := newTestEngine(t, blocked, simulator, uuid.New())
+	created, err := engine.Create(ctx, command(0.05))
+	if err != nil || created.TestId == nil {
+		t.Fatalf("create: %v", err)
+	}
+	id := *created.TestId
+	if _, err := engine.Start(ctx, id, contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: 1, ValveClosed: true, ConnectionConfirmed: true}); err != nil {
+		t.Fatal(err)
+	}
+	action := engine.State().PendingAction
+	if action == nil {
+		t.Fatal("missing action")
+	}
+	if _, err := engine.Confirm(ctx, id, action.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: 2}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-blocked.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("measurement writer did not start")
+	}
+	stopped := waitFor(t, engine, func(state State) bool { return state.Stop != nil && state.Stop.Status == "completed" })
+	if stopped.Record == nil || stopped.Record.Outcome != "interrupted" || stopped.Record.DataQuality != "incomplete" || stopped.Record.SaveStatus == "saved" || simulator.stops.Load() != 1 || simulator.finishes.Load() != 0 {
+		t.Fatalf("system stop: %+v", stopped)
+	}
+	unknown := waitFor(t, engine, func(state State) bool { return state.Record != nil && state.Record.SaveStatus == "unknown" })
+	if unknown.Record.Outcome != "interrupted" {
+		t.Fatalf("unknown save: %+v", unknown.Record)
+	}
+	close(blocked.release)
+	released = true
+	result := waitFor(t, engine, func(state State) bool { return state.Record != nil && state.Record.SaveStatus == "saved" })
+	if simulator.stops.Load() != 1 || result.Record.Outcome != "interrupted" {
+		t.Fatalf("saved stop: %+v", result.Record)
+	}
+	samples, err := store.Measurements(ctx, id, 0, 100)
+	if err != nil || len(samples) < 6 {
+		t.Fatalf("drained samples: %d %v", len(samples), err)
+	}
+	for index, sample := range samples {
+		if sample.Sequence != int64(index+1) {
+			t.Fatalf("sample gap: %+v", samples)
+		}
+	}
+	audit, err := store.Audit(ctx, id, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range audit {
+		if event.Action == "stop" && event.Outcome == "accepted" && event.OperatorId == "system" && event.Reason != nil && *event.Reason == "measurement_write_timeout" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("system timeout audit: %+v", audit)
+	}
+	reopened := newTestEngine(t, store, simulator, uuid.New())
+	if _, err := reopened.Stop(ctx, id, result.Record.StopCommandId); err != nil || simulator.stops.Load() != 1 {
+		t.Fatalf("replayed stop: %v", err)
+	}
 }
 
 func (s *blockedSamples) RecordMeasurements(ctx context.Context, id uuid.UUID, samples []storage.TimedMeasurement) error {

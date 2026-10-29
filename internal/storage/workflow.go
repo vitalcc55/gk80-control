@@ -186,18 +186,18 @@ func (s *Store) operatorCommand(ctx context.Context, id, testID uuid.UUID, actio
 		return contract.CommandStatus{}, ErrInvalidCommand
 	}
 	if err := s.lockWrite(ctx); err != nil {
-		return contract.CommandStatus{}, err
+		return contract.CommandStatus{}, errors.Join(ErrWriteNotStarted, err)
 	}
 	defer s.unlockWrite()
 	if err := ctx.Err(); err != nil {
-		return contract.CommandStatus{}, err
+		return contract.CommandStatus{}, errors.Join(ErrWriteNotStarted, err)
 	}
 	status, err := s.lookup(ctx, id, operation, request)
 	if !errors.Is(err, sql.ErrNoRows) {
 		if err != nil && !expectedCommandError(err) && ctx.Err() == nil {
 			s.failed = true
 		}
-		return status, err
+		return status, beforeCommandWrite(ctx, err)
 	}
 	if s.failed {
 		return contract.CommandStatus{}, ErrStorageUnavailable
@@ -207,7 +207,7 @@ func (s *Store) operatorCommand(ctx context.Context, id, testID uuid.UUID, actio
 		if ctx.Err() == nil {
 			s.failed = true
 		}
-		return contract.CommandStatus{}, err
+		return contract.CommandStatus{}, beforeCommandWrite(ctx, err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	wrote := false
@@ -220,15 +220,15 @@ func (s *Store) operatorCommand(ctx context.Context, id, testID uuid.UUID, actio
 		reason := commandReason(err)
 		if contextErr := ctx.Err(); contextErr != nil {
 			s.noteWriteError(ctx, contextErr, false)
-			return contract.CommandStatus{}, contextErr
+			return contract.CommandStatus{}, beforeCommandWrite(ctx, contextErr)
 		}
 		var exists int
 		if queryErr := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM tests WHERE id = ?)`, testID.String()).Scan(&exists); queryErr != nil {
 			s.noteWriteError(ctx, queryErr, false)
-			return contract.CommandStatus{}, queryErr
+			return contract.CommandStatus{}, beforeCommandWrite(ctx, queryErr)
 		}
 		if contextErr := ctx.Err(); contextErr != nil {
-			return contract.CommandStatus{}, contextErr
+			return contract.CommandStatus{}, beforeCommandWrite(ctx, contextErr)
 		}
 		var linked sql.NullString
 		if exists != 0 {
@@ -266,10 +266,16 @@ func (s *Store) operatorCommand(ctx context.Context, id, testID uuid.UUID, actio
 	}
 	if err != nil {
 		s.noteWriteError(ctx, err, false)
+		if !wrote {
+			err = beforeCommandWrite(ctx, err)
+		}
 		return contract.CommandStatus{}, err
 	}
 	if err := ctx.Err(); err != nil {
 		s.noteWriteError(ctx, err, false)
+		if !wrote {
+			err = beforeCommandWrite(ctx, err)
+		}
 		return contract.CommandStatus{}, err
 	}
 	wrote = true
@@ -286,6 +292,14 @@ func (s *Store) operatorCommand(ctx context.Context, id, testID uuid.UUID, actio
 		return contract.CommandStatus{}, err
 	}
 	return contract.CommandStatus{CommandId: id, Status: commandStatus, TestId: &testID}, nil
+}
+
+// beforeCommandWrite marks only cancellations known to precede any write attempt.
+func beforeCommandWrite(ctx context.Context, err error) error {
+	if err != nil && ctx.Err() != nil && (errors.Is(err, ctx.Err()) || errors.Is(err, sql.ErrTxDone)) {
+		return errors.Join(ErrWriteNotStarted, ctx.Err(), err)
+	}
+	return err
 }
 
 func expectedCommandError(err error) bool {

@@ -385,7 +385,7 @@ func (e *Engine) Start(ctx context.Context, testID uuid.UUID, command contract.S
 	if current == nil || current.record.TestId != testID {
 		e.mu.Unlock()
 		result, err := e.store.RejectStartUnavailable(ctx, testID, command)
-		e.abortOnStorageError(err)
+		e.abortOnRejectedError(ctx, err)
 		return result, err
 	}
 	if current.stopping {
@@ -448,7 +448,7 @@ func (e *Engine) Confirm(ctx context.Context, testID, actionID uuid.UUID, comman
 	if current == nil || current.record.TestId != testID {
 		e.mu.Unlock()
 		result, err := e.store.RejectConfirmUnavailable(ctx, testID, actionID, command)
-		e.abortOnStorageError(err)
+		e.abortOnRejectedError(ctx, err)
 		return result, err
 	}
 	if current.stopping {
@@ -540,6 +540,13 @@ func (e *Engine) abortOnStorageError(err error) {
 
 func (e *Engine) abortOnLookupError(ctx context.Context, err error) {
 	if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+		return
+	}
+	e.abortOnStorageError(err)
+}
+
+func (e *Engine) abortOnRejectedError(ctx context.Context, err error) {
+	if ctx.Err() != nil && errors.Is(err, storage.ErrWriteNotStarted) && errors.Is(err, ctx.Err()) {
 		return
 	}
 	e.abortOnStorageError(err)
@@ -673,6 +680,7 @@ func waitForStop(ctx context.Context, done <-chan struct{}) error {
 }
 
 const sampleQueueLimit = 32
+const measurementWriteTimeout = 2 * time.Second
 
 type samplePacket []storage.TimedMeasurement
 
@@ -862,7 +870,24 @@ func (e *Engine) writeSamples(current *run, testID uuid.UUID, queue <-chan sampl
 			}
 		}
 	save:
-		if err := e.store.RecordMeasurements(context.Background(), testID, batch); err != nil {
+		pending := true
+		watchdog := time.AfterFunc(measurementWriteTimeout, func() {
+			e.mu.Lock()
+			stop := pending && e.active == current && !current.stopping && !current.naturalDone
+			if stop {
+				e.acceptStopLocked(current, "system", "measurement_write_timeout")
+			}
+			e.mu.Unlock()
+			if stop {
+				go e.finishStop(current)
+			}
+		})
+		err := e.store.RecordMeasurements(context.Background(), testID, batch)
+		e.mu.Lock()
+		pending = false
+		e.mu.Unlock()
+		watchdog.Stop()
+		if err != nil {
 			e.mu.Lock()
 			current.writerErr = err
 			startStop := false

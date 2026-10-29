@@ -33,6 +33,7 @@ var (
 	ErrTestNotFound       = errors.New("test not found")
 	ErrCommandNotFound    = errors.New("command not found")
 	ErrNotReady           = errors.New("simulator not ready")
+	ErrWriteNotStarted    = errors.New("command write did not start")
 )
 
 var inputValidator = sync.OnceValues(contract.NewInputValidator)

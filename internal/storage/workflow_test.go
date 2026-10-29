@@ -255,6 +255,136 @@ func TestBlockedWriteHonorsStopDeadline(t *testing.T) {
 	}
 }
 
+func TestRejectedCommandDeadlineBeforeLockDoesNotWrite(t *testing.T) {
+	for _, operation := range []string{"start", "confirm"} {
+		t.Run(operation, func(t *testing.T) {
+			store, err := Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = store.Close() }()
+			testID, actionID := uuid.New(), uuid.New()
+			start := contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: 1, ValveClosed: true, ConnectionConfirmed: true}
+			confirm := contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: 1}
+			if err := store.lockWrite(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+			var rejectErr error
+			if operation == "start" {
+				_, rejectErr = store.RejectStartUnavailable(ctx, testID, start)
+			} else {
+				_, rejectErr = store.RejectConfirmUnavailable(ctx, testID, actionID, confirm)
+			}
+			cancel()
+			store.unlockWrite()
+			if !errors.Is(rejectErr, ErrWriteNotStarted) || !errors.Is(rejectErr, context.DeadlineExceeded) {
+				t.Fatalf("deadline: %v", rejectErr)
+			}
+			if operation == "start" {
+				if _, err := store.LookupStart(context.Background(), testID, start); !errors.Is(err, ErrCommandNotFound) {
+					t.Fatalf("unexpected write: %v", err)
+				}
+				status, err := store.RejectStartUnavailable(context.Background(), testID, start)
+				if !errors.Is(err, ErrTestNotFound) || status.Status != "rejected" {
+					t.Fatalf("retry: %+v %v", status, err)
+				}
+				if _, err := store.LookupStart(context.Background(), testID, start); !errors.Is(err, ErrTestNotFound) {
+					t.Fatalf("repeat: %v", err)
+				}
+				start.ExpectedRevision++
+				if _, err := store.LookupStart(context.Background(), testID, start); !errors.Is(err, ErrCommandConflict) {
+					t.Fatalf("collision: %v", err)
+				}
+			} else {
+				if _, err := store.LookupConfirm(context.Background(), testID, actionID, confirm); !errors.Is(err, ErrCommandNotFound) {
+					t.Fatalf("unexpected write: %v", err)
+				}
+				status, err := store.RejectConfirmUnavailable(context.Background(), testID, actionID, confirm)
+				if !errors.Is(err, ErrTestNotFound) || status.Status != "rejected" {
+					t.Fatalf("retry: %+v %v", status, err)
+				}
+				if _, err := store.LookupConfirm(context.Background(), testID, actionID, confirm); !errors.Is(err, ErrTestNotFound) {
+					t.Fatalf("repeat: %v", err)
+				}
+				confirm.ExpectedRevision++
+				if _, err := store.LookupConfirm(context.Background(), testID, actionID, confirm); !errors.Is(err, ErrCommandConflict) {
+					t.Fatalf("collision: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestRejectedCommandDeadlineBeforeDatabaseLookupDoesNotWrite(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	connection, err := store.db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = connection.Close() }()
+	testID := uuid.New()
+	command := contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: 1, ValveClosed: true, ConnectionConfirmed: true}
+	ctx := &controlledReadDeadline{Context: context.Background(), done: make(chan struct{})}
+	defer func() {
+		select {
+		case <-ctx.done:
+		default:
+			close(ctx.done)
+		}
+	}()
+	result := make(chan error, 1)
+	previousWaits := store.db.Stats().WaitCount
+	go func() { _, err := store.RejectStartUnavailable(ctx, testID, command); result <- err }()
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for store.db.Stats().WaitCount == previousWaits {
+		select {
+		case err := <-result:
+			t.Fatalf("request ended before SQLite wait: %v", err)
+		case <-timer.C:
+			t.Fatal("request did not wait for SQLite connection")
+		case <-tick.C:
+		}
+	}
+	close(ctx.done)
+	select {
+	case err = <-result:
+	case <-timer.C:
+		t.Fatal("canceled request did not return")
+	}
+	if !errors.Is(err, ErrWriteNotStarted) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("blocked lookup: %v", err)
+	}
+	if err := connection.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.LookupStart(context.Background(), testID, command); !errors.Is(err, ErrCommandNotFound) {
+		t.Fatalf("unexpected command: %v", err)
+	}
+}
+
+type controlledReadDeadline struct {
+	context.Context
+	done chan struct{}
+}
+
+func (d *controlledReadDeadline) Done() <-chan struct{} { return d.done }
+func (d *controlledReadDeadline) Err() error {
+	select {
+	case <-d.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
 func TestRejectedActionIsAuditedOnce(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(t.TempDir())
