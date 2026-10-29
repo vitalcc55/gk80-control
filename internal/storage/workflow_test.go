@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"testing"
 	"time"
@@ -167,11 +168,11 @@ func TestConfirmedStopIsPersistedOnceAndReopens(t *testing.T) {
 	if _, err := store.Start(ctx, id, start, action); err != nil {
 		t.Fatal(err)
 	}
-	stopped, err := store.FinishStop(ctx, id, record.StopCommandId)
+	stopped, err := store.FinishStop(ctx, id, record.StopCommandId, StopDetails{Actor: "demo-operator", Reason: "operator", AcceptedAt: time.Now()})
 	if err != nil || stopped.Status != "completed" {
 		t.Fatalf("stop: %+v %v", stopped, err)
 	}
-	if _, err := store.FinishStop(ctx, uuid.New(), record.StopCommandId); !errors.Is(err, ErrCommandConflict) {
+	if _, err := store.FinishStop(ctx, uuid.New(), record.StopCommandId, StopDetails{Actor: "demo-operator", Reason: "operator", AcceptedAt: time.Now()}); !errors.Is(err, ErrCommandConflict) {
 		t.Fatalf("stop path conflict: %v", err)
 	}
 	if err := store.Close(); err != nil {
@@ -182,7 +183,7 @@ func TestConfirmedStopIsPersistedOnceAndReopens(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = store.Close() }()
-	stopped, err = store.FinishStop(ctx, id, record.StopCommandId)
+	stopped, err = store.FinishStop(ctx, id, record.StopCommandId, StopDetails{Actor: "demo-operator", Reason: "operator", AcceptedAt: time.Now()})
 	if err != nil || stopped.Status != "completed" {
 		t.Fatalf("stop replay: %+v %v", stopped, err)
 	}
@@ -191,8 +192,65 @@ func TestConfirmedStopIsPersistedOnceAndReopens(t *testing.T) {
 		t.Fatalf("reopened stop: %+v %v", result, err)
 	}
 	audit, err := store.Audit(ctx, id, 0, 100)
-	if err != nil || len(audit) != 4 || audit[2].Outcome != "unknown" || audit[2].CommandId == nil || *audit[2].CommandId != start.CommandId || audit[3].Action != "stop" {
+	if err != nil || len(audit) != 5 || audit[2].Action != "stop" || audit[2].Outcome != "accepted" || audit[2].Reason == nil || *audit[2].Reason != "operator" || audit[3].Outcome != "unknown" || audit[3].CommandId == nil || *audit[3].CommandId != start.CommandId || audit[4].Outcome != "completed" {
 		t.Fatalf("stop audit: %+v %v", audit, err)
+	}
+}
+
+func TestCanceledCommandRollsBackAndStopRemainsWritable(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	created, err := store.Create(context.Background(), createCommand())
+	if err != nil || created.TestId == nil {
+		t.Fatalf("create: %v", err)
+	}
+	id := *created.TestId
+	record, err := store.Test(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	entered, release := make(chan struct{}), make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		_, err := store.operatorCommand(ctx, uuid.New(), id, nil, "start", []byte("test"), func(tx *sql.Tx, wrote *bool) error {
+			*wrote = true
+			_, err := tx.ExecContext(ctx, `INSERT INTO test_actions(test_id, action_id, instruction, state) VALUES(?, ?, 'test', 'pending')`, id.String(), uuid.New().String())
+			close(entered)
+			<-release
+			return err
+		})
+		done <- err
+	}()
+	<-entered
+	cancel()
+	close(release)
+	if err := <-done; !errors.Is(err, context.Canceled) && !errors.Is(err, sql.ErrTxDone) {
+		t.Fatalf("canceled command: %v", err)
+	}
+	if _, err := store.FinishStop(context.Background(), id, record.StopCommandId, StopDetails{Actor: "demo-operator", Reason: "operator", AcceptedAt: time.Now()}); err != nil {
+		t.Fatalf("stop after rollback: %v", err)
+	}
+}
+
+func TestBlockedWriteHonorsStopDeadline(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	if err := store.lockWrite(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer store.unlockWrite()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_, err = store.FinishStop(ctx, uuid.New(), uuid.New(), StopDetails{Actor: "system", Reason: "storage_error", AcceptedAt: time.Now()})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("blocked stop: %v", err)
 	}
 }
 

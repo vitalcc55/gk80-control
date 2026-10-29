@@ -14,10 +14,7 @@ import (
 
 // Start records the operator's confirmations and the pending demo action atomically.
 func (s *Store) Start(ctx context.Context, testID uuid.UUID, command contract.StartTestCommand, action contract.PendingAction) (contract.CommandStatus, error) {
-	request, err := json.Marshal(struct {
-		TestID  uuid.UUID                 `json:"testId"`
-		Command contract.StartTestCommand `json:"command"`
-	}{testID, command})
+	request, err := startRequest(testID, command)
 	if err != nil {
 		return contract.CommandStatus{}, ErrInvalidCommand
 	}
@@ -47,13 +44,70 @@ func (s *Store) Start(ctx context.Context, testID uuid.UUID, command contract.St
 	})
 }
 
+func startRequest(testID uuid.UUID, command contract.StartTestCommand) ([]byte, error) {
+	return json.Marshal(struct {
+		TestID  uuid.UUID                 `json:"testId"`
+		Command contract.StartTestCommand `json:"command"`
+	}{testID, command})
+}
+
+// LookupStart reads a previous command without creating or executing a new one.
+func (s *Store) LookupStart(ctx context.Context, testID uuid.UUID, command contract.StartTestCommand) (contract.CommandStatus, error) {
+	request, err := startRequest(testID, command)
+	if err != nil {
+		return contract.CommandStatus{}, ErrInvalidCommand
+	}
+	status, err := s.lookup(ctx, command.CommandId, "start", request)
+	if errors.Is(err, sql.ErrNoRows) {
+		return contract.CommandStatus{}, ErrCommandNotFound
+	}
+	return status, err
+}
+
+// RejectStartNotReady persists the decision without applying a start transition.
+func (s *Store) RejectStartNotReady(ctx context.Context, testID uuid.UUID, command contract.StartTestCommand) (contract.CommandStatus, error) {
+	request, err := startRequest(testID, command)
+	if err != nil {
+		return contract.CommandStatus{}, ErrInvalidCommand
+	}
+	return s.operatorCommand(ctx, command.CommandId, testID, nil, "start", request, func(tx *sql.Tx, _ *bool) error {
+		if command.CommandId == uuid.Nil || testID == uuid.Nil || command.ExpectedRevision < 0 || !command.ValveClosed || !command.ConnectionConfirmed {
+			return ErrInvalidCommand
+		}
+		record, revision, err := currentRecord(ctx, tx, testID)
+		if err != nil {
+			return err
+		}
+		if revision != command.ExpectedRevision {
+			return ErrRevision
+		}
+		if record.Stage != "preparing" {
+			return ErrInvalidState
+		}
+		return ErrNotReady
+	})
+}
+
+// RejectStartUnavailable preserves the command identity without starting a non-current test.
+func (s *Store) RejectStartUnavailable(ctx context.Context, testID uuid.UUID, command contract.StartTestCommand) (contract.CommandStatus, error) {
+	request, err := startRequest(testID, command)
+	if err != nil {
+		return contract.CommandStatus{}, ErrInvalidCommand
+	}
+	return s.operatorCommand(ctx, command.CommandId, testID, nil, "start", request, func(tx *sql.Tx, _ *bool) error {
+		if testID == uuid.Nil || command.ExpectedRevision < 0 || !command.ValveClosed || !command.ConnectionConfirmed {
+			return ErrInvalidCommand
+		}
+		if _, _, err := currentRecord(ctx, tx, testID); err != nil {
+			return err
+		}
+		return ErrInvalidState
+	})
+}
+
 // Confirm records confirmation of the current action, scoped to its test and action IDs.
 func (s *Store) Confirm(ctx context.Context, testID, actionID uuid.UUID, command contract.ConfirmActionCommand) (contract.CommandStatus, error) {
-	request, err := json.Marshal(struct {
-		TestID   uuid.UUID                     `json:"testId"`
-		ActionID uuid.UUID                     `json:"actionId"`
-		Command  contract.ConfirmActionCommand `json:"command"`
-	}{testID, actionID, command})
+	request, err := confirmRequest(testID, actionID, command)
 	if err != nil {
 		return contract.CommandStatus{}, ErrInvalidCommand
 	}
@@ -90,12 +144,51 @@ func (s *Store) Confirm(ctx context.Context, testID, actionID uuid.UUID, command
 	})
 }
 
+func confirmRequest(testID, actionID uuid.UUID, command contract.ConfirmActionCommand) ([]byte, error) {
+	return json.Marshal(struct {
+		TestID   uuid.UUID                     `json:"testId"`
+		ActionID uuid.UUID                     `json:"actionId"`
+		Command  contract.ConfirmActionCommand `json:"command"`
+	}{testID, actionID, command})
+}
+
+// LookupConfirm reads a previous confirmation without changing the test.
+func (s *Store) LookupConfirm(ctx context.Context, testID, actionID uuid.UUID, command contract.ConfirmActionCommand) (contract.CommandStatus, error) {
+	request, err := confirmRequest(testID, actionID, command)
+	if err != nil {
+		return contract.CommandStatus{}, ErrInvalidCommand
+	}
+	status, err := s.lookup(ctx, command.CommandId, "confirm", request)
+	if errors.Is(err, sql.ErrNoRows) {
+		return contract.CommandStatus{}, ErrCommandNotFound
+	}
+	return status, err
+}
+
+func (s *Store) RejectConfirmUnavailable(ctx context.Context, testID, actionID uuid.UUID, command contract.ConfirmActionCommand) (contract.CommandStatus, error) {
+	request, err := confirmRequest(testID, actionID, command)
+	if err != nil {
+		return contract.CommandStatus{}, ErrInvalidCommand
+	}
+	return s.operatorCommand(ctx, command.CommandId, testID, &actionID, "confirm", request, func(tx *sql.Tx, _ *bool) error {
+		if testID == uuid.Nil || actionID == uuid.Nil || command.ExpectedRevision < 0 {
+			return ErrInvalidCommand
+		}
+		if _, _, err := currentRecord(ctx, tx, testID); err != nil {
+			return err
+		}
+		return ErrInvalidState
+	})
+}
+
 func (s *Store) operatorCommand(ctx context.Context, id, testID uuid.UUID, actionID *uuid.UUID, operation string, request []byte, apply func(*sql.Tx, *bool) error) (contract.CommandStatus, error) {
 	if id == uuid.Nil {
 		return contract.CommandStatus{}, ErrInvalidCommand
 	}
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	if err := s.lockWrite(ctx); err != nil {
+		return contract.CommandStatus{}, err
+	}
+	defer s.unlockWrite()
 	if err := ctx.Err(); err != nil {
 		return contract.CommandStatus{}, err
 	}
@@ -126,7 +219,7 @@ func (s *Store) operatorCommand(ctx context.Context, id, testID uuid.UUID, actio
 		}
 		reason := commandReason(err)
 		if contextErr := ctx.Err(); contextErr != nil {
-			s.noteWriteError(ctx, contextErr, wrote)
+			s.noteWriteError(ctx, contextErr, false)
 			return contract.CommandStatus{}, contextErr
 		}
 		var exists int
@@ -143,13 +236,13 @@ func (s *Store) operatorCommand(ctx context.Context, id, testID uuid.UUID, actio
 		}
 		wrote = true
 		if _, insertErr := tx.ExecContext(ctx, `INSERT INTO commands(id, operation, request, status, test_id, reason, operator_id, occurred_at) VALUES(?, ?, ?, 'rejected', ?, ?, ?, ?)`, id.String(), operation, request, linked, reason, operatorID, time.Now().UTC().Format(time.RFC3339Nano)); insertErr != nil {
-			s.noteWriteError(ctx, insertErr, wrote)
+			s.noteWriteError(ctx, insertErr, false)
 			return contract.CommandStatus{}, insertErr
 		}
 		if exists != 0 {
 			var revision int64
 			if queryErr := tx.QueryRowContext(ctx, `SELECT revision FROM meta WHERE id = 1`).Scan(&revision); queryErr != nil {
-				s.noteWriteError(ctx, queryErr, true)
+				s.noteWriteError(ctx, queryErr, false)
 				return contract.CommandStatus{}, queryErr
 			}
 			var action sql.NullString
@@ -157,12 +250,12 @@ func (s *Store) operatorCommand(ctx context.Context, id, testID uuid.UUID, actio
 				action = sql.NullString{String: actionID.String(), Valid: true}
 			}
 			if _, insertErr := tx.ExecContext(ctx, `INSERT INTO audit(test_id, occurred_at, operator_id, action, outcome, revision, command_id, action_id, reason) VALUES(?, ?, ?, ?, 'rejected', ?, ?, ?, ?)`, testID.String(), time.Now().UTC().Format(time.RFC3339Nano), operatorID, operation, revision, id.String(), action, reason); insertErr != nil {
-				s.noteWriteError(ctx, insertErr, true)
+				s.noteWriteError(ctx, insertErr, false)
 				return contract.CommandStatus{}, insertErr
 			}
 		}
 		if commitErr := tx.Commit(); commitErr != nil {
-			s.noteWriteError(ctx, commitErr, wrote)
+			s.noteWriteError(ctx, commitErr, false)
 			return contract.CommandStatus{}, commitErr
 		}
 		result := contract.CommandStatus{CommandId: id, Status: "rejected", Reason: &reason}
@@ -172,11 +265,11 @@ func (s *Store) operatorCommand(ctx context.Context, id, testID uuid.UUID, actio
 		return result, err
 	}
 	if err != nil {
-		s.noteWriteError(ctx, err, wrote)
+		s.noteWriteError(ctx, err, false)
 		return contract.CommandStatus{}, err
 	}
 	if err := ctx.Err(); err != nil {
-		s.noteWriteError(ctx, err, wrote)
+		s.noteWriteError(ctx, err, false)
 		return contract.CommandStatus{}, err
 	}
 	wrote = true
@@ -185,18 +278,18 @@ func (s *Store) operatorCommand(ctx context.Context, id, testID uuid.UUID, actio
 		commandStatus = contract.CommandStatusStatusAccepted
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO commands(id, operation, request, status, test_id, operator_id, occurred_at) VALUES(?, ?, ?, ?, ?, ?, ?)`, id.String(), operation, request, commandStatus, testID.String(), operatorID, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		s.noteWriteError(ctx, err, wrote)
+		s.noteWriteError(ctx, err, false)
 		return contract.CommandStatus{}, err
 	}
 	if err := tx.Commit(); err != nil {
-		s.noteWriteError(ctx, err, wrote)
+		s.noteWriteError(ctx, err, false)
 		return contract.CommandStatus{}, err
 	}
 	return contract.CommandStatus{CommandId: id, Status: commandStatus, TestId: &testID}, nil
 }
 
 func expectedCommandError(err error) bool {
-	return errors.Is(err, ErrCommandConflict) || errors.Is(err, ErrInvalidCommand) || errors.Is(err, ErrRevision) || errors.Is(err, ErrInvalidState) || errors.Is(err, ErrActionMismatch) || errors.Is(err, ErrTestNotFound)
+	return errors.Is(err, ErrCommandConflict) || errors.Is(err, ErrInvalidCommand) || errors.Is(err, ErrRevision) || errors.Is(err, ErrInvalidState) || errors.Is(err, ErrActionMismatch) || errors.Is(err, ErrTestNotFound) || errors.Is(err, ErrNotReady)
 }
 func commandReason(err error) string {
 	switch {
@@ -210,6 +303,8 @@ func commandReason(err error) string {
 		return "action_mismatch"
 	case errors.Is(err, ErrTestNotFound):
 		return "test_not_found"
+	case errors.Is(err, ErrNotReady):
+		return "not_ready"
 	default:
 		return "invalid_command"
 	}
@@ -311,8 +406,10 @@ func (s *Store) RecordMeasurements(ctx context.Context, testID uuid.UUID, measur
 		}
 		bodies[i] = body
 	}
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	if err := s.lockWrite(ctx); err != nil {
+		return err
+	}
+	defer s.unlockWrite()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -407,8 +504,10 @@ func (s *Store) Complete(ctx context.Context, testID uuid.UUID, elapsed time.Dur
 	if elapsed < 0 || elapsed > 24*time.Hour {
 		return ErrInvalidCommand
 	}
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	if err := s.lockWrite(ctx); err != nil {
+		return err
+	}
+	defer s.unlockWrite()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -494,15 +593,15 @@ func (s *Store) Complete(ctx context.Context, testID uuid.UUID, elapsed time.Dur
 	record.DataQuality = "complete"
 	record.FinishedAt = &now
 	if err := saveTransition(ctx, tx, record, revision+1, "system", "complete", "completed", nil, nil); err != nil {
-		s.noteWriteError(ctx, err, true)
+		s.noteWriteError(ctx, err, false)
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE tests SET measurement_elapsed_ns = ? WHERE id = ?`, int64(elapsed), testID.String()); err != nil {
-		s.noteWriteError(ctx, err, true)
+		s.noteWriteError(ctx, err, false)
 		return err
 	}
 	if err := tx.Commit(); err != nil {
-		s.noteWriteError(ctx, err, true)
+		s.noteWriteError(ctx, err, false)
 		return err
 	}
 	return nil
@@ -510,8 +609,10 @@ func (s *Store) Complete(ctx context.Context, testID uuid.UUID, elapsed time.Dur
 
 // Recover records that unfinished procedures have an unknown outcome; it never runs them.
 func (s *Store) Recover(ctx context.Context) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	if err := s.lockWrite(ctx); err != nil {
+		return err
+	}
+	defer s.unlockWrite()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -595,8 +696,10 @@ func (s *Store) Recover(ctx context.Context) error {
 
 // CompleteStart confirms that the simulator has accepted the starting action.
 func (s *Store) CompleteStart(ctx context.Context, testID, commandID uuid.UUID) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	if err := s.lockWrite(ctx); err != nil {
+		return err
+	}
+	defer s.unlockWrite()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -646,27 +749,54 @@ func (s *Store) CompleteStart(ctx context.Context, testID, commandID uuid.UUID) 
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE commands SET status = 'completed' WHERE id = ?`, commandID.String()); err != nil {
-		s.noteWriteError(ctx, err, true)
+		s.noteWriteError(ctx, err, false)
 		return err
 	}
 	if err := saveTransition(ctx, tx, record, revision+1, "system", "start", "completed", &commandID, nil); err != nil {
-		s.noteWriteError(ctx, err, true)
+		s.noteWriteError(ctx, err, false)
 		return err
 	}
 	if err := tx.Commit(); err != nil {
-		s.noteWriteError(ctx, err, true)
+		s.noteWriteError(ctx, err, false)
 		return err
 	}
 	return nil
 }
 
+// LookupStop never invokes the simulator. A reserved command has no durable outcome.
+func (s *Store) LookupStop(ctx context.Context, testID, commandID uuid.UUID) (contract.CommandStatus, error) {
+	var operation, state string
+	var linked sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT operation, status, test_id FROM commands WHERE id = ?`, commandID.String()).Scan(&operation, &state, &linked)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && (operation != "stop" || !linked.Valid || linked.String != testID.String())) {
+		return contract.CommandStatus{}, ErrCommandConflict
+	}
+	if err != nil {
+		return contract.CommandStatus{}, err
+	}
+	if state == "reserved" {
+		state = "unknown"
+	}
+	return contract.CommandStatus{CommandId: commandID, TestId: &testID, Status: contract.CommandStatusStatus(state)}, nil
+}
+
+type StopDetails struct {
+	Actor            string
+	Reason           string
+	AcceptedAt       time.Time
+	Failed           bool
+	MeasurementsLost bool
+}
+
 // FinishStop persists a simulator-confirmed stop. The engine must invoke the port before this call.
-func (s *Store) FinishStop(ctx context.Context, testID, commandID uuid.UUID) (contract.CommandStatus, error) {
-	if testID == uuid.Nil || commandID == uuid.Nil {
+func (s *Store) FinishStop(ctx context.Context, testID, commandID uuid.UUID, details StopDetails) (contract.CommandStatus, error) {
+	if testID == uuid.Nil || commandID == uuid.Nil || details.AcceptedAt.IsZero() || (details.Actor != operatorID && details.Actor != "system") || details.Reason == "" {
 		return contract.CommandStatus{}, ErrInvalidCommand
 	}
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	if err := s.lockWrite(ctx); err != nil {
+		return contract.CommandStatus{}, err
+	}
+	defer s.unlockWrite()
 	if err := ctx.Err(); err != nil {
 		return contract.CommandStatus{}, err
 	}
@@ -685,8 +815,8 @@ func (s *Store) FinishStop(ctx context.Context, testID, commandID uuid.UUID) (co
 	if operation != "stop" || !linked.Valid || linked.String != testID.String() {
 		return contract.CommandStatus{}, ErrCommandConflict
 	}
-	if state == "completed" {
-		return contract.CommandStatus{CommandId: commandID, Status: "completed", TestId: &testID}, nil
+	if state == "completed" || state == "failed" {
+		return contract.CommandStatus{CommandId: commandID, Status: contract.CommandStatusStatus(state), TestId: &testID}, nil
 	}
 	if state != "reserved" {
 		return contract.CommandStatus{}, ErrInvalidState
@@ -714,31 +844,53 @@ func (s *Store) FinishStop(ctx context.Context, testID, commandID uuid.UUID) (co
 		return contract.CommandStatus{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE test_actions SET state = 'canceled' WHERE test_id = ? AND state = 'pending'`, testID.String()); err != nil {
-		s.noteWriteError(ctx, err, true)
+		s.noteWriteError(ctx, err, false)
 		return contract.CommandStatus{}, err
 	}
+	record.Stage = "stopping"
+	if err := saveTransition(ctx, tx, record, revision+1, details.Actor, "stop", "accepted", &commandID, nil); err != nil {
+		s.noteWriteError(ctx, err, false)
+		return contract.CommandStatus{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE audit SET occurred_at = ?, reason = ? WHERE sequence = last_insert_rowid()`, details.AcceptedAt.UTC().Format(time.RFC3339Nano), details.Reason); err != nil {
+		s.noteWriteError(ctx, err, false)
+		return contract.CommandStatus{}, err
+	}
+	revision++
 	if err := markAcceptedUnknown(ctx, tx, testID, &revision); err != nil {
-		s.noteWriteError(ctx, err, true)
+		s.noteWriteError(ctx, err, false)
 		return contract.CommandStatus{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE commands SET status = 'completed' WHERE id = ?`, commandID.String()); err != nil {
-		s.noteWriteError(ctx, err, true)
+	status := "completed"
+	if details.Failed {
+		status = "failed"
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE commands SET status = ? WHERE id = ?`, status, commandID.String()); err != nil {
+		s.noteWriteError(ctx, err, false)
 		return contract.CommandStatus{}, err
 	}
 	now := time.Now().UTC()
 	record.Stage = "finished"
 	record.Outcome = "interrupted"
 	record.DataQuality = "incomplete"
+	if details.MeasurementsLost {
+		record.SaveStatus = "failed"
+	}
 	record.FinishedAt = &now
-	if err := saveTransition(ctx, tx, record, revision+1, operatorID, "stop", "completed", &commandID, nil); err != nil {
-		s.noteWriteError(ctx, err, true)
+	if details.Failed {
+		record.Stage = "stopping"
+		record.Outcome = "unknown"
+		record.FinishedAt = nil
+	}
+	if err := saveTransition(ctx, tx, record, revision+1, details.Actor, "stop", status, &commandID, nil); err != nil {
+		s.noteWriteError(ctx, err, false)
 		return contract.CommandStatus{}, err
 	}
 	if err := tx.Commit(); err != nil {
-		s.noteWriteError(ctx, err, true)
+		s.noteWriteError(ctx, err, false)
 		return contract.CommandStatus{}, err
 	}
-	return contract.CommandStatus{CommandId: commandID, Status: "completed", TestId: &testID}, nil
+	return contract.CommandStatus{CommandId: commandID, Status: contract.CommandStatusStatus(status), TestId: &testID}, nil
 }
 
 func markAcceptedUnknown(ctx context.Context, tx *sql.Tx, testID uuid.UUID, revision *int64) error {

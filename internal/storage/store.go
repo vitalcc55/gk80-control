@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -30,6 +29,8 @@ var (
 	ErrInvalidState       = errors.New("invalid test state")
 	ErrActionMismatch     = errors.New("pending action does not match")
 	ErrTestNotFound       = errors.New("test not found")
+	ErrCommandNotFound    = errors.New("command not found")
+	ErrNotReady           = errors.New("simulator not ready")
 )
 
 const operatorID = "demo-operator"
@@ -37,10 +38,24 @@ const operatorID = "demo-operator"
 // Store is opened only while the core owns the corresponding profile lock.
 type Store struct {
 	db       *sql.DB
-	writeMu  sync.Mutex
+	writeMu  chan struct{}
 	failed   bool
 	settings SQLiteSettings
 }
+
+func (s *Store) lockWrite(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case s.writeMu <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *Store) unlockWrite() { <-s.writeMu }
 
 type SQLiteSettings struct {
 	Version     string
@@ -73,7 +88,7 @@ func Open(profileDir string) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	store := &Store{db: db}
+	store := &Store{db: db, writeMu: make(chan struct{}, 1)}
 	if err := store.initialize(); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -171,14 +186,29 @@ func valid(command contract.CreateTestCommand) bool {
 	return command.CommandId != uuid.Nil && command.ExpectedRevision >= 0 && strings.TrimSpace(p.Valve) != "" && utf8.RuneCountInString(p.Valve) <= 200 && p.Direction == "pressure" && !p.Actuator && number(p.AreaM2) && number(p.PmaxPa) && number(p.MeasurementSeconds) && p.MeasurementSeconds <= 3600
 }
 
+// LookupCreate resolves an uncertain response without re-executing the command.
+func (s *Store) LookupCreate(ctx context.Context, command contract.CreateTestCommand) (contract.CommandStatus, error) {
+	request, err := json.Marshal(command)
+	if err != nil {
+		return contract.CommandStatus{}, ErrInvalidCommand
+	}
+	status, err := s.lookup(ctx, command.CommandId, "create", request)
+	if errors.Is(err, sql.ErrNoRows) {
+		return contract.CommandStatus{}, ErrCommandNotFound
+	}
+	return status, err
+}
+
 // Create commits the immutable parameters, command, reserved stop ID and audit together.
 func (s *Store) Create(ctx context.Context, command contract.CreateTestCommand) (contract.CommandStatus, error) {
 	if command.CommandId == uuid.Nil {
 		return contract.CommandStatus{}, ErrInvalidCommand
 	}
 	request, marshalErr := json.Marshal(command)
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	if err := s.lockWrite(ctx); err != nil {
+		return contract.CommandStatus{}, err
+	}
+	defer s.unlockWrite()
 	if err := ctx.Err(); err != nil {
 		return contract.CommandStatus{}, err
 	}
@@ -208,12 +238,12 @@ func (s *Store) Create(ctx context.Context, command contract.CreateTestCommand) 
 	defer func() { _ = tx.Rollback() }()
 	wrote := false
 	status, err = s.create(ctx, tx, command, request, &wrote)
-	s.noteWriteError(ctx, err, wrote)
+	s.noteWriteError(ctx, err, false)
 	return status, err
 }
 
 func (s *Store) noteWriteError(ctx context.Context, err error, writeAttempted bool) {
-	if err == nil || errors.Is(err, ErrRevision) || errors.Is(err, ErrActiveTest) || errors.Is(err, ErrInvalidCommand) || errors.Is(err, ErrInvalidState) || errors.Is(err, ErrActionMismatch) || errors.Is(err, ErrTestNotFound) {
+	if err == nil || errors.Is(err, ErrRevision) || errors.Is(err, ErrActiveTest) || errors.Is(err, ErrInvalidCommand) || errors.Is(err, ErrInvalidState) || errors.Is(err, ErrActionMismatch) || errors.Is(err, ErrTestNotFound) || errors.Is(err, ErrNotReady) {
 		return
 	}
 	if !writeAttempted && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || (ctx.Err() != nil && errors.Is(err, sql.ErrTxDone))) {
@@ -256,6 +286,8 @@ func (s *Store) lookup(ctx context.Context, id uuid.UUID, expectedOperation stri
 			return status, ErrActionMismatch
 		case "test_not_found":
 			return status, ErrTestNotFound
+		case "not_ready":
+			return status, ErrNotReady
 		default:
 			return contract.CommandStatus{}, errors.New("invalid stored command reason")
 		}
@@ -331,6 +363,12 @@ func (s *Store) create(ctx context.Context, tx *sql.Tx, command contract.CreateT
 		return contract.CommandStatus{}, err
 	}
 	return contract.CommandStatus{CommandId: command.CommandId, Status: "completed", TestId: &id}, nil
+}
+
+func (s *Store) Revision(ctx context.Context) (int64, error) {
+	var revision int64
+	err := s.db.QueryRowContext(ctx, `SELECT revision FROM meta WHERE id = 1`).Scan(&revision)
+	return revision, err
 }
 
 func (s *Store) Test(ctx context.Context, id uuid.UUID) (contract.TestRecord, error) {
