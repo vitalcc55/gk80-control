@@ -57,6 +57,36 @@ func (e ConnectionStateStatus) Valid() bool {
 	}
 }
 
+// Defines values for DesktopStatusStatus.
+const (
+	DesktopStatusStatusClosing      DesktopStatusStatus = "closing"
+	DesktopStatusStatusExited       DesktopStatusStatus = "exited"
+	DesktopStatusStatusProfileInUse DesktopStatusStatus = "profileInUse"
+	DesktopStatusStatusReady        DesktopStatusStatus = "ready"
+	DesktopStatusStatusStarting     DesktopStatusStatus = "starting"
+	DesktopStatusStatusUnavailable  DesktopStatusStatus = "unavailable"
+)
+
+// Valid indicates whether the value is a known member of the DesktopStatusStatus enum.
+func (e DesktopStatusStatus) Valid() bool {
+	switch e {
+	case DesktopStatusStatusClosing:
+		return true
+	case DesktopStatusStatusExited:
+		return true
+	case DesktopStatusStatusProfileInUse:
+		return true
+	case DesktopStatusStatusReady:
+		return true
+	case DesktopStatusStatusStarting:
+		return true
+	case DesktopStatusStatusUnavailable:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for EventType.
 const (
 	EventTypeCommandChanged EventType = "commandChanged"
@@ -101,19 +131,19 @@ func (e MeasurementChannel) Valid() bool {
 
 // Defines values for MeasurementQuality.
 const (
-	Stale       MeasurementQuality = "stale"
-	Unavailable MeasurementQuality = "unavailable"
-	Valid       MeasurementQuality = "valid"
+	MeasurementQualityStale       MeasurementQuality = "stale"
+	MeasurementQualityUnavailable MeasurementQuality = "unavailable"
+	MeasurementQualityValid       MeasurementQuality = "valid"
 )
 
 // Valid indicates whether the value is a known member of the MeasurementQuality enum.
 func (e MeasurementQuality) Valid() bool {
 	switch e {
-	case Stale:
+	case MeasurementQualityStale:
 		return true
-	case Unavailable:
+	case MeasurementQualityUnavailable:
 		return true
-	case Valid:
+	case MeasurementQualityValid:
 		return true
 	default:
 		return false
@@ -188,13 +218,13 @@ func (e ReadinessCheckSource) Valid() bool {
 
 // Defines values for StreamReadyType.
 const (
-	Ready StreamReadyType = "ready"
+	StreamReadyTypeReady StreamReadyType = "ready"
 )
 
 // Valid indicates whether the value is a known member of the StreamReadyType enum.
 func (e StreamReadyType) Valid() bool {
 	switch e {
-	case Ready:
+	case StreamReadyTypeReady:
 		return true
 	default:
 		return false
@@ -381,6 +411,20 @@ type CreateTestCommand struct {
 	ExpectedRevision int64              `json:"expectedRevision"`
 	Parameters       TestParameters     `json:"parameters"`
 }
+
+// DesktopStatus defines model for DesktopStatus.
+type DesktopStatus struct {
+	// ConnectionRevision Ревизия проверки связи; обновление одной диагностики её не меняет.
+	ConnectionRevision  int64               `json:"connectionRevision"`
+	DiagnosticsDegraded bool                `json:"diagnosticsDegraded"`
+	Handshake           *Handshake          `json:"handshake"`
+	HostRunId           openapi_types.UUID  `json:"hostRunId"`
+	Revision            int64               `json:"revision"`
+	Status              DesktopStatusStatus `json:"status"`
+}
+
+// DesktopStatusStatus defines model for DesktopStatus.Status.
+type DesktopStatusStatus string
 
 // Event defines model for Event.
 type Event struct {

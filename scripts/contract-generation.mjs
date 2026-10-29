@@ -32,7 +32,7 @@ const wails = process.platform === 'win32' ? 'wails3.exe' : 'wails3';
 if (run(wails, ['version']).trim() !== 'v3.0.0') throw new Error('Wails CLI 3.0.0 is required');
 run(go, ['tool', 'oapi-codegen', '-config', 'api/oapi-codegen.yaml', '-o', goModel, 'api/core.yaml']);
 const generationLog = run(wails, ['generate', 'bindings', '-ts', '-i', '-time-type', 'string', '-d', wailsOutput, './internal/desktop']);
-if (!/1 Service, 14 Methods,/.test(generationLog) || !/2 Events/.test(generationLog) || /\bWARN(?:ING)?\b/i.test(generationLog)) {
+if (!/2 Services, 16 Methods,/.test(generationLog) || !/3 Events/.test(generationLog) || /\bWARN(?:ING)?\b/i.test(generationLog)) {
   throw new Error(`Unexpected Wails generation result: ${generationLog}`);
 }
 
@@ -52,7 +52,8 @@ for (const path of [expectedService, expectedEvent, expectedModels]) {
 }
 const eventTypes = readFileSync(expectedEvent, 'utf8');
 if (!eventTypes.includes('"core:event": contract$0.Event') ||
-    !eventTypes.includes('"core:connection": contract$0.ConnectionState')) {
+    !eventTypes.includes('"core:connection": contract$0.ConnectionState') ||
+    !eventTypes.includes('"desktop:status": contract$0.DesktopStatus')) {
   throw new Error('Generated event types are missing');
 }
 const require = createRequire(import.meta.url);

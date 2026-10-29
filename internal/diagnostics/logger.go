@@ -26,14 +26,18 @@ const (
 type Event string
 
 const (
-	ProcessStarted   Event = "process.started"
-	ProcessStopped   Event = "process.stopped"
-	ConnectionFailed Event = "connection.failed"
-	CommandAccepted  Event = "command.accepted"
-	CommandRejected  Event = "command.rejected"
-	CommandCompleted Event = "command.completed"
-	frameworkMessage Event = "framework.message"
-	libraryMessage   Event = "library.message"
+	ProcessStarted      Event = "process.started"
+	ProcessStopped      Event = "process.stopped"
+	CoreStopped         Event = "core.stopped"
+	CoreCleanupFailed   Event = "core.cleanup_failed"
+	ConnectionFailed    Event = "connection.failed"
+	ConnectionConfirmed Event = "connection.confirmed"
+	DiagnosticDegraded  Event = "diagnostics.degraded"
+	CommandAccepted     Event = "command.accepted"
+	CommandRejected     Event = "command.rejected"
+	CommandCompleted    Event = "command.completed"
+	frameworkMessage    Event = "framework.message"
+	libraryMessage      Event = "library.message"
 )
 
 type eventSpec struct {
@@ -42,14 +46,18 @@ type eventSpec struct {
 }
 
 var eventCatalog = map[Event]eventSpec{
-	ProcessStarted:   {slog.LevelInfo, "Process started"},
-	ProcessStopped:   {slog.LevelInfo, "Process stopped"},
-	ConnectionFailed: {slog.LevelError, "Core connection failed"},
-	CommandAccepted:  {slog.LevelInfo, "Command accepted"},
-	CommandRejected:  {slog.LevelInfo, "Command rejected"},
-	CommandCompleted: {slog.LevelInfo, "Command completed"},
-	frameworkMessage: {slog.LevelInfo, "Framework diagnostic"},
-	libraryMessage:   {slog.LevelInfo, "Library diagnostic"},
+	ProcessStarted:      {slog.LevelInfo, "Process started"},
+	ProcessStopped:      {slog.LevelInfo, "Process stopped"},
+	CoreStopped:         {slog.LevelInfo, "Core stopped"},
+	CoreCleanupFailed:   {slog.LevelError, "Core cleanup not confirmed"},
+	ConnectionFailed:    {slog.LevelError, "Core connection failed"},
+	ConnectionConfirmed: {slog.LevelInfo, "Core identity confirmed"},
+	DiagnosticDegraded:  {slog.LevelWarn, "Diagnostic writer degraded"},
+	CommandAccepted:     {slog.LevelInfo, "Command accepted"},
+	CommandRejected:     {slog.LevelInfo, "Command rejected"},
+	CommandCompleted:    {slog.LevelInfo, "Command completed"},
+	frameworkMessage:    {slog.LevelInfo, "Framework diagnostic"},
+	libraryMessage:      {slog.LevelInfo, "Library diagnostic"},
 }
 
 // Component identifies the trusted source of a diagnostic record.
@@ -92,6 +100,7 @@ type Logger struct {
 	queue        chan entry
 	done         chan struct{}
 	fallbackDone chan struct{}
+	degraded     chan struct{}
 	maxBytes     int64
 	appVersion   string
 	profileID    string
@@ -154,7 +163,7 @@ func newLogger(role Role, runID uuid.UUID, writer io.WriteCloser, fallback io.Wr
 	}
 	logger := &Logger{
 		role: role, runID: runID, writer: writer, maxBytes: config.MaxBytes, appVersion: config.AppVersion, profileID: config.ProfileID,
-		queue: make(chan entry, config.QueueSize), done: make(chan struct{}), fallbackDone: make(chan struct{}), fallback: make(chan struct{}, 1),
+		queue: make(chan entry, config.QueueSize), done: make(chan struct{}), fallbackDone: make(chan struct{}), degraded: make(chan struct{}), fallback: make(chan struct{}, 1),
 	}
 	go func() {
 		defer close(logger.fallbackDone)
@@ -373,6 +382,9 @@ func (l *Logger) writeLoop() {
 func (l *Logger) failWriter() {
 	l.mu.Lock()
 	l.status.WriterErrors++
+	if !l.status.Degraded {
+		close(l.degraded)
+	}
 	l.status.Degraded = true
 	l.signalFallbackLocked()
 	l.mu.Unlock()
@@ -385,6 +397,9 @@ func (l *Logger) drop(level slog.Level) {
 }
 
 func (l *Logger) dropLocked(level slog.Level) {
+	if !l.status.Degraded {
+		close(l.degraded)
+	}
 	l.status.Degraded = true
 	switch {
 	case level >= slog.LevelError:
@@ -409,6 +424,9 @@ func (l *Logger) Status() Status {
 	defer l.mu.Unlock()
 	return l.status
 }
+
+// Degraded closes once on the first writer failure or dropped record.
+func (l *Logger) Degraded() <-chan struct{} { return l.degraded }
 
 // Close waits at most two seconds or until ctx is done; blocked I/O may outlive it.
 func (l *Logger) Close(ctx context.Context) error {

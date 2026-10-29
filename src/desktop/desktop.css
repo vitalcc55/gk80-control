@@ -1,0 +1,60 @@
+.desktop-shell {
+  min-height: 100vh;
+  background: var(--canvas);
+}
+.desktop-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  min-height: 64px;
+  padding: 0 40px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+.desktop-header strong {
+  font-size: 20px;
+}
+.desktop-header span {
+  color: var(--muted);
+}
+.desktop-card {
+  max-width: 760px;
+  margin: 72px auto;
+  padding: 36px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+}
+.desktop-card h1 {
+  margin: 0 0 24px;
+  font-size: var(--font-title);
+}
+.desktop-card button {
+  padding: 11px 18px;
+  border: 0;
+  border-radius: var(--radius-control);
+  color: var(--primary-foreground);
+  background: var(--action);
+  font-weight: 600;
+}
+.desktop-card button:not(:disabled):hover {
+  background: var(--action-hover);
+}
+.desktop-eyebrow {
+  color: var(--muted);
+  font-size: var(--font-label);
+}
+.desktop-status {
+  padding: 16px;
+  border: 1px solid var(--status-border);
+  border-radius: var(--radius-control);
+  background: var(--status-surface);
+  font-weight: 600;
+}
+.desktop-warning {
+  color: var(--danger);
+}
+.desktop-note {
+  margin: 24px 0;
+  color: var(--muted);
+}

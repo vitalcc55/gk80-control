@@ -106,6 +106,41 @@ export interface CreateTestCommand {
 }
 
 /**
+ * DesktopStatus defines model for DesktopStatus.
+ */
+export interface DesktopStatus {
+    /**
+     * ConnectionRevision Ревизия проверки связи; обновление одной диагностики её не меняет.
+     */
+    "connectionRevision": number;
+    "diagnosticsDegraded": boolean;
+    "handshake": Handshake | null;
+    "hostRunId": types$0.UUID;
+    "revision": number;
+    "status": DesktopStatusStatus;
+}
+
+/**
+ * DesktopStatusStatus defines model for DesktopStatus.Status.
+ */
+export enum DesktopStatusStatus {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    /**
+     * Defines values for DesktopStatusStatus.
+     */
+    DesktopStatusStatusClosing = "closing",
+    DesktopStatusStatusExited = "exited",
+    DesktopStatusStatusProfileInUse = "profileInUse",
+    DesktopStatusStatusReady = "ready",
+    DesktopStatusStatusStarting = "starting",
+    DesktopStatusStatusUnavailable = "unavailable",
+};
+
+/**
  * Event defines model for Event.
  */
 export interface Event {
@@ -200,9 +235,9 @@ export enum MeasurementQuality {
     /**
      * Defines values for MeasurementQuality.
      */
-    Stale = "stale",
-    Unavailable = "unavailable",
-    Valid = "valid",
+    MeasurementQualityStale = "stale",
+    MeasurementQualityUnavailable = "unavailable",
+    MeasurementQualityValid = "valid",
 };
 
 /**

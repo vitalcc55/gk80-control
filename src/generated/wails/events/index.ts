@@ -17,3 +17,8 @@ export const CoreConnection = "core:connection";
  * Name of the custom event "core:event".
  */
 export const CoreEvent = "core:event";
+
+/**
+ * Name of the custom event "desktop:status".
+ */
+export const DesktopStatus = "desktop:status";

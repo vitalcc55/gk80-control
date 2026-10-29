@@ -331,13 +331,46 @@ components:
         hostRunId: { type: string, format: uuid }
         revision: { type: integer, format: int64, minimum: 0 }
         status: { type: string, enum: [disconnected, recovering, live] }
+    DesktopStatus:
+      type: object
+      additionalProperties: false
+      required: [hostRunId, revision, connectionRevision, status, handshake, diagnosticsDegraded]
+      allOf:
+        - if:
+            properties: { status: { const: ready } }
+          then:
+            properties:
+              handshake:
+                allOf:
+                  - $ref: "#/components/schemas/Handshake"
+                  - properties: { apiVersion: { const: v1 } }
+          else:
+            properties: { handshake: { type: "null" } }
+      properties:
+        hostRunId: { type: string, format: uuid }
+        revision: { type: integer, format: int64, minimum: 0 }
+        connectionRevision:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Ревизия проверки связи; обновление одной диагностики её не меняет.
+        status:
+          { type: string, enum: [starting, ready, profileInUse, unavailable, exited, closing] }
+        handshake:
+          oneOf:
+            - $ref: "#/components/schemas/Handshake"
+            - type: "null"
+        diagnosticsDegraded: { type: boolean }
     Handshake:
       type: object
       additionalProperties: false
       required: [apiVersion, backendRunId, demo]
       properties:
         apiVersion: { type: string }
-        backendRunId: { type: string, format: uuid }
+        backendRunId:
+          type: string
+          format: uuid
+          not: { const: "00000000-0000-0000-0000-000000000000" }
         demo: { type: boolean, const: true, x-go-type: bool }
     TestParameters:
       type: object

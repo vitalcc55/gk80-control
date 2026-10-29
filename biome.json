@@ -7,6 +7,7 @@
       "!!scripts",
       "!!src/generated",
       "!!dist",
+      "!!dist-desktop",
       "!!node_modules",
       "!!.tmp",
       "!!.cache",

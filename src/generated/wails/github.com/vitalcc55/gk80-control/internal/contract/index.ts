@@ -4,6 +4,7 @@
 export {
     CommandStatusStatus,
     ConnectionStateStatus,
+    DesktopStatusStatus,
     EventType,
     MeasurementChannel,
     MeasurementQuality,
@@ -25,6 +26,7 @@ export type {
     ConfirmActionCommand,
     ConnectionState,
     CreateTestCommand,
+    DesktopStatus,
     Event,
     Handshake,
     Measurement,

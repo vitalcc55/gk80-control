@@ -152,6 +152,11 @@ func TestShortWriteIsDetected(t *testing.T) {
 	if status := logger.Status(); !status.Degraded || status.WriterErrors == 0 || status.DroppedError != 1 {
 		t.Fatalf("short write not detected: %+v", status)
 	}
+	select {
+	case <-logger.Degraded():
+	default:
+		t.Fatal("degraded notification not delivered")
+	}
 }
 
 func TestShortWriteLeavesEarlierCompleteRecordReadable(t *testing.T) {

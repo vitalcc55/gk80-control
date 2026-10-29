@@ -14,6 +14,7 @@ declare module "@wailsio/runtime" {
         interface CustomEvents {
             "core:connection": contract$0.ConnectionState;
             "core:event": contract$0.Event;
+            "desktop:status": contract$0.DesktopStatus;
         }
     }
 }

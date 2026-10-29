@@ -55,14 +55,14 @@ func TestMeasurementContractPreservesNullAndRejectsInvalidData(t *testing.T) {
 	measurement := Measurement{
 		Sequence: 1, Channel: Dd1, Quantity: MeasurementQuantityPressure, Unit: Pa,
 		ObservedAt: time.Date(2026, 10, 29, 12, 0, 1, 0, time.UTC),
-		Quality:    Unavailable, Source: MeasurementSourceSimulator,
+		Quality:    MeasurementQualityUnavailable, Source: MeasurementSourceSimulator,
 	}
 	validateJSON(t, schema, measurement, true)
 	zero := 0.0
 	measuredAt := "2026-10-29T12:00:00Z"
 	measurement.Value = &zero
 	measurement.MeasuredAt = &measuredAt
-	measurement.Quality = Valid
+	measurement.Quality = MeasurementQualityValid
 	validateJSON(t, schema, measurement, true)
 	measurement.Sequence = 0
 	validateJSON(t, schema, measurement, false)
@@ -86,7 +86,7 @@ func TestEventRequiresPayloadForItsType(t *testing.T) {
 	measurement := Measurement{
 		Sequence: 1, Channel: Dd1, Quantity: MeasurementQuantityPressure, Unit: Pa,
 		ObservedAt: time.Date(2026, 10, 29, 12, 0, 1, 0, time.UTC),
-		Quality:    Unavailable, Source: MeasurementSourceSimulator,
+		Quality:    MeasurementQualityUnavailable, Source: MeasurementSourceSimulator,
 	}
 	event := Event{BackendRunId: runID, Sequence: 1, Revision: 1, Type: EventTypeMeasurement, TestId: &testID, Measurement: &measurement}
 	validateJSON(t, schema, event, true)
@@ -131,4 +131,21 @@ func TestPageCursorCannotPointToBeginning(t *testing.T) {
 			validateJSON(t, schema, map[string]any{"items": []any{}, "nextAfter": 1}, false)
 		})
 	}
+}
+
+func TestDesktopReadyRequiresConfirmedDemoHandshake(t *testing.T) {
+	schema := schemaFor(t, "DesktopStatus")
+	status := DesktopStatus{HostRunId: uuid.New(), Revision: 1, Status: DesktopStatusStatusStarting}
+	validateJSON(t, schema, status, true)
+	status.Status = DesktopStatusStatusReady
+	validateJSON(t, schema, status, false)
+	status.Handshake = &Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), Demo: true}
+	validateJSON(t, schema, status, true)
+	status.Handshake.BackendRunId = uuid.Nil
+	validateJSON(t, schema, status, false)
+	status.Handshake.BackendRunId = uuid.New()
+	status.Handshake.ApiVersion = "v2"
+	validateJSON(t, schema, status, false)
+	status.Status = DesktopStatusStatusExited
+	validateJSON(t, schema, status, false)
 }
