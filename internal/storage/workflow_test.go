@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -281,6 +282,54 @@ func TestRejectedActionIsAuditedOnce(t *testing.T) {
 	events, err := store.Audit(ctx, id, 0, 100)
 	if err != nil || len(events) != 3 || events[2].Outcome != "rejected" || events[2].CommandId == nil || *events[2].CommandId != command.CommandId || events[2].ActionId == nil || *events[2].ActionId != wrongID || events[2].Reason == nil || *events[2].Reason != "action_mismatch" {
 		t.Fatalf("rejection audit: %+v %v", events, err)
+	}
+}
+
+func TestStructurallyValidLegacyRejectionCanBeReadWithoutWriting(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	created, err := store.Create(ctx, createCommand())
+	if err != nil || created.TestId == nil {
+		t.Fatalf("create: %v", err)
+	}
+	id := *created.TestId
+	command := contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: 1, ValveClosed: false, ConnectionConfirmed: true}
+	action := contract.PendingAction{ActionId: uuid.New(), TestId: id, Instruction: "Подтверждение"}
+	if _, err := store.Start(ctx, id, command, action); !errors.Is(err, ErrInvalidCommand) {
+		t.Fatalf("legacy rejection: %v", err)
+	}
+	body, err := json.Marshal(command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validator, err := contract.NewInputValidator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed contract.StartTestCommand
+	input, err := validator.Inspect("StartTestCommand", body, &parsed)
+	if err != nil || input.Valid {
+		t.Fatalf("inspect legacy rejection: %+v %v", input, err)
+	}
+	before, err := store.Audit(ctx, id, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := store.LookupStart(ctx, id, parsed)
+	if !errors.Is(err, ErrInvalidCommand) || status.Status != "rejected" {
+		t.Fatalf("lookup: %+v %v", status, err)
+	}
+	parsed.CommandId = uuid.New()
+	if _, err := store.LookupStart(ctx, id, parsed); !errors.Is(err, ErrCommandNotFound) {
+		t.Fatalf("unknown lookup: %v", err)
+	}
+	after, err := store.Audit(ctx, id, 0, 100)
+	if err != nil || len(after) != len(before) {
+		t.Fatalf("lookup changed audit: %d %d %v", len(before), len(after), err)
 	}
 }
 

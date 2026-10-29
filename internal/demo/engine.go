@@ -16,6 +16,8 @@ import (
 type Repository interface {
 	Create(context.Context, contract.CreateTestCommand) (contract.CommandStatus, error)
 	LookupCreate(context.Context, contract.CreateTestCommand) (contract.CommandStatus, error)
+	CreateExact(context.Context, contract.CreateTestCommand, []byte) (contract.CommandStatus, error)
+	LookupCreateExact(context.Context, contract.CreateTestCommand, []byte) (contract.CommandStatus, error)
 	Revision(context.Context) (int64, error)
 	Test(context.Context, uuid.UUID) (contract.TestRecord, error)
 	Start(context.Context, uuid.UUID, contract.StartTestCommand, contract.PendingAction) (contract.CommandStatus, error)
@@ -64,6 +66,11 @@ type run struct {
 	cancel         context.CancelFunc
 }
 
+type pendingCreate struct {
+	command  contract.CreateTestCommand
+	identity []byte
+}
+
 type Engine struct {
 	mu               sync.Mutex
 	ordinary         chan struct{}
@@ -71,7 +78,7 @@ type Engine struct {
 	equipment        Equipment
 	runID            uuid.UUID
 	revision         int64
-	unresolvedCreate *contract.CreateTestCommand
+	unresolvedCreate *pendingCreate
 	active           *run
 	changed          chan struct{}
 }
@@ -158,6 +165,18 @@ func copyCommand(status contract.CommandStatus) contract.CommandStatus {
 }
 
 func (e *Engine) Create(ctx context.Context, command contract.CreateTestCommand) (contract.CommandStatus, error) {
+	return e.create(ctx, command, nil)
+}
+
+// CreateExact retains the identity of the validated JSON received by core.
+func (e *Engine) CreateExact(ctx context.Context, command contract.CreateTestCommand, identity []byte) (contract.CommandStatus, error) {
+	if len(identity) == 0 {
+		return contract.CommandStatus{}, storage.ErrInvalidCommand
+	}
+	return e.create(ctx, command, append([]byte(nil), identity...))
+}
+
+func (e *Engine) create(ctx context.Context, command contract.CreateTestCommand, identity []byte) (contract.CommandStatus, error) {
 	if err := e.acquire(ctx); err != nil {
 		return contract.CommandStatus{}, err
 	}
@@ -168,9 +187,15 @@ func (e *Engine) Create(ctx context.Context, command contract.CreateTestCommand)
 	if err := e.refreshCreated(ctx); err != nil {
 		return contract.CommandStatus{}, err
 	}
-	known, lookupErr := e.store.LookupCreate(ctx, command)
+	var known contract.CommandStatus
+	var lookupErr error
+	if identity == nil {
+		known, lookupErr = e.store.LookupCreate(ctx, command)
+	} else {
+		known, lookupErr = e.store.LookupCreateExact(ctx, command, identity)
+	}
 	if !errors.Is(lookupErr, storage.ErrCommandNotFound) {
-		e.abortOnStorageError(lookupErr)
+		e.abortOnLookupError(ctx, lookupErr)
 		return known, lookupErr
 	}
 	e.mu.Lock()
@@ -182,10 +207,16 @@ func (e *Engine) Create(ctx context.Context, command contract.CreateTestCommand)
 	commandCtx, cancelCommand := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancelCommand()
 	e.mu.Lock()
-	pending := command
+	pending := pendingCreate{command: command, identity: identity}
 	e.unresolvedCreate = &pending
 	e.mu.Unlock()
-	result, err := e.store.Create(commandCtx, command)
+	var result contract.CommandStatus
+	var err error
+	if identity == nil {
+		result, err = e.store.Create(commandCtx, command)
+	} else {
+		result, err = e.store.CreateExact(commandCtx, command, identity)
+	}
 	if err != nil || result.TestId == nil {
 		if definiteDecision(err) {
 			e.mu.Lock()
@@ -284,7 +315,13 @@ func (e *Engine) refreshCreated(ctx context.Context) error {
 	if pending == nil {
 		return nil
 	}
-	status, err := e.store.LookupCreate(ctx, *pending)
+	var status contract.CommandStatus
+	var err error
+	if pending.identity == nil {
+		status, err = e.store.LookupCreate(ctx, pending.command)
+	} else {
+		status, err = e.store.LookupCreateExact(ctx, pending.command, pending.identity)
+	}
 	if errors.Is(err, storage.ErrCommandNotFound) || definiteDecision(err) {
 		e.mu.Lock()
 		e.unresolvedCreate = nil
@@ -340,7 +377,7 @@ func (e *Engine) Start(ctx context.Context, testID uuid.UUID, command contract.S
 	defer func() { <-e.ordinary }()
 	previous, lookupErr := e.store.LookupStart(ctx, testID, command)
 	if !errors.Is(lookupErr, storage.ErrCommandNotFound) {
-		e.abortOnStorageError(lookupErr)
+		e.abortOnLookupError(ctx, lookupErr)
 		return previous, lookupErr
 	}
 	e.mu.Lock()
@@ -403,7 +440,7 @@ func (e *Engine) Confirm(ctx context.Context, testID, actionID uuid.UUID, comman
 	defer func() { <-e.ordinary }()
 	previous, lookupErr := e.store.LookupConfirm(ctx, testID, actionID, command)
 	if !errors.Is(lookupErr, storage.ErrCommandNotFound) {
-		e.abortOnStorageError(lookupErr)
+		e.abortOnLookupError(ctx, lookupErr)
 		return previous, lookupErr
 	}
 	e.mu.Lock()
@@ -499,6 +536,13 @@ func (e *Engine) abortOnStorageError(err error) {
 	if current != nil {
 		e.requestStop(current, "storage_error")
 	}
+}
+
+func (e *Engine) abortOnLookupError(ctx context.Context, err error) {
+	if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+		return
+	}
+	e.abortOnStorageError(err)
 }
 
 // Stop marks acceptance without waiting for SQLite or the ordinary command queue.

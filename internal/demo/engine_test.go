@@ -3,6 +3,7 @@ package demo
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -141,6 +142,37 @@ type stalledStart struct {
 	release chan struct{}
 }
 
+type timedOutLookup struct{ *storage.Store }
+
+func (*timedOutLookup) LookupStart(ctx context.Context, _ uuid.UUID, _ contract.StartTestCommand) (contract.CommandStatus, error) {
+	<-ctx.Done()
+	return contract.CommandStatus{}, ctx.Err()
+}
+
+func TestClientLookupDeadlineDoesNotStopSimulator(t *testing.T) {
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	simulator := &countedSimulator{}
+	engine := newTestEngine(t, &timedOutLookup{Store: store}, simulator, uuid.New())
+	created, err := engine.Create(context.Background(), command(1))
+	if err != nil || created.TestId == nil {
+		t.Fatalf("create: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err = engine.Start(ctx, *created.TestId, contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: 1, ValveClosed: true, ConnectionConfirmed: true})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("lookup: %v", err)
+	}
+	state := engine.State()
+	if state.Record == nil || state.Record.Stage != "preparing" || state.Stop != nil || simulator.stops.Load() != 0 {
+		t.Fatalf("deadline changed run: %+v", state)
+	}
+}
+
 type canceledResponse struct {
 	*storage.Store
 	cancel context.CancelFunc
@@ -195,6 +227,52 @@ type failedCreateRead struct {
 }
 
 type lostCreateResponse struct{ *storage.Store }
+
+type lostExactCreateResponse struct{ *storage.Store }
+
+func (s *lostExactCreateResponse) CreateExact(ctx context.Context, command contract.CreateTestCommand, identity []byte) (contract.CommandStatus, error) {
+	_, err := s.Store.CreateExact(ctx, command, identity)
+	if err != nil {
+		return contract.CommandStatus{}, err
+	}
+	return contract.CommandStatus{}, context.DeadlineExceeded
+}
+
+func TestRefreshPreservesExactCreateIdentityAfterLostResponse(t *testing.T) {
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	engine := newTestEngine(t, &lostExactCreateResponse{Store: store}, NewSimulator(), uuid.New())
+	validator, err := contract.NewInputValidator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`
+	var command contract.CreateTestCommand
+	input, err := validator.Inspect("CreateTestCommand", []byte(body), &command)
+	if err != nil || !input.Valid {
+		t.Fatalf("input: %v", err)
+	}
+	if _, err := engine.CreateExact(context.Background(), command, input.Identity); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("create: %v", err)
+	}
+	if err := engine.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if state := engine.State(); state.Record == nil || state.Record.Stage != "preparing" {
+		t.Fatalf("refresh: %+v", state)
+	}
+	var other contract.CreateTestCommand
+	changed, err := validator.Inspect("CreateTestCommand", []byte(strings.Replace(body, `1.0000000000000001`, `1`, 1)), &other)
+	if err != nil || command != other {
+		t.Fatalf("changed input: %v", err)
+	}
+	if _, err := engine.CreateExact(context.Background(), other, changed.Identity); !errors.Is(err, storage.ErrCommandConflict) {
+		t.Fatalf("conflict: %v", err)
+	}
+}
 
 func (s *lostCreateResponse) Create(ctx context.Context, command contract.CreateTestCommand) (contract.CommandStatus, error) {
 	_, err := s.Store.Create(ctx, command)

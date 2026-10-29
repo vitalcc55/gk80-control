@@ -9,9 +9,11 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -32,6 +34,8 @@ var (
 	ErrCommandNotFound    = errors.New("command not found")
 	ErrNotReady           = errors.New("simulator not ready")
 )
+
+var inputValidator = sync.OnceValues(contract.NewInputValidator)
 
 const operatorID = "demo-operator"
 
@@ -192,11 +196,36 @@ func (s *Store) LookupCreate(ctx context.Context, command contract.CreateTestCom
 	if err != nil {
 		return contract.CommandStatus{}, ErrInvalidCommand
 	}
-	status, err := s.lookup(ctx, command.CommandId, "create", request)
+	return s.lookupCreateRequest(ctx, command.CommandId, request)
+}
+
+func (s *Store) lookupCreateRequest(ctx context.Context, id uuid.UUID, request []byte) (contract.CommandStatus, error) {
+	status, err := s.lookup(ctx, id, "create", request)
 	if errors.Is(err, sql.ErrNoRows) {
 		return contract.CommandStatus{}, ErrCommandNotFound
 	}
 	return status, err
+}
+
+// LookupCreateExact resolves a structurally valid original request without executing it.
+func (s *Store) LookupCreateExact(ctx context.Context, command contract.CreateTestCommand, identity []byte) (contract.CommandStatus, error) {
+	if _, err := validateCreateIdentity(command, identity); err != nil {
+		return contract.CommandStatus{}, err
+	}
+	return s.lookupCreateRequest(ctx, command.CommandId, identity)
+}
+
+func validateCreateIdentity(command contract.CreateTestCommand, identity []byte) (bool, error) {
+	validator, err := inputValidator()
+	if err != nil {
+		return false, err
+	}
+	var parsed contract.CreateTestCommand
+	input, err := validator.InspectCanonical("CreateTestCommand", identity, &parsed)
+	if err != nil || parsed != command || !bytes.Equal(identity, input.Identity) {
+		return false, ErrInvalidCommand
+	}
+	return input.Valid, nil
 }
 
 // Create commits the immutable parameters, command, reserved stop ID and audit together.
@@ -205,6 +234,25 @@ func (s *Store) Create(ctx context.Context, command contract.CreateTestCommand) 
 		return contract.CommandStatus{}, ErrInvalidCommand
 	}
 	request, marshalErr := json.Marshal(command)
+	return s.createRequest(ctx, command, request, marshalErr)
+}
+
+// CreateExact stores the canonical original request atomically with the command.
+func (s *Store) CreateExact(ctx context.Context, command contract.CreateTestCommand, identity []byte) (contract.CommandStatus, error) {
+	valid, err := validateCreateIdentity(command, identity)
+	if err != nil {
+		return contract.CommandStatus{}, err
+	}
+	if !valid {
+		return s.createRequest(ctx, command, identity, ErrInvalidCommand)
+	}
+	return s.createRequest(ctx, command, identity, nil)
+}
+
+func (s *Store) createRequest(ctx context.Context, command contract.CreateTestCommand, request []byte, marshalErr error) (contract.CommandStatus, error) {
+	if command.CommandId == uuid.Nil {
+		return contract.CommandStatus{}, ErrInvalidCommand
+	}
 	if err := s.lockWrite(ctx); err != nil {
 		return contract.CommandStatus{}, err
 	}
@@ -260,8 +308,27 @@ func (s *Store) lookup(ctx context.Context, id uuid.UUID, expectedOperation stri
 	if err != nil {
 		return contract.CommandStatus{}, err
 	}
-	if operation != expectedOperation || !bytes.Equal(stored, request) {
+	if operation != expectedOperation {
 		return contract.CommandStatus{}, ErrCommandConflict
+	}
+	if !bytes.Equal(stored, request) {
+		if expectedOperation != "create" {
+			return contract.CommandStatus{}, ErrCommandConflict
+		}
+		storedIdentity, err := contract.CanonicalJSON(stored)
+		if errors.Is(err, contract.ErrIdentityTooLarge) {
+			return contract.CommandStatus{}, ErrCommandConflict
+		}
+		if err != nil {
+			return contract.CommandStatus{}, errors.New("invalid stored create request")
+		}
+		requestIdentity, err := contract.CanonicalJSON(request)
+		if err != nil {
+			return contract.CommandStatus{}, ErrInvalidCommand
+		}
+		if !bytes.Equal(storedIdentity, requestIdentity) {
+			return contract.CommandStatus{}, ErrCommandConflict
+		}
 	}
 	status := contract.CommandStatus{CommandId: id, Status: contract.CommandStatusStatus(state)}
 	if testID.Valid {
@@ -310,7 +377,7 @@ func reject(ctx context.Context, tx *sql.Tx, command contract.CreateTestCommand,
 }
 
 func (s *Store) create(ctx context.Context, tx *sql.Tx, command contract.CreateTestCommand, request []byte, writeAttempted *bool) (contract.CommandStatus, error) {
-	if !valid(command) {
+	if !valid(command) || !validDuration(request) {
 		return reject(ctx, tx, command, request, "invalid_command", ErrInvalidCommand, writeAttempted)
 	}
 	var revision int64
@@ -363,6 +430,19 @@ func (s *Store) create(ctx context.Context, tx *sql.Tx, command contract.CreateT
 		return contract.CommandStatus{}, err
 	}
 	return contract.CommandStatus{CommandId: command.CommandId, Status: "completed", TestId: &id}, nil
+}
+
+func validDuration(request []byte) bool {
+	var body struct {
+		Parameters struct {
+			MeasurementSeconds json.Number `json:"measurementSeconds"`
+		} `json:"parameters"`
+	}
+	if err := json.Unmarshal(request, &body); err != nil {
+		return false
+	}
+	value, ok := new(big.Rat).SetString(body.Parameters.MeasurementSeconds.String())
+	return ok && value.Sign() > 0 && value.Cmp(big.NewRat(3600, 1)) <= 0
 }
 
 func (s *Store) Revision(ctx context.Context) (int64, error) {
