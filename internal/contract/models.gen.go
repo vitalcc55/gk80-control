@@ -550,7 +550,8 @@ type StreamReadyType string
 
 // TestList defines model for TestList.
 type TestList struct {
-	Items []TestRecord `json:"items"`
+	Items     []TestRecord        `json:"items"`
+	NextAfter *openapi_types.UUID `json:"nextAfter"`
 }
 
 // TestParameters defines model for TestParameters.
@@ -612,6 +613,13 @@ type CommandResult = CommandStatus
 
 // Error defines model for Error.
 type Error = ApiError
+
+// ListTestsParams defines parameters for ListTests.
+type ListTestsParams struct {
+	// After Последний прочитанный UUID; порядок по UUID, не по времени.
+	After *openapi_types.UUID `form:"after,omitempty" json:"after,omitempty"`
+	Limit *int                `form:"limit,omitempty" json:"limit,omitempty"`
+}
 
 // ListAuditParams defines parameters for ListAudit.
 type ListAuditParams struct {

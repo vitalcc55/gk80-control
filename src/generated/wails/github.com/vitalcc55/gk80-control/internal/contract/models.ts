@@ -367,6 +367,7 @@ export interface StopTestCommand {
  */
 export interface TestList {
     "items": TestRecord[] | null;
+    "nextAfter": types$0.UUID | null;
 }
 
 /**

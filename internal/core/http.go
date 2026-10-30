@@ -31,6 +31,7 @@ type coreHTTP struct {
 	feed           *eventFeed
 	engine         *demo.Engine
 	store          commandReader
+	history        historyReader
 	logger         *slog.Logger
 	pendingMu      sync.Mutex
 	pending        map[*commandAttempt]struct{}
@@ -124,13 +125,23 @@ func (h *coreHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, snapshot)
 	case "/v1/tests":
-		h.createTest(w, r)
+		switch r.Method {
+		case http.MethodGet:
+			h.historyList(w, r)
+		case http.MethodPost:
+			h.createTest(w, r)
+		default:
+			w.Header().Set("Allow", "GET, POST")
+			writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed")
+		}
 	default:
 		if strings.HasPrefix(r.URL.Path, "/v1/commands/") {
 			h.commandStatus(w, r)
 		} else if strings.HasPrefix(r.URL.Path, "/v1/tests/") {
 			if strings.HasSuffix(r.URL.Path, "/readiness") {
 				h.readiness(w, r)
+			} else if isHistoryPath(r.URL.Path) {
+				h.historyTest(w, r)
 			} else {
 				h.testAction(w, r)
 			}
@@ -138,6 +149,11 @@ func (h *coreHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 		}
 	}
+}
+
+func isHistoryPath(path string) bool {
+	parts := strings.Split(strings.TrimPrefix(path, "/v1/tests/"), "/")
+	return len(parts) == 1 || (len(parts) == 2 && (parts[1] == "measurements" || parts[1] == "audit"))
 }
 
 func (h *coreHTTP) lease(w http.ResponseWriter, r *http.Request) {

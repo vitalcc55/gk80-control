@@ -85,6 +85,19 @@ paths:
   /v1/tests:
     get:
       operationId: listTests
+      parameters:
+        - name: after
+          in: query
+          required: false
+          description: Последний прочитанный UUID; порядок по UUID, не по времени.
+          schema:
+            type: string
+            format: uuid
+            not: { const: "00000000-0000-0000-0000-000000000000" }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
       responses:
         "200":
           description: Список сохранённых испытаний.
@@ -600,11 +613,13 @@ components:
     TestList:
       type: object
       additionalProperties: false
-      required: [items]
+      required: [items, nextAfter]
       properties:
         items:
           type: array
+          maxItems: 500
           items: { $ref: "#/components/schemas/TestRecord" }
+        nextAfter: { type: [string, "null"], format: uuid }
     Snapshot:
       type: object
       additionalProperties: false

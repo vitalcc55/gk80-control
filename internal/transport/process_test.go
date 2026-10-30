@@ -1090,6 +1090,137 @@ func TestCoreProcessRunsSimulatorAndPersistsStop(t *testing.T) {
 	if stopAccepted != 1 || stopCompleted != 1 {
 		t.Fatalf("stop audit: %+v", audit)
 	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, _, err := Start(ctx, buildCore(t), profileDir, "test", "0.1.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close(ctx) })
+	var newLease contract.UiLease
+	if status := processAPI(t, reopened, "POST", "/v1/ui-lease", fmt.Sprintf(`{"clientId":%q}`, uuid.NewString()), "", &newLease); status != http.StatusOK {
+		t.Fatalf("reopened lease: %d", status)
+	}
+	newToken := newLease.LeaseId.String()
+	var raw json.RawMessage
+	var list contract.TestList
+	if status := processAPI(t, reopened, "GET", "/v1/tests?limit=1", "", newToken, &raw); status != http.StatusOK || json.Unmarshal(raw, &list) != nil || len(list.Items) != 1 || list.Items[0].TestId != id || list.NextAfter != nil {
+		t.Fatalf("reopened list: %d %+v", status, list)
+	}
+	validateHistorySchema(t, "TestList", raw)
+	var saved contract.TestRecord
+	if status := processAPI(t, reopened, "GET", "/v1/tests/"+id.String(), "", newToken, &raw); status != http.StatusOK || json.Unmarshal(raw, &saved) != nil {
+		t.Fatalf("reopened record: %d", status)
+	}
+	validateHistorySchema(t, "TestRecord", raw)
+	before, _ := json.Marshal(record)
+	after, _ := json.Marshal(saved)
+	if string(before) != string(after) {
+		t.Fatalf("record changed after reopening: %s / %s", before, after)
+	}
+	var actualMeasurements []contract.Measurement
+	var actualAudit []contract.AuditEvent
+	for _, kind := range []string{"measurements", "audit"} {
+		cursor := int64(0)
+		for {
+			path := fmt.Sprintf("/v1/tests/%s/%s?limit=1&after=%d", id, kind, cursor)
+			if status := processAPI(t, reopened, "GET", path, "", newToken, &raw); status != http.StatusOK {
+				t.Fatalf("reopened %s: %d", kind, status)
+			}
+			var next *int64
+			if kind == "measurements" {
+				validateHistorySchema(t, "MeasurementPage", raw)
+				var page contract.MeasurementPage
+				if err := json.Unmarshal(raw, &page); err != nil {
+					t.Fatal(err)
+				}
+				actualMeasurements = append(actualMeasurements, page.Items...)
+				next = page.NextAfter
+			} else {
+				validateHistorySchema(t, "AuditPage", raw)
+				var page contract.AuditPage
+				if err := json.Unmarshal(raw, &page); err != nil {
+					t.Fatal(err)
+				}
+				actualAudit = append(actualAudit, page.Items...)
+				next = page.NextAfter
+			}
+			if next == nil {
+				break
+			}
+			if *next <= cursor {
+				t.Fatalf("%s cursor did not advance", kind)
+			}
+			cursor = *next
+		}
+	}
+	for _, pair := range [][2]any{{measurements, actualMeasurements}, {audit, actualAudit}} {
+		before, _ := json.Marshal(pair[0])
+		after, _ := json.Marshal(pair[1])
+		if string(before) != string(after) {
+			t.Fatalf("history changed: %s / %s", before, after)
+		}
+	}
+	for _, path := range []string{"/v1/tests?limit=0", "/v1/tests?limit=501", "/v1/tests?limit=1&limit=2", "/v1/tests?after=bad", "/v1/tests?after=00000000-0000-0000-0000-000000000000", "/v1/tests/" + id.String() + "/audit?after=-1", "/v1/tests/" + id.String() + "/measurements?after=999999999999999999999", "/v1/tests/" + id.String() + "?limit=1"} {
+		if status := processAPI(t, reopened, "GET", path, "", newToken, nil); status != http.StatusBadRequest {
+			t.Fatalf("invalid %s: %d", path, status)
+		}
+	}
+	if status := processAPI(t, reopened, "GET", "/v1/tests/"+uuid.NewString()+"/audit", "", newToken, nil); status != http.StatusNotFound {
+		t.Fatalf("missing test: %d", status)
+	}
+	if status := processAPI(t, reopened, "GET", "/v1/tests", "", "", nil); status != http.StatusForbidden {
+		t.Fatalf("missing lease: %d", status)
+	}
+	var second contract.CommandStatus
+	var reopenedSnapshot contract.Snapshot
+	if status := processAPI(t, reopened, "GET", "/v1/snapshot", "", newToken, &reopenedSnapshot); status != http.StatusOK {
+		t.Fatalf("reopened snapshot: %d", status)
+	}
+	secondBody := fmt.Sprintf(`{"commandId":%q,"expectedRevision":%d,"parameters":{"valve":"V2","areaM2":1,"pmaxPa":1000,"measurementSeconds":10,"direction":"pressure","actuator":false}}`, uuid.NewString(), reopenedSnapshot.Revision)
+	if status := processAPI(t, reopened, "POST", "/v1/tests", secondBody, newToken, &second); status != http.StatusOK || second.TestId == nil {
+		t.Fatalf("second record: %d %+v", status, second)
+	}
+	if status := processAPI(t, reopened, "GET", "/v1/tests?limit=1", "", newToken, &list); status != http.StatusOK || len(list.Items) != 1 || list.NextAfter == nil {
+		t.Fatalf("first list page: %d %+v", status, list)
+	}
+	firstID := list.Items[0].TestId
+	if status := processAPI(t, reopened, "GET", "/v1/tests?limit=1&after="+list.NextAfter.String(), "", newToken, &list); status != http.StatusOK || len(list.Items) != 1 || list.NextAfter != nil || firstID == list.Items[0].TestId {
+		t.Fatalf("second list page: %d %+v", status, list)
+	}
+	if firstID != id && firstID != *second.TestId || list.Items[0].TestId != id && list.Items[0].TestId != *second.TestId {
+		t.Fatalf("unexpected list records: %s %+v", firstID, list)
+	}
+}
+
+func validateHistorySchema(t *testing.T, name string, data []byte) {
+	t.Helper()
+	schemaData, err := os.ReadFile("../../api/core.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := yaml.Unmarshal(schemaData, &document); err != nil {
+		t.Fatal(err)
+	}
+	document["$schema"] = "https://json-schema.org/draft/2020-12/schema"
+	compiler := jsonschema.NewCompiler()
+	compiler.AssertFormat()
+	if err := compiler.AddResource("https://gk80.invalid/history.json", document); err != nil {
+		t.Fatal(err)
+	}
+	schema, err := compiler.Compile("https://gk80.invalid/history.json#/components/schemas/" + name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var actual any
+	if err := json.Unmarshal(data, &actual); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.Validate(actual); err != nil {
+		t.Fatalf("%s schema: %v", name, err)
+	}
 }
 
 func processAPI(t *testing.T, process *Process, method, path, body, lease string, target any) int {
