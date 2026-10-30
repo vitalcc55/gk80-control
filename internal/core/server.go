@@ -130,8 +130,10 @@ func run(ctx context.Context, input io.Reader, output io.Writer, fallback io.Wri
 		leases.close()
 		stopFeed()
 		var workersDone <-chan struct{}
+		var streamsDone <-chan struct{}
 		if handler != nil {
 			workersDone = handler.stopWorkers()
+			streamsDone = handler.streams.stop()
 		}
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 		defer cancel()
@@ -173,6 +175,14 @@ func run(ctx context.Context, input io.Reader, output io.Writer, fallback io.Wri
 				runErr = errors.Join(runErr, errors.New("core requests shutdown unconfirmed"))
 			}
 		}
+		if streamsDone != nil {
+			select {
+			case <-streamsDone:
+			case <-shutdownCtx.Done():
+				retainResources = true
+				runErr = errors.Join(runErr, errors.New("core streams shutdown unconfirmed"))
+			}
+		}
 		if stopCommandLogging != nil {
 			stopCommandLogging()
 			select {
@@ -201,7 +211,7 @@ func run(ctx context.Context, input io.Reader, output io.Writer, fallback io.Wri
 	if err != nil {
 		return errors.New("core listener unavailable")
 	}
-	handler = &coreHTTP{secret: bootstrap.Secret, handshake: handshakeHandler(bootstrap.Secret, runID), validator: validator, leases: leases, feed: feed, engine: engine, store: store, history: store, logger: logger.Application(diagnostics.ComponentCore)}
+	handler = &coreHTTP{secret: bootstrap.Secret, handshake: handshakeHandler(bootstrap.Secret, runID), validator: validator, leases: leases, feed: feed, engine: engine, store: store, history: store, streams: newStreamGroup(), logger: logger.Application(diagnostics.ComponentCore)}
 	stopCommandLogging, commandLogDone = startCommandLogging(engine, handler, logger)
 	server = &http.Server{
 		Handler:           handler,

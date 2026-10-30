@@ -14,9 +14,11 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/google/uuid"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/vitalcc55/gk80-control/internal/contract"
@@ -43,19 +45,49 @@ func init() {
 	os.Exit(0)
 }
 
+var coreBuild struct {
+	once   sync.Once
+	path   string
+	err    error
+	output []byte
+}
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if coreBuild.path != "" {
+		if err := os.Remove(coreBuild.path); err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, "core test executable cleanup failed:", err)
+			code = 1
+		}
+	}
+	os.Exit(code)
+}
+
 func buildCore(t *testing.T) string {
 	t.Helper()
-	name := "gk80-core"
-	if runtime.GOOS == "windows" {
-		name += ".exe"
+	coreBuild.once.Do(func() {
+		pattern := "gk80-core-*"
+		if runtime.GOOS == "windows" {
+			pattern += ".exe"
+		}
+		file, err := os.CreateTemp("", pattern)
+		if err != nil {
+			coreBuild.err = err
+			return
+		}
+		coreBuild.path = file.Name()
+		if err := file.Close(); err != nil {
+			coreBuild.err = err
+			return
+		}
+		cmd := exec.Command("go", "build", "-o", coreBuild.path, "./cmd/gk80-core")
+		cmd.Dir = filepath.Join("..", "..")
+		coreBuild.output, coreBuild.err = cmd.CombinedOutput()
+	})
+	if coreBuild.err != nil {
+		t.Fatalf("build core: %v\n%s", coreBuild.err, coreBuild.output)
 	}
-	executable := filepath.Join(t.TempDir(), name)
-	cmd := exec.Command("go", "build", "-o", executable, "./cmd/gk80-core")
-	cmd.Dir = filepath.Join("..", "..")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build core: %v\n%s", err, output)
-	}
-	return executable
+	return coreBuild.path
 }
 
 func TestCoreProcessHandshakeAuthorizationAndProfileOwnership(t *testing.T) {
@@ -1247,6 +1279,184 @@ func processAPI(t *testing.T, process *Process, method, path, body, lease string
 		}
 	}
 	return response.StatusCode
+}
+
+func TestCoreProcessEventsAndLease(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	process, handshake, err := Start(ctx, buildCore(t), dir, "test", "0.1.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = process.Close(ctx) })
+	var lease contract.UiLease
+	if code := processAPI(t, process, "POST", "/v1/ui-lease", fmt.Sprintf(`{"clientId":%q}`, uuid.NewString()), "", &lease); code != http.StatusOK {
+		t.Fatalf("lease: %d", code)
+	}
+	headers := make(http.Header)
+	headers.Set("Authorization", "Bearer "+process.client.secret)
+	headers.Set("X-GK80-UI-Lease", lease.LeaseId.String())
+	dial := func(header http.Header) (*websocket.Conn, *http.Response, error) {
+		t.Helper()
+		return websocket.Dial(ctx, process.client.endpoint+"/v1/events", &websocket.DialOptions{HTTPClient: process.client.http, HTTPHeader: header})
+	}
+	bad := headers.Clone()
+	bad.Del("X-GK80-UI-Lease")
+	if conn, response, err := dial(bad); err == nil || response == nil || response.StatusCode != http.StatusForbidden {
+		if conn != nil {
+			_ = conn.CloseNow()
+		}
+		t.Fatalf("missing lease: %v %+v", err, response)
+	}
+	bad = headers.Clone()
+	bad.Del("Authorization")
+	if conn, response, err := dial(bad); err == nil || response == nil || response.StatusCode != http.StatusUnauthorized {
+		if conn != nil {
+			_ = conn.CloseNow()
+		}
+		t.Fatalf("missing bearer: %v %+v", err, response)
+	}
+	conn, _, err := dial(headers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.CloseNow() }()
+	readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_, raw, err := conn.Read(readCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validateHistorySchema(t, "StreamReady", raw)
+	var ready contract.StreamReady
+	if err := json.Unmarshal(raw, &ready); err != nil || ready.BackendRunId != handshake.BackendRunId {
+		t.Fatalf("ready: %s %v", raw, err)
+	}
+	var invalidUpgrade contract.ApiError
+	if code := processAPI(t, process, "GET", "/v1/events", "", lease.LeaseId.String(), &invalidUpgrade); code != http.StatusUpgradeRequired || invalidUpgrade.Code != "invalid_upgrade" {
+		t.Fatalf("invalid upgrade: %d %+v", code, invalidUpgrade)
+	}
+	var snapshot contract.Snapshot
+	if code := processAPI(t, process, "GET", "/v1/snapshot", "", lease.LeaseId.String(), &snapshot); code != http.StatusOK {
+		t.Fatalf("snapshot: %d", code)
+	}
+	body := fmt.Sprintf(`{"commandId":%q,"expectedRevision":%d,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`, uuid.NewString(), snapshot.Revision)
+	var result contract.CommandStatus
+	if code := processAPI(t, process, "POST", "/v1/tests", body, lease.LeaseId.String(), &result); code != http.StatusOK || result.TestId == nil {
+		t.Fatalf("create: %d %+v", code, result)
+	}
+	_, raw, err = conn.Read(readCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validateHistorySchema(t, "Event", raw)
+	var event contract.Event
+	if err := json.Unmarshal(raw, &event); err != nil || event.BackendRunId != ready.BackendRunId || event.Sequence <= snapshot.LastEventSequence {
+		t.Fatalf("event: %s %v", raw, err)
+	}
+	replacement, _, err := dial(headers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = replacement.CloseNow() }()
+	_, raw, err = replacement.Read(readCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validateHistorySchema(t, "StreamReady", raw)
+	assertStreamClosed(t, conn)
+	var restored contract.Snapshot
+	if code := processAPI(t, process, "GET", "/v1/snapshot", "", lease.LeaseId.String(), &restored); code != http.StatusOK || restored.BackendRunId != ready.BackendRunId || restored.ActiveTest == nil || restored.ActiveTest.TestId != *result.TestId {
+		t.Fatalf("restored snapshot: %d %+v", code, restored)
+	}
+	start := fmt.Sprintf(`{"commandId":%q,"expectedRevision":%d,"valveClosed":true,"connectionConfirmed":true}`, uuid.NewString(), restored.Revision)
+	var accepted contract.CommandAccepted
+	if code := processAPI(t, process, "POST", "/v1/tests/"+result.TestId.String()+"/start", start, lease.LeaseId.String(), &accepted); code != http.StatusAccepted {
+		t.Fatalf("start after reconnect: %d %+v", code, accepted)
+	}
+	wantSequence := restored.LastEventSequence + 1
+	for {
+		_, raw, err = replacement.Read(readCtx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		validateHistorySchema(t, "Event", raw)
+		if err := json.Unmarshal(raw, &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Sequence <= restored.LastEventSequence {
+			continue
+		}
+		if event.BackendRunId != ready.BackendRunId || event.Sequence != wantSequence {
+			t.Fatalf("event after reconnect: %+v", event)
+		}
+		wantSequence++
+		if event.Revision > restored.Revision {
+			break
+		}
+	}
+	if code := processAPI(t, process, "DELETE", "/v1/ui-lease", "", lease.LeaseId.String(), nil); code != http.StatusNoContent {
+		t.Fatalf("release: %d", code)
+	}
+	assertStreamClosed(t, replacement)
+}
+
+func assertStreamClosed(t *testing.T, conn *websocket.Conn) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	for {
+		_, _, err := conn.Read(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				t.Fatal("stream did not close before deadline")
+			}
+			return
+		}
+	}
+}
+
+func TestCoreProcessClosesStreamOnOwnerExit(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	executable := buildCore(t)
+	process, handshake, err := Start(ctx, executable, dir, "test", "0.1.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = process.Close(ctx) })
+	var lease contract.UiLease
+	if code := processAPI(t, process, "POST", "/v1/ui-lease", fmt.Sprintf(`{"clientId":%q}`, uuid.NewString()), "", &lease); code != http.StatusOK {
+		t.Fatalf("lease: %d", code)
+	}
+	headers := make(http.Header)
+	headers.Set("Authorization", "Bearer "+process.client.secret)
+	headers.Set("X-GK80-UI-Lease", lease.LeaseId.String())
+	conn, _, err := websocket.Dial(ctx, process.client.endpoint+"/v1/events", &websocket.DialOptions{HTTPClient: process.client.http, HTTPHeader: headers})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.CloseNow() }()
+	readCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	if _, _, err := conn.Read(readCtx); err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertStreamClosed(t, conn)
+	next, nextHandshake, err := Start(ctx, executable, dir, "test", "0.1.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = next.Close(ctx) })
+	if nextHandshake.BackendRunId == handshake.BackendRunId {
+		t.Fatal("core identity was reused")
+	}
+	if code := processAPI(t, next, "GET", "/v1/snapshot", "", lease.LeaseId.String(), nil); code != http.StatusForbidden {
+		t.Fatalf("old lease: %d", code)
+	}
 }
 
 func startActiveDemo(t *testing.T, process *Process) (uuid.UUID, string) {

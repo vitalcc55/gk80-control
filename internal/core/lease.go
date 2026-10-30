@@ -168,6 +168,28 @@ func (l *uiLeases) snapshot(id uuid.UUID, feed *eventFeed) (contract.Snapshot, e
 	}, nil
 }
 
+func (l *uiLeases) subscribe(owner *uiLease, feed *eventFeed) (*eventSubscription, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.expireLocked()
+	if l.closed || l.current != owner {
+		return nil, errLeaseInvalid
+	}
+	select {
+	case <-owner.done:
+		return nil, errLeaseInvalid
+	default:
+	}
+	sub := feed.subscribe()
+	select {
+	case <-owner.done:
+		feed.unsubscribe(sub)
+		return nil, errLeaseInvalid
+	default:
+	}
+	return sub, nil
+}
+
 func (l *uiLeases) expireLocked() {
 	if l.current != nil && !time.Now().Before(l.current.expiresAt) {
 		l.revokeLocked("ui_lost")

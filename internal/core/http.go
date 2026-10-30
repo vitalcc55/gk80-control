@@ -32,6 +32,7 @@ type coreHTTP struct {
 	engine         *demo.Engine
 	store          commandReader
 	history        historyReader
+	streams        *streamGroup
 	logger         *slog.Logger
 	pendingMu      sync.Mutex
 	pending        map[*commandAttempt]struct{}
@@ -90,6 +91,8 @@ func (h *coreHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/v1/ui-lease":
 		h.lease(w, r)
+	case "/v1/events":
+		h.events(w, r)
 	case "/v1/snapshot":
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", "GET")
