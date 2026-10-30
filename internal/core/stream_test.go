@@ -219,7 +219,7 @@ func TestRevokedOwnerCannotReplaceCurrentSubscription(t *testing.T) {
 	if _, err := leases.subscribe(old, feed); err != nil {
 		t.Fatal(err)
 	}
-	if err := leases.release(old.id); err != nil {
+	if err := leases.release(context.Background(), old.id); err != nil {
 		t.Fatal(err)
 	}
 	current, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)

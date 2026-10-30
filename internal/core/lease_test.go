@@ -41,7 +41,7 @@ func TestLeaseOwnershipRecoveryAndRelease(t *testing.T) {
 	if _, err := leases.renew(context.Background(), uuid.New()); !errors.Is(err, errLeaseInvalid) {
 		t.Fatalf("wrong lease: %v", err)
 	}
-	if err := leases.release(first.id); err != nil {
+	if err := leases.release(context.Background(), first.id); err != nil {
 		t.Fatal(err)
 	}
 	select {

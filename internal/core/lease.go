@@ -105,9 +105,15 @@ func (l *uiLeases) renew(ctx context.Context, id uuid.UUID) (*uiLease, error) {
 	return l.current, nil
 }
 
-func (l *uiLeases) release(id uuid.UUID) error {
+func (l *uiLeases) release(ctx context.Context, id uuid.UUID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	l.expireLocked()
 	if l.closed || l.current == nil || id != l.current.id {
 		return errLeaseInvalid

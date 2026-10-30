@@ -434,7 +434,7 @@ func TestRevokedConfirmDoesNotStartSimulatorAfterCommit(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("confirm did not commit")
 	}
-	if err := leases.release(lease.id); err != nil {
+	if err := leases.release(context.Background(), lease.id); err != nil {
 		t.Fatal(err)
 	}
 	select {

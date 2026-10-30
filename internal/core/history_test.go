@@ -236,7 +236,7 @@ func TestHistoryRevocationAndBlockedReadRemainBounded(t *testing.T) {
 				t.Fatal("read did not start")
 			}
 			if revoke {
-				if err := leases.release(owner.id); err != nil {
+				if err := leases.release(context.Background(), owner.id); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil); err != nil {

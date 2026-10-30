@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/vitalcc55/gk80-control/internal/contract"
@@ -34,6 +35,8 @@ type coreHTTP struct {
 	history        historyReader
 	streams        *streamGroup
 	logger         *slog.Logger
+	leaseGate      sync.Mutex
+	leaseReadGate  sync.Mutex
 	pendingMu      sync.Mutex
 	pending        map[*commandAttempt]struct{}
 	pendingVersion uint64
@@ -162,58 +165,81 @@ func isHistoryPath(path string) bool {
 func (h *coreHTTP) lease(w http.ResponseWriter, r *http.Request) {
 	id, present, err := parseLeaseHeader(r)
 	if err != nil {
-		writeAPIError(w, http.StatusForbidden, "lease_invalid", "UI lease required")
+		if r.Method == http.MethodPost {
+			writeLeaseBodyError(w, http.StatusForbidden, "lease_invalid", "UI lease required")
+		} else {
+			writeAPIError(w, http.StatusForbidden, "lease_invalid", "UI lease required")
+		}
 		return
 	}
+	var request contract.LeaseRequest
 	switch r.Method {
 	case http.MethodPost:
 		contentTypes := r.Header.Values("Content-Type")
 		if len(contentTypes) != 1 {
-			writeAPIError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "JSON content type required")
+			writeLeaseBodyError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "JSON content type required")
 			return
 		}
 		mediaType, _, err := mime.ParseMediaType(contentTypes[0])
 		if err != nil || mediaType != "application/json" {
-			writeAPIError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "JSON content type required")
+			writeLeaseBodyError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "JSON content type required")
+			return
+		}
+		if !h.leaseReadGate.TryLock() {
+			writeLeaseBodyError(w, http.StatusConflict, "lease_operation_in_progress", "Another UI lease request is in progress")
 			return
 		}
 		body, err := io.ReadAll(io.LimitReader(r.Body, 8193))
-		var request contract.LeaseRequest
-		if err != nil || len(body) > 8192 || h.validator.Decode("LeaseRequest", body, &request) != nil || request.ClientId == uuid.Nil {
-			writeAPIError(w, http.StatusBadRequest, "invalid_request", "Invalid request")
+		valid := err == nil && len(body) <= 8192 && h.validator.Decode("LeaseRequest", body, &request) == nil && request.ClientId != uuid.Nil
+		h.leaseReadGate.Unlock()
+		if !valid {
+			writeLeaseBodyError(w, http.StatusBadRequest, "invalid_request", "Invalid request")
 			return
 		}
-		lease, err := h.leases.acquire(r.Context(), request.ClientId, id)
-		if err != nil {
-			h.leaseError(w, err)
-			return
-		}
-		h.writeLease(w, lease)
-	case http.MethodPut:
+	case http.MethodPut, http.MethodDelete:
 		if !present {
 			writeAPIError(w, http.StatusForbidden, "lease_invalid", "UI lease required")
 			return
 		}
-		lease, err := h.leases.renew(r.Context(), id)
-		if err != nil {
-			h.leaseError(w, err)
-			return
-		}
-		h.writeLease(w, lease)
-	case http.MethodDelete:
-		if !present {
-			writeAPIError(w, http.StatusForbidden, "lease_invalid", "UI lease required")
-			return
-		}
-		if err := h.leases.release(id); err != nil {
-			h.leaseError(w, err)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
 	default:
 		w.Header().Set("Allow", "POST, PUT, DELETE")
 		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed")
+		return
 	}
+	if !h.leaseGate.TryLock() {
+		writeAPIError(w, http.StatusConflict, "lease_operation_in_progress", "Another UI lease operation is in progress")
+		return
+	}
+	var result contract.UiLease
+	var lease *uiLease
+	switch r.Method {
+	case http.MethodPost:
+		lease, err = h.leases.acquire(r.Context(), request.ClientId, id)
+	case http.MethodPut:
+		lease, err = h.leases.renew(r.Context(), id)
+	case http.MethodDelete:
+		err = h.leases.release(r.Context(), id)
+	}
+	if err == nil && lease != nil {
+		result, err = h.leases.view(lease)
+	}
+	h.leaseGate.Unlock()
+	if err != nil {
+		h.leaseError(w, err)
+		return
+	}
+	if r.Method == http.MethodDelete {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func writeLeaseBodyError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Connection", "close")
+	// net/http may otherwise drain an unread body before or after the refusal.
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now())
+	writeAPIError(w, status, code, message)
 }
 
 func parseLeaseHeader(r *http.Request) (uuid.UUID, bool, error) {
@@ -229,15 +255,6 @@ func parseLeaseHeader(r *http.Request) (uuid.UUID, bool, error) {
 		return uuid.Nil, true, errLeaseInvalid
 	}
 	return id, true, nil
-}
-
-func (h *coreHTTP) writeLease(w http.ResponseWriter, lease *uiLease) {
-	result, err := h.leases.view(lease)
-	if err != nil {
-		h.leaseError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *coreHTTP) leaseError(w http.ResponseWriter, err error) {

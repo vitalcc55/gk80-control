@@ -43,6 +43,20 @@ func TestNativeCommandUnknownOutcomeIsNotRetried(t *testing.T) {
 	}
 }
 
+func TestNativeLeaseGateBusyIsDefiniteForNewRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"code":"lease_operation_in_progress","message":"Another UI lease operation is in progress"}`))
+	}))
+	defer server.Close()
+	client := &Client{endpoint: server.URL, secret: "secret", http: server.Client()}
+	_, err := client.RenewLease(context.Background(), uuid.New())
+	var failure *RequestError
+	if !errors.As(err, &failure) || failure.Code != "lease_operation_in_progress" || failure.OutcomeUnknown {
+		t.Fatalf("busy outcome: %v", err)
+	}
+}
+
 func TestNativeClientRunsAndReopensDemo(t *testing.T) {
 	ctx := context.Background()
 	profileDir := t.TempDir()

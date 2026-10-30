@@ -73,7 +73,7 @@ func TestRevokedOwnerCannotRegisterCreateAfterDelayedBody(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("body did not start")
 	}
-	if err := leases.release(lease.id); err != nil {
+	if err := leases.release(context.Background(), lease.id); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil); err != nil {
