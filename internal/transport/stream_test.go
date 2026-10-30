@@ -125,6 +125,92 @@ func (f *streamFixture) sendEvent(t *testing.T, ctx context.Context, event contr
 	}
 }
 
+func TestNativeStreamProbeDetectsSilentPeer(t *testing.T) {
+	f := newStreamFixture(t)
+	close(f.snapshotRelease)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, _, err := f.client.OpenStream(ctx, uuid.New(), f.runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stream.Close(context.Background()) }()
+	result := make(chan error, 1)
+	go func() { result <- stream.Probe(context.Background()) }()
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Fatal("silent peer was reported live")
+		}
+	case <-ctx.Done():
+		t.Fatal("probe exceeded its own deadline")
+	}
+	select {
+	case <-stream.Done():
+	case <-ctx.Done():
+		t.Fatal("unconfirmed stream remained usable")
+	}
+}
+
+func TestNativeStreamProbeCancellationInvalidatesStream(t *testing.T) {
+	f := newStreamFixture(t)
+	close(f.snapshotRelease)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, _, err := f.client.OpenStream(ctx, uuid.New(), f.runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stream.Close(context.Background()) }()
+	cancelled, stop := context.WithCancel(ctx)
+	stop()
+	if err := stream.Probe(cancelled); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled probe: %v", err)
+	}
+	select {
+	case <-stream.Done():
+	case <-ctx.Done():
+		t.Fatal("cancelled probe did not invalidate stream")
+	}
+}
+
+func TestNativeStreamCloseInterruptsProbe(t *testing.T) {
+	f := newStreamFixture(t)
+	close(f.snapshotRelease)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, _, err := f.client.OpenStream(ctx, uuid.New(), f.runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The peer never reads, so a probe cannot receive a pong.
+	result := make(chan error, 1)
+	go func() { result <- stream.Probe(ctx) }()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for stream.probeMu.TryLock() {
+		stream.probeMu.Unlock()
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			t.Fatal("probe did not start")
+		}
+	}
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), time.Second)
+	defer closeCancel()
+	if err := stream.Close(closeCtx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Fatal("probe succeeded after close")
+		}
+	case <-ctx.Done():
+		t.Fatal("probe did not stop after close")
+	}
+}
+
 func TestNativeStreamSnapshotBoundaryAndGap(t *testing.T) {
 	f := newStreamFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
@@ -605,6 +691,9 @@ func TestNativeStreamReceivesCoreEvents(t *testing.T) {
 	stream, snapshot, err := client.OpenStream(ctx, lease.LeaseId, handshake.BackendRunId)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if err := stream.Probe(ctx); err != nil {
+		t.Fatalf("core stream probe: %v", err)
 	}
 	t.Cleanup(func() {
 		closeCtx, closeCancel := context.WithTimeout(context.Background(), 4*time.Second)

@@ -13,6 +13,7 @@ import (
 )
 
 const nativeEventQueueLimit = 64
+const nativeProbeTimeout = 2 * time.Second
 
 var ErrStreamClosed = errors.New("core event stream closed")
 var ErrStreamInvalid = errors.New("invalid core event stream")
@@ -33,6 +34,7 @@ type EventStream struct {
 	readerDone chan struct{}
 	watchDone  chan struct{}
 	mu         sync.Mutex
+	probeMu    sync.Mutex
 	terminal   error
 	consumer   chan struct{}
 	cursor     int64
@@ -268,6 +270,43 @@ func (s *EventStream) Next(ctx context.Context) (contract.Event, error) {
 			return event, nil
 		}
 	}
+}
+
+// Probe confirms a pong on this connection; a failed probe invalidates the stream.
+func (s *EventStream) Probe(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		_ = s.fail(ErrStreamClosed)
+		return err
+	}
+	if !s.probeMu.TryLock() {
+		return s.fail(ErrStreamClosed)
+	}
+	defer s.probeMu.Unlock()
+	s.mu.Lock()
+	terminal := s.terminal
+	s.mu.Unlock()
+	if terminal != nil {
+		return terminal
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, nativeProbeTimeout)
+	stop := context.AfterFunc(s.ctx, cancel)
+	defer func() { stop(); cancel() }()
+	if err := s.conn.Ping(probeCtx); err != nil {
+		return s.fail(ErrStreamClosed)
+	}
+	s.mu.Lock()
+	if s.terminal != nil {
+		err := s.terminal
+		s.mu.Unlock()
+		return err
+	}
+	deadline, hasDeadline := probeCtx.Deadline()
+	if probeCtx.Err() != nil || (hasDeadline && !time.Now().Before(deadline)) || s.ctx.Err() != nil {
+		s.mu.Unlock()
+		return s.fail(ErrStreamClosed)
+	}
+	s.mu.Unlock()
+	return nil
 }
 
 // Done closes when the connection is no longer usable.
