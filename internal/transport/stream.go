@@ -30,6 +30,7 @@ type EventStream struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 	queue      chan contract.Event
+	available  chan struct{}
 	done       chan struct{}
 	readerDone chan struct{}
 	watchDone  chan struct{}
@@ -38,6 +39,8 @@ type EventStream struct {
 	terminal   error
 	consumer   chan struct{}
 	cursor     int64
+	unapplied  bool
+	pendingAt  time.Time
 }
 
 // OpenStream subscribes before reading a snapshot; ctx controls the stream's lifetime.
@@ -71,10 +74,26 @@ func (c *Client) OpenStream(ctx context.Context, lease, expectedRunID uuid.UUID)
 		return nil, empty, ErrStreamInvalid
 	}
 	streamCtx, cancel := context.WithCancel(ctx)
-	stream := &EventStream{client: c, lease: lease, runID: expectedRunID, conn: conn, ctx: streamCtx, cancel: cancel, queue: make(chan contract.Event, nativeEventQueueLimit), done: make(chan struct{}), readerDone: make(chan struct{}), watchDone: make(chan struct{}), consumer: make(chan struct{}, 1)}
+	stream := &EventStream{client: c, lease: lease, runID: expectedRunID, conn: conn, ctx: streamCtx, cancel: cancel, queue: make(chan contract.Event, nativeEventQueueLimit), available: make(chan struct{}, 1), done: make(chan struct{}), readerDone: make(chan struct{}), watchDone: make(chan struct{}), consumer: make(chan struct{}, 1)}
 	go func() { defer close(stream.watchDone); <-streamCtx.Done(); _ = stream.fail(ErrStreamClosed) }()
 	go stream.read(streamCtx)
-	snapshot, err := stream.Snapshot(ctx)
+	initialCtx, initialCancel := context.WithTimeout(ctx, 3*time.Second)
+	var snapshot contract.Snapshot
+	for {
+		snapshot, err = stream.Snapshot(initialCtx)
+		var failure *RequestError
+		if err == nil || !errors.As(err, &failure) || failure.Status != http.StatusServiceUnavailable || failure.Code != "state_unavailable" {
+			break
+		}
+		select {
+		case <-initialCtx.Done():
+			err = initialCtx.Err()
+		case <-time.After(50 * time.Millisecond):
+			continue
+		}
+		break
+	}
+	initialCancel()
 	if err != nil {
 		closeCtx, closeCancel := context.WithTimeout(context.Background(), 4*time.Second)
 		defer closeCancel()
@@ -91,6 +110,9 @@ func (s *EventStream) fail(err error) error {
 	defer s.mu.Unlock()
 	if s.terminal == nil {
 		s.terminal = err
+		if s.pendingAt.IsZero() {
+			s.pendingAt = time.Now()
+		}
 		close(s.done)
 		s.cancel()
 	}
@@ -125,12 +147,27 @@ func (s *EventStream) read(ctx context.Context) {
 			return
 		}
 		last = event.Sequence
+		s.mu.Lock()
+		if s.terminal != nil {
+			s.mu.Unlock()
+			return
+		}
 		select {
 		case s.queue <- event:
+			if s.pendingAt.IsZero() {
+				s.pendingAt = time.Now()
+			}
+			select {
+			case s.available <- struct{}{}:
+			default:
+			}
+			s.mu.Unlock()
 		case <-ctx.Done():
+			s.mu.Unlock()
 			_ = s.fail(ErrStreamClosed)
 			return
 		default:
+			s.mu.Unlock()
 			_ = s.fail(ErrStreamOverflow)
 			return
 		}
@@ -209,6 +246,10 @@ func (s *EventStream) Snapshot(ctx context.Context) (contract.Snapshot, error) {
 		return empty, s.fail(ErrStreamInvalid)
 	}
 	s.cursor = snapshot.LastEventSequence
+	s.unapplied = false
+	if len(s.queue) == 0 {
+		s.pendingAt = time.Time{}
+	}
 	s.mu.Unlock()
 	return snapshot, nil
 }
@@ -221,17 +262,16 @@ func (s *EventStream) Next(ctx context.Context) (contract.Event, error) {
 	defer func() { <-s.consumer }()
 	for {
 		s.mu.Lock()
-		terminal := s.terminal
-		stopped := s.ctx.Err() != nil
+		event, present, err := s.pollLocked(ctx)
 		s.mu.Unlock()
-		if terminal != nil {
-			return contract.Event{}, terminal
-		}
-		if stopped {
-			return contract.Event{}, s.closeError()
-		}
-		if err := ctx.Err(); err != nil {
+		if err != nil {
+			if errors.Is(err, ErrStreamSequence) || errors.Is(err, ErrStreamClosed) {
+				return contract.Event{}, s.fail(err)
+			}
 			return contract.Event{}, err
+		}
+		if present {
+			return event, nil
 		}
 		select {
 		case <-ctx.Done():
@@ -246,30 +286,71 @@ func (s *EventStream) Next(ctx context.Context) (contract.Event, error) {
 			err := s.terminal
 			s.mu.Unlock()
 			return contract.Event{}, err
+		case <-s.available:
+		}
+	}
+}
+
+// Poll returns the next already-buffered event without waiting for another one.
+// Like Next and Snapshot, it belongs to the stream's single consumer.
+func (s *EventStream) Poll(ctx context.Context) (contract.Event, bool, error) {
+	if err := s.enter(ctx); err != nil {
+		return contract.Event{}, false, err
+	}
+	defer func() { <-s.consumer }()
+	s.mu.Lock()
+	event, present, err := s.pollLocked(ctx)
+	s.mu.Unlock()
+	if errors.Is(err, ErrStreamSequence) || errors.Is(err, ErrStreamClosed) {
+		return contract.Event{}, false, s.fail(err)
+	}
+	return event, present, err
+}
+
+// pollLocked makes dequeue and its unapplied marker atomic to Pending.
+func (s *EventStream) pollLocked(ctx context.Context) (contract.Event, bool, error) {
+	for {
+		if s.terminal != nil {
+			return contract.Event{}, false, s.terminal
+		}
+		if s.ctx.Err() != nil {
+			return contract.Event{}, false, ErrStreamClosed
+		}
+		if err := ctx.Err(); err != nil {
+			return contract.Event{}, false, err
+		}
+		select {
 		case event := <-s.queue:
-			s.mu.Lock()
-			if s.terminal != nil {
-				err := s.terminal
-				s.mu.Unlock()
-				return contract.Event{}, err
-			}
-			if s.ctx.Err() != nil {
-				s.mu.Unlock()
-				return contract.Event{}, s.closeError()
-			}
 			if event.Sequence <= s.cursor {
-				s.mu.Unlock()
+				if len(s.queue) == 0 && !s.unapplied {
+					s.pendingAt = time.Time{}
+				}
 				continue
 			}
 			if event.Sequence != s.cursor+1 {
-				s.mu.Unlock()
-				return contract.Event{}, s.fail(ErrStreamSequence)
+				return contract.Event{}, false, ErrStreamSequence
 			}
 			s.cursor = event.Sequence
-			s.mu.Unlock()
-			return event, nil
+			s.unapplied = true
+			return event, true, nil
+		default:
+			return contract.Event{}, false, nil
 		}
 	}
+}
+
+// Pending reports whether a queued or consumed event is not covered by a snapshot.
+func (s *EventStream) Pending() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.terminal != nil || s.unapplied || len(s.queue) != 0
+}
+
+// PendingSince bounds how long the current snapshot has been superseded.
+func (s *EventStream) PendingSince() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pendingAt
 }
 
 // Probe confirms a pong on this connection; a failed probe invalidates the stream.

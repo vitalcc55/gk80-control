@@ -28,7 +28,9 @@ type Owner struct {
 	mu                sync.Mutex
 	status            contract.DesktopStatus
 	process           ownedCore
+	session           *demoSession
 	cleanupErr        error
+	sessionErr        error
 	coreExitLogged    bool
 	backendID         uuid.UUID
 	verifyGate        chan struct{}
@@ -164,6 +166,22 @@ func (o *Owner) run() {
 		o.setState(contract.DesktopStatusStatusUnavailable, nil)
 		return
 	}
+	if native, ok := process.(interface{ Client() *transport.Client }); ok && native.Client() != nil {
+		o.mu.Lock()
+		session := newDemoSession(o.ctx, nativeSessionClient{native.Client()}, o.status.HostRunId, handshake.BackendRunId)
+		o.session = session
+		o.mu.Unlock()
+		defer func() {
+			session.close()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := session.wait(ctx); err != nil {
+				o.mu.Lock()
+				o.sessionErr = err
+				o.mu.Unlock()
+			}
+		}()
+	}
 	o.setState(contract.DesktopStatusStatusReady, &handshake)
 	o.log.Info(string(diagnostics.ConnectionConfirmed), "backend_run_id", handshake.BackendRunId)
 	degraded := process.DiagnosticsDegraded()
@@ -253,21 +271,21 @@ func (o *Owner) Verify(ctx context.Context) contract.DesktopStatus {
 	}
 	o.mu.Lock()
 	process := o.process
-	ready := o.status.Status == contract.DesktopStatusStatusReady
-	var backendID uuid.UUID
-	if o.status.Handshake != nil {
-		backendID = o.status.Handshake.BackendRunId
-	}
+	state := o.status.Status
+	backendID := o.backendID
 	o.mu.Unlock()
-	if !ready || process == nil {
+	if (state != contract.DesktopStatusStatusReady && state != contract.DesktopStatusStatusUnavailable) || process == nil || backendID == uuid.Nil {
 		return o.Status()
 	}
 	handshake, err := process.Handshake(ctx)
+	if err == nil && (handshake.BackendRunId != backendID || handshake.ApiVersion != "v1" || !handshake.Demo) {
+		err = errSessionUnavailable
+	}
 	if ctx.Err() != nil {
 		return o.Status()
 	}
 	o.mu.Lock()
-	if o.process != process || o.status.Status != contract.DesktopStatusStatusReady {
+	if o.process != process || o.status.Status != state {
 		o.mu.Unlock()
 		return o.Status()
 	}
@@ -280,6 +298,7 @@ func (o *Owner) Verify(ctx context.Context) contract.DesktopStatus {
 		if err != nil {
 			o.status.Status, o.status.Handshake = contract.DesktopStatusStatusUnavailable, nil
 		} else {
+			o.status.Status = contract.DesktopStatusStatusReady
 			o.status.Handshake = &handshake
 		}
 	}
@@ -300,7 +319,18 @@ func (o *Owner) Close() error {
 		o.status.Status, o.status.Handshake = contract.DesktopStatusStatusClosing, nil
 		o.status.Revision++
 		o.status.ConnectionRevision++
+		session := o.session
 		o.mu.Unlock()
+		if session != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+			err := session.shutdown(ctx)
+			cancel()
+			if err != nil {
+				o.mu.Lock()
+				o.sessionErr = err
+				o.mu.Unlock()
+			}
+		}
 		o.cancel()
 		o.startOnce.Do(func() { close(o.workerDone) })
 	})
@@ -318,6 +348,7 @@ func (o *Owner) Close() error {
 	o.mu.Lock()
 	process := o.process
 	cleanupErr := o.cleanupErr
+	sessionErr := o.sessionErr
 	o.mu.Unlock()
 	if process != nil {
 		err := process.Close(context.Background())
@@ -333,11 +364,11 @@ func (o *Owner) Close() error {
 		if cleanupErr != nil {
 			select {
 			case <-process.Done():
-				return errors.New("core stopped with an error")
+				return errors.Join(errors.New("core stopped with an error"), sessionErr)
 			default:
-				return transport.ErrCleanupUnconfirmed
+				return errors.Join(transport.ErrCleanupUnconfirmed, sessionErr)
 			}
 		}
 	}
-	return nil
+	return sessionErr
 }

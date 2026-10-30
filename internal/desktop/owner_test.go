@@ -146,6 +146,55 @@ func TestDelayedVerificationCannotRestoreExitedCore(t *testing.T) {
 	}
 }
 
+func TestOwnerRecoversVerifiedConnectionToSameCore(t *testing.T) {
+	identity := contract.Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), Demo: true}
+	var calls int
+	core := &fakeCore{done: make(chan struct{}), degraded: make(chan struct{}), closed: make(chan struct{}), handshake: func(context.Context) (contract.Handshake, error) {
+		calls++
+		if calls == 1 {
+			return contract.Handshake{}, errors.New("connection interrupted")
+		}
+		return identity, nil
+	}}
+	owner := newTestOwner(func(context.Context) (ownedCore, contract.Handshake, error) { return core, identity, nil })
+	owner.Start()
+	waitStatus(t, owner, contract.DesktopStatusStatusReady)
+	if status := owner.Verify(context.Background()); status.Status != contract.DesktopStatusStatusUnavailable {
+		t.Fatalf("failed verification: %+v", status)
+	}
+	if status := owner.Verify(context.Background()); status.Status != contract.DesktopStatusStatusReady || status.Handshake == nil || status.Handshake.BackendRunId != identity.BackendRunId {
+		t.Fatalf("same core was not restored: %+v", status)
+	}
+	if err := owner.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOwnerPreservesUnconfirmedSessionShutdown(t *testing.T) {
+	identity := contract.Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), Demo: true}
+	core := &fakeCore{done: make(chan struct{}), degraded: make(chan struct{}), closed: make(chan struct{}), handshake: func(context.Context) (contract.Handshake, error) { return identity, nil }}
+	owner := newTestOwner(func(context.Context) (ownedCore, contract.Handshake, error) { return core, identity, nil })
+	owner.Start()
+	waitStatus(t, owner, contract.DesktopStatusStatusReady)
+	client := &testSessionClient{
+		snapshot: func(context.Context, uuid.UUID) (contract.Snapshot, error) {
+			return contract.Snapshot{}, &transport.RequestError{Status: 503, Code: "state_unavailable"}
+		},
+		release: func(context.Context, uuid.UUID) error { return nil },
+	}
+	session := newDemoSession(context.Background(), client, uuid.New(), identity.BackendRunId)
+	session.mu.Lock()
+	session.leaseID = uuid.New()
+	session.mu.Unlock()
+	owner.mu.Lock()
+	owner.session = session
+	owner.mu.Unlock()
+	defer session.close()
+	if err := owner.Close(); !errors.Is(err, transport.ErrCleanupUnconfirmed) {
+		t.Fatalf("unconfirmed session shutdown was hidden: %v", err)
+	}
+}
+
 func TestVerificationFailureIsNotHiddenByDiagnosticChange(t *testing.T) {
 	identity := contract.Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), Demo: true}
 	started, release := make(chan struct{}), make(chan struct{})

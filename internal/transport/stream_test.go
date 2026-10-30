@@ -40,7 +40,7 @@ type gatedContext struct {
 }
 
 func (c *gatedContext) Err() error {
-	if c.checks.Add(1) == 2 {
+	if c.checks.Add(1) == 1 {
 		close(c.checked)
 		<-c.release
 	}
@@ -152,6 +152,46 @@ func TestNativeStreamProbeDetectsSilentPeer(t *testing.T) {
 	}
 }
 
+func TestNativeStreamWaitsForInitialSnapshot(t *testing.T) {
+	run := uuid.New()
+	stop := make(chan struct{})
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/events":
+			conn, err := websocket.Accept(w, r, nil)
+			if err != nil {
+				return
+			}
+			defer func() { _ = conn.CloseNow() }()
+			body, _ := json.Marshal(contract.StreamReady{Type: "ready", BackendRunId: run})
+			if err := conn.Write(r.Context(), websocket.MessageText, body); err != nil {
+				return
+			}
+			<-stop
+		case "/v1/snapshot":
+			if requests.Add(1) <= 2 {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"code":"state_unavailable","message":"State is not yet confirmed"}`))
+				return
+			}
+			_ = json.NewEncoder(w).Encode(contract.Snapshot{ApiVersion: "v1", BackendRunId: run, Measurements: []contract.Measurement{}})
+		}
+	}))
+	defer server.Close()
+	defer close(stop)
+	client := &Client{endpoint: server.URL, secret: "secret", http: server.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, snapshot, err := client.OpenStream(ctx, uuid.New(), run)
+	if err != nil || snapshot.BackendRunId != run || requests.Load() != 3 {
+		t.Fatalf("initial snapshot: %+v requests=%d err=%v", snapshot, requests.Load(), err)
+	}
+	if err := stream.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestNativeStreamProbeCancellationInvalidatesStream(t *testing.T) {
 	f := newStreamFixture(t)
 	close(f.snapshotRelease)
@@ -248,9 +288,19 @@ func TestNativeStreamSnapshotBoundaryAndGap(t *testing.T) {
 		defer done()
 		_ = out.stream.Close(closeCtx)
 	}()
-	event, err := out.stream.Next(ctx)
-	if err != nil || event.Sequence != 2 {
-		t.Fatalf("boundary: %+v %v", event, err)
+	for len(out.stream.queue) < 2 {
+		select {
+		case <-ctx.Done():
+			t.Fatal("events did not reach the client queue")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	event, present, err := out.stream.Poll(ctx)
+	if err != nil || !present || event.Sequence != 2 {
+		t.Fatalf("boundary: %+v %v %v", event, present, err)
+	}
+	if _, present, err := out.stream.Poll(ctx); err != nil || present {
+		t.Fatalf("buffer was not drained: %v %v", present, err)
 	}
 	f.sendEvent(t, ctx, contract.Event{Type: "stateChanged", BackendRunId: f.runID, Sequence: 4, Revision: 1})
 	if _, err := out.stream.Next(ctx); !errors.Is(err, ErrStreamSequence) {
@@ -428,7 +478,26 @@ func TestNativeStreamCancellationDoesNotLoseQueuedEvent(t *testing.T) {
 	}
 }
 
-func TestNativeStreamCancellationAfterDequeue(t *testing.T) {
+func TestNativeStreamPendingIncludesDequeuedEvent(t *testing.T) {
+	lifetime, stop := context.WithCancel(context.Background())
+	defer stop()
+	stream := &EventStream{ctx: lifetime, cancel: stop, queue: make(chan contract.Event, 1), done: make(chan struct{}), consumer: make(chan struct{}, 1)}
+	stream.mu.Lock()
+	stream.queue <- contract.Event{Sequence: 1}
+	event := make(chan contract.Event, 1)
+	go func() { value, _ := stream.Next(context.Background()); event <- value }()
+	pending := make(chan bool, 1)
+	go func() { pending <- stream.Pending() }()
+	stream.mu.Unlock()
+	if !<-pending || (<-event).Sequence != 1 {
+		t.Fatal("dequeued event was not marked pending")
+	}
+	if !stream.Pending() {
+		t.Fatal("event was cleared before a snapshot")
+	}
+}
+
+func TestNativeStreamCancellationBeforeDequeue(t *testing.T) {
 	for _, cancelLifetime := range []bool{false, true} {
 		t.Run(map[bool]string{false: "request", true: "lifetime"}[cancelLifetime], func(t *testing.T) {
 			lifetime, stop := context.WithCancel(context.Background())
@@ -451,17 +520,6 @@ func TestNativeStreamCancellationAfterDequeue(t *testing.T) {
 			stream.mu.Lock()
 			close(request.release)
 			stream.queue <- contract.Event{Sequence: 1}
-			deadline := time.After(3 * time.Second)
-			tick := time.NewTicker(time.Millisecond)
-			defer tick.Stop()
-			for len(stream.queue) != 0 {
-				select {
-				case <-tick.C:
-				case <-deadline:
-					stream.mu.Unlock()
-					t.Fatal("event was not dequeued")
-				}
-			}
 			if cancelLifetime {
 				stop()
 			} else {
@@ -473,10 +531,16 @@ func TestNativeStreamCancellationAfterDequeue(t *testing.T) {
 				if cancelLifetime && !errors.Is(result.err, ErrStreamClosed) {
 					t.Fatalf("lifetime cancellation: %v", result.err)
 				}
-				if !cancelLifetime && (result.err != nil || result.event.Sequence != 1) {
-					t.Fatalf("event lost after cancellation: %+v %v", result.event, result.err)
+				if !cancelLifetime && !errors.Is(result.err, context.Canceled) {
+					t.Fatalf("request cancellation: %+v %v", result.event, result.err)
 				}
-			case <-deadline:
+				if !cancelLifetime {
+					event, err := stream.Next(context.Background())
+					if err != nil || event.Sequence != 1 {
+						t.Fatalf("event lost before dequeue: %+v %v", event, err)
+					}
+				}
+			case <-time.After(3 * time.Second):
 				t.Fatal("read did not finish")
 			}
 		})

@@ -181,6 +181,17 @@ export interface Handshake {
 }
 
 /**
+ * ListTestsParams defines parameters for ListTests.
+ */
+export interface ListTestsParams {
+    /**
+     * After Последний прочитанный UUID; порядок по UUID, не по времени.
+     */
+    "after"?: types$0.UUID | null;
+    "limit"?: number | null;
+}
+
+/**
  * Measurement defines model for Measurement.
  */
 export interface Measurement {

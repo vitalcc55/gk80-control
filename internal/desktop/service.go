@@ -14,7 +14,7 @@ type Core interface {
 	ConnectionState(context.Context) (contract.ConnectionState, error)
 	KeepAlive(context.Context) error
 	Snapshot(context.Context) (contract.Snapshot, error)
-	ListTests(context.Context) (contract.TestList, error)
+	ListTests(context.Context, contract.ListTestsParams) (contract.TestList, error)
 	CreateTest(context.Context, contract.CreateTestCommand) (contract.CommandStatus, error)
 	Test(context.Context, string) (contract.TestRecord, error)
 	Readiness(context.Context, string) (contract.Readiness, error)
@@ -54,8 +54,8 @@ func (s *Service) Snapshot(ctx context.Context) (contract.Snapshot, error) {
 	return s.core.Snapshot(ctx)
 }
 
-func (s *Service) ListTests(ctx context.Context) (contract.TestList, error) {
-	return s.core.ListTests(ctx)
+func (s *Service) ListTests(ctx context.Context, params contract.ListTestsParams) (contract.TestList, error) {
+	return s.core.ListTests(ctx, params)
 }
 
 func (s *Service) CreateTest(ctx context.Context, command contract.CreateTestCommand) (contract.CommandStatus, error) {

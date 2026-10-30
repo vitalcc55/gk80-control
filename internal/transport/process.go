@@ -211,6 +211,10 @@ func (p *Process) Handshake(ctx context.Context) (contract.Handshake, error) {
 	return result, nil
 }
 
+// Client returns the authenticated native client owned by this process.
+// It must remain in the Go host and is not a Wails service.
+func (p *Process) Client() *Client { return p.client }
+
 func (p *Process) PID() int { return p.cmd.Process.Pid }
 
 func (p *Process) Done() <-chan struct{} { return p.done }

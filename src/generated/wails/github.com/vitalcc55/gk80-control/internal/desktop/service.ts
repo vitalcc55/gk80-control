@@ -42,8 +42,8 @@ export function KeepAlive(): $CancellablePromise<void> {
     return $Call.ByID(691884807);
 }
 
-export function ListTests(): $CancellablePromise<contract$0.TestList> {
-    return $Call.ByID(623600912);
+export function ListTests(params: contract$0.ListTestsParams): $CancellablePromise<contract$0.TestList> {
+    return $Call.ByID(623600912, params);
 }
 
 export function Measurements(testID: string, after: number, limit: number): $CancellablePromise<contract$0.MeasurementPage> {
