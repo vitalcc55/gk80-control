@@ -43,7 +43,13 @@ var retainedCoreResources struct {
 }
 
 // Run serves the core until the owner pipe closes or the server stops.
-func Run(ctx context.Context, input io.Reader, output io.Writer, fallback io.Writer) (runErr error) {
+func Run(ctx context.Context, input io.Reader, output io.Writer, fallback io.Writer) error {
+	return run(ctx, input, output, fallback, func(ctx context.Context, store *storage.Store, id uuid.UUID) (*demo.Engine, error) {
+		return demo.NewEngine(ctx, store, demo.NewSimulator(), id)
+	})
+}
+
+func run(ctx context.Context, input io.Reader, output io.Writer, fallback io.Writer, newEngine func(context.Context, *storage.Store, uuid.UUID) (*demo.Engine, error)) (runErr error) {
 	reader := bufio.NewReaderSize(input, 8193)
 	var bootstrap transport.Bootstrap
 	if err := transport.ReadFrame(reader, &bootstrap); err != nil {
@@ -102,7 +108,7 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, fallback io.Wri
 	logger.Application(diagnostics.ComponentCore).Info(string(diagnostics.ProcessStarted))
 	settings := store.Settings()
 	logger.Application(diagnostics.ComponentCore).Info(string(diagnostics.StorageReady), "sqlite_version", settings.Version, "journal_mode", settings.JournalMode, "synchronous", settings.Synchronous)
-	engine, err := demo.NewEngine(ctx, store, demo.NewSimulator(), runID)
+	engine, err := newEngine(ctx, store, runID)
 	if err != nil {
 		return errors.New("demo engine unavailable")
 	}
@@ -118,6 +124,8 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, fallback io.Wri
 	var server *http.Server
 	var listener net.Listener
 	var handler *coreHTTP
+	var stopCommandLogging context.CancelFunc
+	var commandLogDone <-chan struct{}
 	defer func() {
 		leases.close()
 		stopFeed()
@@ -165,6 +173,17 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, fallback io.Wri
 				runErr = errors.Join(runErr, errors.New("core requests shutdown unconfirmed"))
 			}
 		}
+		if stopCommandLogging != nil {
+			stopCommandLogging()
+			select {
+			case <-commandLogDone:
+			case <-shutdownCtx.Done():
+				logger.ReportExternalUnconfirmed()
+			}
+		}
+		if retainResources {
+			logger.ReportExternalUnconfirmed()
+		}
 		if retainResources {
 			retainedCoreResources.Lock()
 			retainedCoreResources.items = append(retainedCoreResources.items, struct {
@@ -183,6 +202,7 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, fallback io.Wri
 		return errors.New("core listener unavailable")
 	}
 	handler = &coreHTTP{secret: bootstrap.Secret, handshake: handshakeHandler(bootstrap.Secret, runID), validator: validator, leases: leases, feed: feed, engine: engine, store: store, logger: logger.Application(diagnostics.ComponentCore)}
+	stopCommandLogging, commandLogDone = startCommandLogging(engine, handler, logger)
 	server = &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: 3 * time.Second,

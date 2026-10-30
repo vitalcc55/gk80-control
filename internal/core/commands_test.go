@@ -83,7 +83,7 @@ func TestRevokedOwnerCannotRegisterCreateAfterDelayedBody(t *testing.T) {
 	if code := <-done; code != http.StatusForbidden {
 		t.Fatalf("revoked request: %d", code)
 	}
-	if handler.anyCreateInFlight() {
+	if handler.anyAttemptInFlight() {
 		t.Fatal("revoked request was admitted")
 	}
 }

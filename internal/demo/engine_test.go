@@ -536,6 +536,7 @@ func TestFailedStopIsAuditedAndDoesNotReleaseTest(t *testing.T) {
 	defer func() { _ = store.Close() }()
 	simulator := &failingStopSimulator{}
 	engine := newTestEngine(t, store, simulator, uuid.New())
+	events, _ := engine.CommandEvents()
 	created, err := engine.Create(ctx, command(1))
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
@@ -550,6 +551,19 @@ func TestFailedStopIsAuditedAndDoesNotReleaseTest(t *testing.T) {
 	})
 	if state.Record.Outcome != "unknown" {
 		t.Fatalf("failed stop outcome: %+v", state.Record)
+	}
+	if state.Stop.Reason == nil || *state.Stop.Reason != "simulator_stop_failed" {
+		t.Fatalf("missing stop failure reason: %+v", state.Stop)
+	}
+	foundFailure := false
+	for len(events) > 0 {
+		event := <-events
+		if event.Status.Status == "failed" && event.Status.Reason != nil && *event.Status.Reason == "simulator_stop_failed" {
+			foundFailure = true
+		}
+	}
+	if !foundFailure {
+		t.Fatal("stop failure was not reported to diagnostics")
 	}
 	status, err := store.LookupStop(ctx, id, stopID)
 	if err != nil || status.Status != "failed" {
@@ -2159,6 +2173,296 @@ func TestLateLookupFailureDoesNotStopNewOwnerRun(t *testing.T) {
 	waitFor(t, engine, func(state State) bool {
 		return state.Record != nil && state.Record.Stage == "finished" && state.Record.SaveStatus == "saved"
 	})
+}
+
+type heldCompleteStart struct {
+	*storage.Store
+	entered          chan struct{}
+	release          chan struct{}
+	commitBeforeWait bool
+}
+
+func (s *heldCompleteStart) CompleteStart(ctx context.Context, id, commandID uuid.UUID) error {
+	var err error
+	if s.commitBeforeWait {
+		err = s.Store.CompleteStart(ctx, id, commandID)
+	}
+	close(s.entered)
+	<-s.release
+	if s.commitBeforeWait {
+		return err
+	}
+	return s.Store.CompleteStart(ctx, id, commandID)
+}
+
+func TestStalledStartCompletionStopsSimulatorWithoutOperator(t *testing.T) {
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	held := &heldCompleteStart{Store: store, entered: make(chan struct{}), release: make(chan struct{})}
+	sim := &countedSimulator{}
+	engine := newTestEngine(t, held, sim, uuid.New())
+	controller, err := engine.GrantControl()
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := controller.Create(context.Background(), command(10))
+	if err != nil || created.TestId == nil {
+		t.Fatalf("create: %v", err)
+	}
+	id := *created.TestId
+	if _, err := controller.Start(context.Background(), id, contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: 1, ValveClosed: true, ConnectionConfirmed: true}); err != nil {
+		t.Fatal(err)
+	}
+	action := engine.State().PendingAction
+	if action == nil {
+		t.Fatal("missing action")
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := controller.Confirm(context.Background(), id, action.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: 2})
+		done <- err
+	}()
+	select {
+	case <-held.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("completion did not start")
+	}
+	state := waitFor(t, engine, func(state State) bool { return state.Stop != nil && state.Stop.Status == "completed" })
+	if state.Record.Outcome != "interrupted" || sim.starts.Load() != 1 || sim.stops.Load() != 1 {
+		t.Fatalf("system stop: %+v", state)
+	}
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	shutdownErr := engine.Shutdown(shutdownCtx, "owner_lost")
+	shutdownCancel()
+	if !errors.Is(shutdownErr, ErrShutdownUnconfirmed) || !errors.Is(shutdownErr, context.DeadlineExceeded) {
+		t.Fatalf("shutdown while completion is stuck: %v", shutdownErr)
+	}
+	close(held.release)
+	if err := <-done; !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("completion: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := engine.Shutdown(ctx, "owner_lost"); err != nil {
+		t.Fatal(err)
+	}
+	if sim.stops.Load() != 1 {
+		t.Fatalf("late completion repeated stop: %d", sim.stops.Load())
+	}
+}
+
+func TestStartCompletionIsReportedAfterConcurrentStop(t *testing.T) {
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	held := &heldCompleteStart{Store: store, entered: make(chan struct{}), release: make(chan struct{}), commitBeforeWait: true}
+	engine := newTestEngine(t, held, &countedSimulator{}, uuid.New())
+	events, _ := engine.CommandEvents()
+	controller, err := engine.GrantControl()
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := controller.Create(context.Background(), command(10))
+	if err != nil || created.TestId == nil {
+		t.Fatalf("create: %v", err)
+	}
+	id := *created.TestId
+	startID := uuid.New()
+	if _, err := controller.Start(context.Background(), id, contract.StartTestCommand{CommandId: startID, ExpectedRevision: 1, ValveClosed: true, ConnectionConfirmed: true}); err != nil {
+		t.Fatal(err)
+	}
+	state := engine.State()
+	if state.PendingAction == nil {
+		t.Fatal("missing action")
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := controller.Confirm(context.Background(), id, state.PendingAction.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: state.Revision})
+		done <- err
+	}()
+	select {
+	case <-held.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("completion did not commit")
+	}
+	if _, err := controller.Stop(context.Background(), id, state.Record.StopCommandId); err != nil {
+		t.Fatal(err)
+	}
+	close(held.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := engine.Shutdown(ctx, "owner_lost"); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for {
+		select {
+		case event := <-events:
+			if event.Status.CommandId == startID && event.Status.Status == "completed" {
+				found = true
+			}
+		default:
+			if !found {
+				t.Fatal("committed start completion not reported")
+			}
+			return
+		}
+	}
+}
+
+func TestStartCompletionDeadlineWhenBothSignalsAreReady(t *testing.T) {
+	deadline := time.Now()
+	for _, tc := range []struct {
+		name     string
+		at       time.Time
+		timedOut bool
+	}{
+		{name: "before", at: deadline.Add(-time.Nanosecond)},
+		{name: "at", at: deadline, timedOut: true},
+		{name: "after", at: deadline.Add(time.Nanosecond), timedOut: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for range 100 {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				done := make(chan startCompletion, 1)
+				done <- startCompletion{at: tc.at}
+				calls := 0
+				_, timedOut := waitStartCompletion(ctx, deadline, done, func() { calls++ })
+				expectedCalls := 0
+				if tc.timedOut {
+					expectedCalls = 1
+				}
+				if timedOut != tc.timedOut || calls != expectedCalls {
+					t.Fatalf("timeout=%t calls=%d", timedOut, calls)
+				}
+			}
+		})
+	}
+}
+
+func TestLateCommittedStartCompletionDoesNotResumeMeasurement(t *testing.T) {
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	held := &heldCompleteStart{Store: store, entered: make(chan struct{}), release: make(chan struct{}), commitBeforeWait: true}
+	sim := &countedSimulator{}
+	engine := newTestEngine(t, held, sim, uuid.New())
+	events, _ := engine.CommandEvents()
+	controller, err := engine.GrantControl()
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := controller.Create(context.Background(), command(10))
+	if err != nil || created.TestId == nil {
+		t.Fatalf("create: %v", err)
+	}
+	id := *created.TestId
+	startID := uuid.New()
+	if _, err := controller.Start(context.Background(), id, contract.StartTestCommand{CommandId: startID, ExpectedRevision: 1, ValveClosed: true, ConnectionConfirmed: true}); err != nil {
+		t.Fatal(err)
+	}
+	state := engine.State()
+	if state.PendingAction == nil {
+		t.Fatal("missing action")
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := controller.Confirm(context.Background(), id, state.PendingAction.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: state.Revision})
+		done <- err
+	}()
+	select {
+	case <-held.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("completion did not commit")
+	}
+	state = waitFor(t, engine, func(state State) bool { return state.Stop != nil && state.Stop.Status == "completed" })
+	if sim.starts.Load() != 1 || sim.stops.Load() != 1 || len(state.Measurements) != 0 {
+		t.Fatalf("late completion state: %+v", state)
+	}
+	close(held.release)
+	if err := <-done; !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("completion: %v", err)
+	}
+	found := false
+	for {
+		select {
+		case event := <-events:
+			if event.Status.CommandId == startID && event.Status.Status == "completed" {
+				found = true
+			}
+		default:
+			if !found {
+				t.Fatal("confirmed completion not reported")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := engine.Shutdown(ctx, "owner_lost"); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+	}
+}
+
+func TestFullDiagnosticQueueDoesNotBlockStop(t *testing.T) {
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	sim := &countedSimulator{}
+	engine := newTestEngine(t, store, sim, uuid.New())
+	_, dropped := engine.CommandEvents()
+	controller, err := engine.GrantControl()
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := controller.Create(context.Background(), command(1))
+	if err != nil || created.TestId == nil {
+		t.Fatalf("create: %v", err)
+	}
+	for range 64 {
+		engine.emitCommand(contract.CommandStatus{CommandId: uuid.New(), Status: "completed"}, nil)
+	}
+	for range 2 {
+		engine.emitCommand(contract.CommandStatus{CommandId: uuid.New(), Status: "completed"}, nil)
+	}
+	for range 3 {
+		engine.emitCommand(contract.CommandStatus{CommandId: uuid.New(), Status: "failed"}, nil)
+	}
+	select {
+	case <-dropped:
+	default:
+		t.Fatal("diagnostic drop not signalled")
+	}
+	info, failed := engine.TakeCommandDrops()
+	if info != 2 || failed != 3 {
+		t.Fatalf("drop counts: info=%d error=%d", info, failed)
+	}
+	stopID := engine.State().Record.StopCommandId
+	if _, err := controller.Stop(context.Background(), *created.TestId, stopID); err != nil {
+		t.Fatal(err)
+	}
+	state := waitFor(t, engine, func(state State) bool { return state.Stop != nil && state.Stop.Status == "completed" })
+	if sim.stops.Load() != 1 {
+		t.Fatalf("stop did not execute: %+v", state)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := engine.Shutdown(ctx, "owner_lost"); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestRenewedControlKeepsPendingRejection(t *testing.T) {

@@ -803,8 +803,8 @@ func (s *Store) CompleteStart(ctx context.Context, testID, commandID uuid.UUID) 
 // LookupStop never invokes the simulator. A reserved command has no durable outcome.
 func (s *Store) LookupStop(ctx context.Context, testID, commandID uuid.UUID) (contract.CommandStatus, error) {
 	var operation, state string
-	var linked sql.NullString
-	err := s.db.QueryRowContext(ctx, `SELECT operation, status, test_id FROM commands WHERE id = ?`, commandID.String()).Scan(&operation, &state, &linked)
+	var linked, reason sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT operation, status, test_id, reason FROM commands WHERE id = ?`, commandID.String()).Scan(&operation, &state, &linked, &reason)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && (operation != "stop" || !linked.Valid || linked.String != testID.String())) {
 		return contract.CommandStatus{}, ErrCommandConflict
 	}
@@ -814,7 +814,11 @@ func (s *Store) LookupStop(ctx context.Context, testID, commandID uuid.UUID) (co
 	if state == "reserved" {
 		state = "unknown"
 	}
-	return contract.CommandStatus{CommandId: commandID, TestId: &testID, Status: contract.CommandStatusStatus(state)}, nil
+	status := contract.CommandStatus{CommandId: commandID, TestId: &testID, Status: contract.CommandStatusStatus(state)}
+	if reason.Valid {
+		status.Reason = &reason.String
+	}
+	return status, nil
 }
 
 type StopDetails struct {
@@ -838,8 +842,8 @@ func (s *Store) FinishStop(ctx context.Context, testID, commandID uuid.UUID, det
 		return contract.CommandStatus{}, err
 	}
 	var operation, state string
-	var linked sql.NullString
-	err := s.db.QueryRowContext(ctx, `SELECT operation, status, test_id FROM commands WHERE id = ?`, commandID.String()).Scan(&operation, &state, &linked)
+	var linked, previousReason sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT operation, status, test_id, reason FROM commands WHERE id = ?`, commandID.String()).Scan(&operation, &state, &linked, &previousReason)
 	if errors.Is(err, sql.ErrNoRows) {
 		return contract.CommandStatus{}, ErrCommandConflict
 	}
@@ -853,7 +857,11 @@ func (s *Store) FinishStop(ctx context.Context, testID, commandID uuid.UUID, det
 		return contract.CommandStatus{}, ErrCommandConflict
 	}
 	if state == "completed" || state == "failed" {
-		return contract.CommandStatus{CommandId: commandID, Status: contract.CommandStatusStatus(state), TestId: &testID}, nil
+		result := contract.CommandStatus{CommandId: commandID, Status: contract.CommandStatusStatus(state), TestId: &testID}
+		if previousReason.Valid {
+			result.Reason = &previousReason.String
+		}
+		return result, nil
 	}
 	if state != "reserved" {
 		return contract.CommandStatus{}, ErrInvalidState
@@ -899,10 +907,13 @@ func (s *Store) FinishStop(ctx context.Context, testID, commandID uuid.UUID, det
 		return contract.CommandStatus{}, err
 	}
 	status := "completed"
+	var reason *string
 	if details.Failed {
 		status = "failed"
+		value := "simulator_stop_failed"
+		reason = &value
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE commands SET status = ? WHERE id = ?`, status, commandID.String()); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE commands SET status = ?, reason = ? WHERE id = ?`, status, reason, commandID.String()); err != nil {
 		s.noteWriteError(ctx, err, false)
 		return contract.CommandStatus{}, err
 	}
@@ -927,7 +938,7 @@ func (s *Store) FinishStop(ctx context.Context, testID, commandID uuid.UUID, det
 		s.noteWriteError(ctx, err, false)
 		return contract.CommandStatus{}, err
 	}
-	return contract.CommandStatus{CommandId: commandID, Status: contract.CommandStatusStatus(status), TestId: &testID}, nil
+	return contract.CommandStatus{CommandId: commandID, Status: contract.CommandStatusStatus(status), TestId: &testID, Reason: reason}, nil
 }
 
 func markAcceptedUnknown(ctx context.Context, tx *sql.Tx, testID uuid.UUID, revision *int64) error {

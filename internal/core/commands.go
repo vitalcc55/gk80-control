@@ -81,27 +81,28 @@ func (h *coreHTTP) recoverSnapshot(w http.ResponseWriter, r *http.Request, owner
 	return true
 }
 
-type createAttempt struct {
+type commandAttempt struct {
 	id       uuid.UUID
 	admitted bool
+	kind     string
 }
 
-func (h *coreHTTP) beginCreate(id uuid.UUID) (*createAttempt, error) {
+func (h *coreHTTP) beginAttempt(id uuid.UUID, kind string) (*commandAttempt, error) {
 	h.pendingMu.Lock()
 	defer h.pendingMu.Unlock()
 	if len(h.pending) >= 32 {
 		return nil, demo.ErrBusy
 	}
 	if h.pending == nil {
-		h.pending = make(map[*createAttempt]struct{})
+		h.pending = make(map[*commandAttempt]struct{})
 	}
-	attempt := &createAttempt{id: id}
+	attempt := &commandAttempt{id: id, kind: kind}
 	h.pending[attempt] = struct{}{}
 	h.pendingVersion++
 	return attempt, nil
 }
 
-func (h *coreHTTP) endCreate(attempt *createAttempt) {
+func (h *coreHTTP) endAttempt(attempt *commandAttempt) {
 	h.pendingMu.Lock()
 	defer h.pendingMu.Unlock()
 	if _, exists := h.pending[attempt]; exists {
@@ -110,16 +111,16 @@ func (h *coreHTTP) endCreate(attempt *createAttempt) {
 	}
 }
 
-func (h *coreHTTP) abandonCreate(attempt *createAttempt) {
+func (h *coreHTTP) abandonAttempt(attempt *commandAttempt) {
 	h.pendingMu.Lock()
 	defer h.pendingMu.Unlock()
-	if _, exists := h.pending[attempt]; exists && (!attempt.admitted || !h.engine.CreatePending(attempt.id)) {
+	if _, exists := h.pending[attempt]; exists && (!attempt.admitted || !h.engine.CommandPending(attempt.id)) {
 		delete(h.pending, attempt)
 		h.pendingVersion++
 	}
 }
 
-func (h *coreHTTP) admitCreate(ctx context.Context, attempt *createAttempt) bool {
+func (h *coreHTTP) admitAttempt(ctx context.Context, attempt *commandAttempt) bool {
 	h.pendingMu.Lock()
 	defer h.pendingMu.Unlock()
 	if _, exists := h.pending[attempt]; !exists || ctx.Err() != nil {
@@ -141,7 +142,7 @@ func (h *coreHTTP) createObservation(id uuid.UUID) (bool, uint64) {
 	return false, h.pendingVersion
 }
 
-func (h *coreHTTP) admittedCreateLocked() bool {
+func (h *coreHTTP) admittedAttemptLocked() bool {
 	for attempt := range h.pending {
 		if attempt.admitted {
 			return true
@@ -150,10 +151,20 @@ func (h *coreHTTP) admittedCreateLocked() bool {
 	return false
 }
 
-func (h *coreHTTP) anyCreateInFlight() bool {
+func (h *coreHTTP) blocksSnapshotLocked() bool {
+	state := h.engine.State()
+	for attempt := range h.pending {
+		if attempt.admitted && (attempt.kind == "create" || state.Stop == nil) {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *coreHTTP) anyAttemptInFlight() bool {
 	h.pendingMu.Lock()
 	defer h.pendingMu.Unlock()
-	return h.admittedCreateLocked()
+	return h.admittedAttemptLocked()
 }
 
 func (h *coreHTTP) createTest(w http.ResponseWriter, r *http.Request) {
@@ -187,7 +198,7 @@ func (h *coreHTTP) createTest(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusForbidden, "lease_invalid", "UI lease required")
 		return
 	}
-	attempt, err := h.beginCreate(command.CommandId)
+	attempt, err := h.beginAttempt(command.CommandId, "create")
 	if err != nil {
 		if !h.leases.valid(owner) {
 			writeAPIError(w, http.StatusForbidden, "lease_invalid", "UI lease required")
@@ -197,7 +208,7 @@ func (h *coreHTTP) createTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.beginWorker() {
-		h.endCreate(attempt)
+		h.endAttempt(attempt)
 		writeAPIError(w, http.StatusServiceUnavailable, "state_unavailable", "State is not yet confirmed")
 		return
 	}
@@ -213,7 +224,7 @@ func (h *coreHTTP) createTest(w http.ResponseWriter, r *http.Request) {
 		defer h.endWorker()
 		var response createResult
 		defer func() {
-			h.endCreate(attempt)
+			h.endAttempt(attempt)
 			done <- response
 		}()
 		result, err := owner.controller.LookupCreateExact(ctx, command, input.Identity)
@@ -230,7 +241,7 @@ func (h *coreHTTP) createTest(w http.ResponseWriter, r *http.Request) {
 			response = createResult{invalid: true}
 			return
 		}
-		if !h.admitCreate(ctx, attempt) {
+		if !h.admitAttempt(ctx, attempt) {
 			response.err = ctx.Err()
 			return
 		}
@@ -250,7 +261,7 @@ func (h *coreHTTP) createTest(w http.ResponseWriter, r *http.Request) {
 	select {
 	case resolved = <-done:
 	case <-ctx.Done():
-		h.abandonCreate(attempt)
+		h.abandonAttempt(attempt)
 		resolved.err = ctx.Err()
 	}
 	if !h.leases.valid(owner) {
@@ -264,7 +275,7 @@ func (h *coreHTTP) createTest(w http.ResponseWriter, r *http.Request) {
 	h.commandResult(w, resolved.status, resolved.err)
 }
 
-func (h *coreHTTP) logCommand(status contract.CommandStatus) {
+func (h *coreHTTP) logCommand(status contract.CommandStatus, action ...uuid.UUID) {
 	if h.logger == nil || status.CommandId == uuid.Nil {
 		return
 	}
@@ -276,6 +287,8 @@ func (h *coreHTTP) logCommand(status contract.CommandStatus) {
 		event = diagnostics.CommandCompleted
 	case "rejected":
 		event = diagnostics.CommandRejected
+	case "failed":
+		event = diagnostics.CommandFailed
 	default:
 		return
 	}
@@ -283,25 +296,38 @@ func (h *coreHTTP) logCommand(status contract.CommandStatus) {
 	if status.TestId != nil {
 		args = append(args, "test_id", *status.TestId)
 	}
+	if len(action) != 0 && action[0] != uuid.Nil {
+		args = append(args, "action_id", action[0])
+	}
 	if status.Reason != nil {
 		args = append(args, "error_code", *status.Reason)
 	}
 	h.logger.Info(string(event), args...)
 }
 
-func (h *coreHTTP) logConflict(id uuid.UUID) {
+func (h *coreHTTP) logConflict(id uuid.UUID, related ...uuid.UUID) {
 	if h.logger != nil {
-		h.logger.Info(string(diagnostics.CommandRejected), "command_id", id, "error_code", "command_id_conflict")
+		args := []any{"command_id", id, "error_code", "command_id_conflict"}
+		if len(related) > 0 && related[0] != uuid.Nil {
+			args = append(args, "test_id", related[0])
+		}
+		if len(related) > 1 && related[1] != uuid.Nil {
+			args = append(args, "action_id", related[1])
+		}
+		h.logger.Info(string(diagnostics.CommandRejected), args...)
 	}
 }
 
-func (h *coreHTTP) logObserved(status contract.CommandStatus) {
+func (h *coreHTTP) logObserved(status contract.CommandStatus, action ...uuid.UUID) {
 	if h.logger == nil || status.CommandId == uuid.Nil || !status.Status.Valid() {
 		return
 	}
 	args := []any{"command_id", status.CommandId, "command_status", string(status.Status)}
 	if status.TestId != nil {
 		args = append(args, "test_id", *status.TestId)
+	}
+	if len(action) != 0 && action[0] != uuid.Nil {
+		args = append(args, "action_id", action[0])
 	}
 	if status.Reason != nil {
 		args = append(args, "error_code", *status.Reason)
@@ -324,6 +350,14 @@ func (h *coreHTTP) commandResult(w http.ResponseWriter, status contract.CommandS
 	}
 	if errors.Is(err, demo.ErrBusy) {
 		writeAPIError(w, http.StatusConflict, "busy", "Another command is being processed")
+		return
+	}
+	if errors.Is(err, storage.ErrInvalidState) {
+		writeAPIError(w, http.StatusConflict, "invalid_state", "Command is not available in this state")
+		return
+	}
+	if errors.Is(err, storage.ErrTestNotFound) || errors.Is(err, storage.ErrCommandNotFound) {
+		writeAPIError(w, http.StatusNotFound, "not_found", "Test or command not found")
 		return
 	}
 	if errors.Is(err, storage.ErrInvalidCommand) {
@@ -354,6 +388,7 @@ func (h *coreHTTP) commandStatus(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusForbidden, "lease_invalid", "UI lease required")
 			return
 		}
+		h.logObserved(*state.Stop)
 		writeJSON(w, http.StatusOK, state.Stop)
 		return
 	}
@@ -399,13 +434,13 @@ func (h *coreHTTP) commandStatus(w http.ResponseWriter, r *http.Request) {
 func (h *coreHTTP) readCommand(ctx context.Context, id uuid.UUID) (contract.CommandStatus, error) {
 	for {
 		wasPending, version := h.createObservation(id)
-		wasPending = wasPending || h.engine.CreatePending(id)
+		wasPending = wasPending || h.engine.CommandPending(id)
 		status, err := h.store.Command(ctx, id)
 		if !errors.Is(err, storage.ErrCommandNotFound) {
 			return status, err
 		}
 		nowPending, currentVersion := h.createObservation(id)
-		if wasPending || nowPending || h.engine.CreatePending(id) {
+		if wasPending || nowPending || h.engine.CommandPending(id) {
 			return contract.CommandStatus{CommandId: id, Status: "unknown"}, nil
 		}
 		if version == currentVersion {
@@ -427,17 +462,20 @@ func (h *coreHTTP) readiness(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if h.anyCreateInFlight() {
+	if h.anyAttemptInFlight() {
 		writeAPIError(w, http.StatusServiceUnavailable, "state_unavailable", "State is not yet confirmed")
 		return
 	}
 	if !h.recoverSnapshot(w, r, owner) {
 		return
 	}
-	if h.anyCreateInFlight() || h.engine.HasUnresolvedCreate() {
+	if h.anyAttemptInFlight() || h.engine.HasUnresolvedCreate() {
 		writeAPIError(w, http.StatusServiceUnavailable, "state_unavailable", "State is not yet confirmed")
 		return
 	}
+	h.pendingMu.Lock()
+	version := h.pendingVersion
+	h.pendingMu.Unlock()
 	path := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/tests/"), "/readiness")
 	id, err := parsePathID(path)
 	if err != nil {
@@ -447,6 +485,18 @@ func (h *coreHTTP) readiness(w http.ResponseWriter, r *http.Request) {
 	result, err := h.engine.Readiness(id)
 	if !h.leases.valid(owner) {
 		writeAPIError(w, http.StatusForbidden, "lease_invalid", "UI lease required")
+		return
+	}
+	h.pendingMu.Lock()
+	unstable := version != h.pendingVersion || h.admittedAttemptLocked() || h.engine.HasUnresolvedCreate()
+	valid := h.leases.valid(owner)
+	h.pendingMu.Unlock()
+	if !valid {
+		writeAPIError(w, http.StatusForbidden, "lease_invalid", "UI lease required")
+		return
+	}
+	if unstable {
+		writeAPIError(w, http.StatusServiceUnavailable, "state_unavailable", "State is not yet confirmed")
 		return
 	}
 	if errors.Is(err, storage.ErrTestNotFound) {

@@ -12,6 +12,53 @@ import (
 	"github.com/vitalcc55/gk80-control/internal/contract"
 )
 
+func TestFailedStopReasonSurvivesReopenAndReplay(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.Create(ctx, createCommand())
+	if err != nil || created.TestId == nil {
+		t.Fatalf("create: %v", err)
+	}
+	record, err := store.Test(ctx, *created.TestId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	details := StopDetails{Actor: "demo-operator", Reason: "operator;simulator_stop_failed", AcceptedAt: time.Now(), Failed: true}
+	result, err := store.FinishStop(ctx, record.TestId, record.StopCommandId, details)
+	if err != nil || result.Status != "failed" || result.Reason == nil || *result.Reason != "simulator_stop_failed" {
+		t.Fatalf("stop: %+v %v", result, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	if err := store.Recover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, read := range []func() (contract.CommandStatus, error){
+		func() (contract.CommandStatus, error) { return store.Command(ctx, record.StopCommandId) },
+		func() (contract.CommandStatus, error) {
+			return store.LookupStop(ctx, record.TestId, record.StopCommandId)
+		},
+		func() (contract.CommandStatus, error) {
+			return store.FinishStop(ctx, record.TestId, record.StopCommandId, details)
+		},
+	} {
+		result, err := read()
+		if err != nil || result.Status != "failed" || result.Reason == nil || *result.Reason != "simulator_stop_failed" {
+			t.Fatalf("reopened stop: %+v %v", result, err)
+		}
+	}
+}
+
 func TestDemoRecordTransitionsAndMeasurementsSurviveReopen(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

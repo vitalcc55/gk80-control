@@ -82,6 +82,7 @@ type Engine struct {
 	runID            uuid.UUID
 	revision         int64
 	unresolvedCreate *pendingCreate
+	pendingCommand   uuid.UUID
 	active           *run
 	changed          chan struct{}
 	controller       *Controller
@@ -89,6 +90,10 @@ type Engine struct {
 	resolving        bool
 	lifeCtx          context.Context
 	lifeCancel       context.CancelFunc
+	commandEvents    chan CommandEvent
+	commandDrops     chan struct{}
+	droppedInfo      uint64
+	droppedError     uint64
 }
 
 func NewEngine(ctx context.Context, store Repository, equipment Equipment, runID uuid.UUID) (*Engine, error) {
@@ -271,6 +276,24 @@ func (c *Controller) CreateExactWithDisposition(ctx context.Context, cmd contrac
 
 // LookupCreateExact resolves replays without executing a new command.
 func (c *Controller) LookupCreateExact(ctx context.Context, cmd contract.CreateTestCommand, identity []byte) (contract.CommandStatus, error) {
+	return c.lookup(ctx, func() (contract.CommandStatus, error) {
+		return c.engine.store.LookupCreateExact(ctx, cmd, identity)
+	})
+}
+
+func (c *Controller) LookupStart(ctx context.Context, id uuid.UUID, cmd contract.StartTestCommand) (contract.CommandStatus, error) {
+	return c.lookup(ctx, func() (contract.CommandStatus, error) {
+		return c.engine.store.LookupStart(ctx, id, cmd)
+	})
+}
+
+func (c *Controller) LookupConfirm(ctx context.Context, id, action uuid.UUID, cmd contract.ConfirmActionCommand) (contract.CommandStatus, error) {
+	return c.lookup(ctx, func() (contract.CommandStatus, error) {
+		return c.engine.store.LookupConfirm(ctx, id, action, cmd)
+	})
+}
+
+func (c *Controller) lookup(ctx context.Context, read func() (contract.CommandStatus, error)) (contract.CommandStatus, error) {
 	e := c.engine
 	e.mu.Lock()
 	if !e.allowedLocked(c) {
@@ -279,7 +302,7 @@ func (c *Controller) LookupCreateExact(ctx context.Context, cmd contract.CreateT
 	}
 	current := e.active
 	e.mu.Unlock()
-	result, err := e.store.LookupCreateExact(ctx, cmd, identity)
+	result, err := read()
 	e.mu.Lock()
 	if !e.allowedLocked(c) {
 		e.mu.Unlock()
@@ -299,15 +322,38 @@ func (c *Controller) LookupCreateExact(ctx context.Context, cmd contract.CreateT
 }
 
 func (c *Controller) Start(ctx context.Context, id uuid.UUID, cmd contract.StartTestCommand) (contract.CommandStatus, error) {
-	return c.engine.start(ctx, id, cmd, c)
+	return c.engine.start(ctx, id, cmd, c, nil)
 }
 
 func (c *Controller) Confirm(ctx context.Context, id, action uuid.UUID, cmd contract.ConfirmActionCommand) (contract.CommandStatus, error) {
-	return c.engine.confirm(ctx, id, action, cmd, c)
+	return c.engine.confirm(ctx, id, action, cmd, c, nil)
+}
+
+func (c *Controller) StartWithDisposition(ctx context.Context, id uuid.UUID, cmd contract.StartTestCommand) (contract.CommandStatus, bool, error) {
+	replayed := false
+	result, err := c.engine.start(ctx, id, cmd, c, &replayed)
+	return result, replayed, err
+}
+
+func (c *Controller) ConfirmWithDisposition(ctx context.Context, id, action uuid.UUID, cmd contract.ConfirmActionCommand) (contract.CommandStatus, bool, error) {
+	replayed := false
+	result, err := c.engine.confirm(ctx, id, action, cmd, c, &replayed)
+	return result, replayed, err
 }
 
 func (c *Controller) Stop(ctx context.Context, id, commandID uuid.UUID) (contract.CommandStatus, error) {
 	return c.engine.stop(ctx, id, commandID, c)
+}
+
+// TryStop handles the active reserved stop without accessing storage.
+func (c *Controller) TryStop(id, commandID uuid.UUID) (contract.CommandStatus, bool, bool, error) {
+	return c.engine.tryStop(id, commandID, c)
+}
+
+func (c *Controller) LookupStop(ctx context.Context, id, commandID uuid.UUID) (contract.CommandStatus, error) {
+	return c.lookup(ctx, func() (contract.CommandStatus, error) {
+		return c.engine.store.LookupStop(ctx, id, commandID)
+	})
 }
 
 // Revoke fences late commands before requesting the system stop.
@@ -435,6 +481,59 @@ func (e *Engine) Shutdown(ctx context.Context, reason string) error {
 
 func (e *Engine) Changes() <-chan struct{} { return e.changed }
 
+type CommandEvent struct {
+	Status   contract.CommandStatus
+	ActionID *uuid.UUID
+}
+
+// CommandEvents returns a bounded, nonblocking diagnostic stream for one consumer and a loss signal.
+func (e *Engine) CommandEvents() (<-chan CommandEvent, <-chan struct{}) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.commandEvents == nil {
+		e.commandEvents = make(chan CommandEvent, 64)
+		e.commandDrops = make(chan struct{}, 1)
+	}
+	return e.commandEvents, e.commandDrops
+}
+
+func (e *Engine) emitCommand(status contract.CommandStatus, action *uuid.UUID) {
+	e.mu.Lock()
+	events, drops := e.commandEvents, e.commandDrops
+	e.mu.Unlock()
+	if events == nil {
+		return
+	}
+	event := CommandEvent{Status: copyCommand(status)}
+	if action != nil {
+		copy := *action
+		event.ActionID = &copy
+	}
+	select {
+	case events <- event:
+	default:
+		e.mu.Lock()
+		if status.Status == "failed" {
+			e.droppedError++
+		} else {
+			e.droppedInfo++
+		}
+		e.mu.Unlock()
+		select {
+		case drops <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func (e *Engine) TakeCommandDrops() (uint64, uint64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	info, failed := e.droppedInfo, e.droppedError
+	e.droppedInfo, e.droppedError = 0, 0
+	return info, failed
+}
+
 // NeedsRefresh reports recoverable in-memory uncertainty without performing I/O.
 func (e *Engine) NeedsRefresh() bool {
 	e.mu.Lock()
@@ -448,11 +547,19 @@ func (e *Engine) HasUnresolvedCreate() bool {
 	return e.unresolvedCreate != nil
 }
 
-// CreatePending identifies an admitted create whose persisted outcome is unresolved.
-func (e *Engine) CreatePending(id uuid.UUID) bool {
+// CommandPending identifies an admitted command whose persisted outcome is unresolved.
+func (e *Engine) CommandPending(id uuid.UUID) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.unresolvedCreate != nil && e.unresolvedCreate.command.CommandId == id
+	return e.pendingCommand == id || (e.unresolvedCreate != nil && e.unresolvedCreate.command.CommandId == id)
+}
+
+func (e *Engine) clearPendingCommand(id uuid.UUID) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.pendingCommand == id {
+		e.pendingCommand = uuid.Nil
+	}
 }
 func (e *Engine) signal() {
 	select {
@@ -818,10 +925,10 @@ func (e *Engine) Readiness(testID uuid.UUID) (contract.Readiness, error) {
 }
 
 func (e *Engine) Start(ctx context.Context, testID uuid.UUID, command contract.StartTestCommand) (contract.CommandStatus, error) {
-	return e.start(ctx, testID, command, nil)
+	return e.start(ctx, testID, command, nil, nil)
 }
 
-func (e *Engine) start(ctx context.Context, testID uuid.UUID, command contract.StartTestCommand, control *Controller) (contract.CommandStatus, error) {
+func (e *Engine) start(ctx context.Context, testID uuid.UUID, command contract.StartTestCommand, control *Controller, replayed *bool) (contract.CommandStatus, error) {
 	if err := e.acquire(ctx); err != nil {
 		return contract.CommandStatus{}, err
 	}
@@ -834,6 +941,9 @@ func (e *Engine) start(ctx context.Context, testID uuid.UUID, command contract.S
 	}
 	previous, lookupErr := e.store.LookupStart(ctx, testID, command)
 	if !errors.Is(lookupErr, storage.ErrCommandNotFound) {
+		if replayed != nil && previous.CommandId != uuid.Nil {
+			*replayed = true
+		}
 		e.abortOnLookupError(ctx, lookupErr)
 		if !e.allowed(control) {
 			return contract.CommandStatus{}, ErrControlRevoked
@@ -845,6 +955,12 @@ func (e *Engine) start(ctx context.Context, testID uuid.UUID, command contract.S
 		e.mu.Unlock()
 		return contract.CommandStatus{}, ErrControlRevoked
 	}
+	if err := ctx.Err(); err != nil {
+		e.mu.Unlock()
+		return contract.CommandStatus{}, err
+	}
+	e.pendingCommand = command.CommandId
+	defer e.clearPendingCommand(command.CommandId)
 	current := e.active
 	if control != nil && current != nil && current.stopping && !current.finalized {
 		e.mu.Unlock()
@@ -910,6 +1026,7 @@ func (e *Engine) start(ctx context.Context, testID uuid.UUID, command contract.S
 		}
 		return status, err
 	}
+	e.emitCommand(status, nil)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.active == current && !current.stopping {
@@ -924,10 +1041,10 @@ func (e *Engine) start(ctx context.Context, testID uuid.UUID, command contract.S
 }
 
 func (e *Engine) Confirm(ctx context.Context, testID, actionID uuid.UUID, command contract.ConfirmActionCommand) (contract.CommandStatus, error) {
-	return e.confirm(ctx, testID, actionID, command, nil)
+	return e.confirm(ctx, testID, actionID, command, nil, nil)
 }
 
-func (e *Engine) confirm(ctx context.Context, testID, actionID uuid.UUID, command contract.ConfirmActionCommand, control *Controller) (contract.CommandStatus, error) {
+func (e *Engine) confirm(ctx context.Context, testID, actionID uuid.UUID, command contract.ConfirmActionCommand, control *Controller, replayed *bool) (contract.CommandStatus, error) {
 	if err := e.acquire(ctx); err != nil {
 		return contract.CommandStatus{}, err
 	}
@@ -940,6 +1057,9 @@ func (e *Engine) confirm(ctx context.Context, testID, actionID uuid.UUID, comman
 	}
 	previous, lookupErr := e.store.LookupConfirm(ctx, testID, actionID, command)
 	if !errors.Is(lookupErr, storage.ErrCommandNotFound) {
+		if replayed != nil && previous.CommandId != uuid.Nil {
+			*replayed = true
+		}
 		e.abortOnLookupError(ctx, lookupErr)
 		if !e.allowed(control) {
 			return contract.CommandStatus{}, ErrControlRevoked
@@ -951,6 +1071,12 @@ func (e *Engine) confirm(ctx context.Context, testID, actionID uuid.UUID, comman
 		e.mu.Unlock()
 		return contract.CommandStatus{}, ErrControlRevoked
 	}
+	if err := ctx.Err(); err != nil {
+		e.mu.Unlock()
+		return contract.CommandStatus{}, err
+	}
+	e.pendingCommand = command.CommandId
+	defer e.clearPendingCommand(command.CommandId)
 	current := e.active
 	if control != nil && current != nil && current.stopping && !current.finalized {
 		e.mu.Unlock()
@@ -1006,6 +1132,7 @@ func (e *Engine) confirm(ctx context.Context, testID, actionID uuid.UUID, comman
 		}
 		return status, err
 	}
+	e.emitCommand(status, &actionID)
 	e.mu.Lock()
 	if e.active != current || current.stopping || current.started || !e.allowedLocked(control) {
 		e.mu.Unlock()
@@ -1029,12 +1156,27 @@ func (e *Engine) confirm(ctx context.Context, testID, actionID uuid.UUID, comman
 	e.signal()
 	e.mu.Unlock()
 	completeCtx, completeCancel := context.WithTimeout(context.Background(), 2*time.Second)
-	err = e.store.CompleteStart(completeCtx, testID, current.startID)
+	completeDone := make(chan startCompletion, 1)
+	deadline, _ := completeCtx.Deadline()
+	go func() {
+		err := e.store.CompleteStart(completeCtx, testID, current.startID)
+		completeDone <- startCompletion{err: err, at: time.Now()}
+	}()
+	completed, timedOut := waitStartCompletion(completeCtx, deadline, completeDone, func() { e.requestStop(current, "storage_error") })
+	if timedOut {
+		if completed.err == nil {
+			e.emitCommand(contract.CommandStatus{CommandId: current.startID, TestId: &testID, Status: "completed"}, &actionID)
+		}
+		completeCancel()
+		return status, context.DeadlineExceeded
+	}
+	err = completed.err
 	completeCancel()
 	if err != nil {
 		e.requestStop(current, "storage_error")
 		return status, err
 	}
+	e.emitCommand(contract.CommandStatus{CommandId: current.startID, TestId: &testID, Status: "completed"}, &actionID)
 	e.mu.Lock()
 	if e.active != current || current.stopping {
 		e.mu.Unlock()
@@ -1089,36 +1231,41 @@ func (e *Engine) Stop(ctx context.Context, testID, commandID uuid.UUID) (contrac
 }
 
 func (e *Engine) stop(ctx context.Context, testID, commandID uuid.UUID, control *Controller) (contract.CommandStatus, error) {
+	result, matched, _, err := e.tryStop(testID, commandID, control)
+	if matched {
+		return result, err
+	}
+	result, err = e.store.LookupStop(ctx, testID, commandID)
+	if !e.allowed(control) {
+		return contract.CommandStatus{}, ErrControlRevoked
+	}
+	return result, err
+}
+
+func (e *Engine) tryStop(testID, commandID uuid.UUID, control *Controller) (contract.CommandStatus, bool, bool, error) {
 	e.mu.Lock()
 	if !e.allowedLocked(control) {
 		e.mu.Unlock()
-		return contract.CommandStatus{}, ErrControlRevoked
+		return contract.CommandStatus{}, true, false, ErrControlRevoked
 	}
 	current := e.active
 	if current == nil || current.record.TestId != testID || current.record.StopCommandId != commandID {
 		e.mu.Unlock()
-		result, err := e.store.LookupStop(ctx, testID, commandID)
-		e.mu.Lock()
-		allowed := e.allowedLocked(control)
-		e.mu.Unlock()
-		if !allowed {
-			return contract.CommandStatus{}, ErrControlRevoked
-		}
-		return result, err
+		return contract.CommandStatus{}, false, false, nil
 	}
 	if current.stopping {
 		result := copyCommand(*current.stopStatus)
 		e.mu.Unlock()
-		return result, nil
+		return result, true, true, nil
 	}
 	if current.naturalDone || current.record.Stage == "finished" {
 		e.mu.Unlock()
-		return contract.CommandStatus{}, storage.ErrInvalidState
+		return contract.CommandStatus{}, true, false, storage.ErrInvalidState
 	}
 	result := e.acceptStopLocked(current, "demo-operator", "operator")
 	e.mu.Unlock()
 	go e.finishStop(current)
-	return copyCommand(result), nil
+	return copyCommand(result), true, false, nil
 }
 
 func (e *Engine) acceptStopLocked(current *run, actor, reason string) contract.CommandStatus {
@@ -1156,9 +1303,19 @@ func (e *Engine) finishStop(current *run) {
 		e.mu.Unlock()
 		return
 	}
+	accepted := copyCommand(*current.stopStatus)
+	e.mu.Unlock()
+	e.emitCommand(accepted, nil)
+	e.mu.Lock()
+	if e.active != current {
+		e.mu.Unlock()
+		return
+	}
 	err := e.equipment.Stop()
 	if err != nil {
 		current.stopStatus.Status = "failed"
+		reason := "simulator_stop_failed"
+		current.stopStatus.Reason = &reason
 		current.record.Outcome = "unknown"
 		current.stopDetails.Failed = true
 		current.stopDetails.Reason += ";simulator_stop_failed"
@@ -1173,8 +1330,10 @@ func (e *Engine) finishStop(current *run) {
 	e.revision = current.revision
 	testID, stopID := current.record.TestId, current.record.StopCommandId
 	writerDone := current.writerDone
+	stopStatus := copyCommand(*current.stopStatus)
 	e.signal()
 	e.mu.Unlock()
+	e.emitCommand(stopStatus, nil)
 	if writerDone != nil {
 		timer := time.NewTimer(2 * time.Second)
 		select {
@@ -1229,6 +1388,30 @@ const sampleQueueLimit = 32
 const measurementWriteTimeout = 2 * time.Second
 
 type samplePacket []storage.TimedMeasurement
+
+type startCompletion struct {
+	err error
+	at  time.Time
+}
+
+func waitStartCompletion(ctx context.Context, deadline time.Time, done <-chan startCompletion, onTimeout func()) (startCompletion, bool) {
+	var completed startCompletion
+	select {
+	case completed = <-done:
+	case <-ctx.Done():
+		select {
+		case completed = <-done:
+		default:
+			onTimeout()
+			return <-done, true
+		}
+	}
+	if !completed.at.Before(deadline) {
+		onTimeout()
+		return completed, true
+	}
+	return completed, false
+}
 
 func (e *Engine) measure(current *run) {
 	e.mu.Lock()

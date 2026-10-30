@@ -37,6 +37,7 @@ const (
 	CommandAccepted     Event = "command.accepted"
 	CommandRejected     Event = "command.rejected"
 	CommandCompleted    Event = "command.completed"
+	CommandFailed       Event = "command.failed"
 	CommandObserved     Event = "command.observed"
 	frameworkMessage    Event = "framework.message"
 	libraryMessage      Event = "library.message"
@@ -59,6 +60,7 @@ var eventCatalog = map[Event]eventSpec{
 	CommandAccepted:     {slog.LevelInfo, "Command accepted"},
 	CommandRejected:     {slog.LevelInfo, "Command rejected"},
 	CommandCompleted:    {slog.LevelInfo, "Command completed"},
+	CommandFailed:       {slog.LevelError, "Command failed"},
 	CommandObserved:     {slog.LevelInfo, "Command result observed"},
 	frameworkMessage:    {slog.LevelInfo, "Framework diagnostic"},
 	libraryMessage:      {slog.LevelInfo, "Library diagnostic"},
@@ -233,7 +235,7 @@ func (f *fields) add(attr slog.Attr) {
 			}
 		case "error_code":
 			switch value {
-			case "unavailable", "invalid_command", "command_id_conflict", "storage_unavailable", "revision", "active_test", "invalid_state", "action_mismatch", "test_not_found", "not_ready":
+			case "unavailable", "invalid_command", "command_id_conflict", "storage_unavailable", "revision", "active_test", "invalid_state", "action_mismatch", "test_not_found", "not_ready", "simulator_stop_failed":
 				f.errorCode = value
 			}
 		case "command_status":
@@ -476,6 +478,25 @@ func (l *Logger) Status() Status {
 
 // Degraded closes on the first writer failure, dropped record or unconfirmed shutdown.
 func (l *Logger) Degraded() <-chan struct{} { return l.degraded }
+
+// ReportExternalDrops records losses from a bounded upstream diagnostic queue.
+func (l *Logger) ReportExternalDrops(info, failed uint64) {
+	if info == 0 && failed == 0 {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.status.Degraded {
+		close(l.degraded)
+	}
+	l.status.Degraded = true
+	l.status.DroppedInfo += info
+	l.status.DroppedError += failed
+	l.signalFallbackLocked()
+}
+
+// ReportExternalUnconfirmed signals that an upstream diagnostic stream may still be active.
+func (l *Logger) ReportExternalUnconfirmed() { l.markUnconfirmed() }
 
 func (l *Logger) markUnconfirmed() {
 	l.mu.Lock()

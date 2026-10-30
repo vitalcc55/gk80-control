@@ -22,6 +22,22 @@ type memoryWriter struct {
 	bytes.Buffer
 }
 
+func TestExternalCommandDropsPreserveCountsAndLevels(t *testing.T) {
+	logger := newLogger(RoleCore, uuid.New(), &memoryWriter{}, io.Discard, Config{})
+	logger.ReportExternalDrops(2, 3)
+	logger.ReportExternalDrops(4, 1)
+	status := logger.Status()
+	if !status.Degraded || status.DroppedInfo != 6 || status.DroppedError != 4 {
+		t.Fatalf("drop counts: %+v", status)
+	}
+	select {
+	case <-logger.Degraded():
+	default:
+		t.Fatal("diagnostic degradation was not signalled")
+	}
+	closeLogger(t, logger)
+}
+
 func (w *memoryWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()

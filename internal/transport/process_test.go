@@ -829,3 +829,440 @@ func TestCoreProcessCreatesExactCommandAndRecoversLostResponse(t *testing.T) {
 		t.Fatalf("command diagnostics: completed=%d conflict=%t revision=%t", completed, conflict, revision)
 	}
 }
+
+func TestCoreProcessRunsSimulatorAndPersistsStop(t *testing.T) {
+	ctx := context.Background()
+	profileDir := t.TempDir()
+	process, _, err := Start(ctx, buildCore(t), profileDir, "test", "0.1.0")
+	if process != nil {
+		t.Cleanup(func() { _ = process.Close(ctx) })
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := func(method, path, body, lease string) *http.Response {
+		t.Helper()
+		req, err := http.NewRequest(method, process.client.endpoint+path, strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+process.client.secret)
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if lease != "" {
+			req.Header.Set("X-GK80-UI-Lease", lease)
+		}
+		response, err := process.client.http.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+	read := func(response *http.Response, target any) {
+		t.Helper()
+		defer func() { _ = response.Body.Close() }()
+		if err := json.NewDecoder(io.LimitReader(response.Body, 8193)).Decode(target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	response := request("POST", "/v1/ui-lease", fmt.Sprintf(`{"clientId":%q}`, uuid.NewString()), "")
+	var lease contract.UiLease
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("lease: %d", response.StatusCode)
+	}
+	read(response, &lease)
+	token := lease.LeaseId.String()
+	body := fmt.Sprintf(`{"commandId":%q,"expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":10,"direction":"pressure","actuator":false}}`, uuid.NewString())
+	response = request("POST", "/v1/tests", body, token)
+	var created contract.CommandStatus
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("create: %d", response.StatusCode)
+	}
+	read(response, &created)
+	if created.TestId == nil {
+		t.Fatal("missing test id")
+	}
+	id := *created.TestId
+	startID := uuid.New()
+	start := fmt.Sprintf(`{"commandId":%q,"expectedRevision":1,"valveClosed":true,"connectionConfirmed":true}`, startID.String())
+	for _, invalid := range []string{
+		strings.Replace(start, `,"valveClosed":true`, "", 1),
+		strings.Replace(start, `"valveClosed":true`, `"valveClosed":null`, 1),
+		strings.Replace(start, `"valveClosed":true`, `"valveClosed":false`, 1),
+	} {
+		response = request("POST", "/v1/tests/"+id.String()+"/start", invalid, token)
+		_ = response.Body.Close()
+		if response.StatusCode != http.StatusBadRequest {
+			t.Fatalf("invalid start: %d", response.StatusCode)
+		}
+	}
+	response = request("GET", "/v1/commands/"+startID.String(), "", token)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("invalid start was recorded: %d", response.StatusCode)
+	}
+	response = request("POST", "/v1/tests/"+id.String()+"/start", start, token)
+	var accepted contract.CommandAccepted
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("start: %d", response.StatusCode)
+	}
+	read(response, &accepted)
+	if accepted.Status != "accepted" {
+		t.Fatalf("start: %+v", accepted)
+	}
+	response = request("GET", "/v1/snapshot", "", token)
+	var snapshot contract.Snapshot
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("snapshot: %d", response.StatusCode)
+	}
+	read(response, &snapshot)
+	if snapshot.PendingAction == nil || snapshot.ActiveTest == nil {
+		t.Fatalf("pending: %+v", snapshot)
+	}
+	actionID := snapshot.PendingAction.ActionId
+	confirmID := uuid.New()
+	confirm := fmt.Sprintf(`{"commandId":%q,"expectedRevision":%d}`, confirmID.String(), snapshot.Revision)
+	response = request("POST", "/v1/tests/"+id.String()+"/actions/"+actionID.String()+"/confirm", fmt.Sprintf(`{"commandId":%q}`, confirmID.String()), token)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid confirm: %d", response.StatusCode)
+	}
+	response = request("POST", "/v1/tests/"+id.String()+"/actions/"+actionID.String()+"/confirm", confirm, token)
+	var confirmed contract.CommandStatus
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("confirm: %d", response.StatusCode)
+	}
+	read(response, &confirmed)
+	if confirmed.Status != "completed" {
+		t.Fatalf("confirm: %+v", confirmed)
+	}
+	response = request("POST", "/v1/tests/"+id.String()+"/start", start, token)
+	var replayed contract.CommandStatus
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("start replay: %d", response.StatusCode)
+	}
+	read(response, &replayed)
+	if replayed.Status != "completed" {
+		t.Fatalf("start replay: %+v", replayed)
+	}
+	wrongAction := uuid.New()
+	response = request("POST", "/v1/tests/"+id.String()+"/actions/"+wrongAction.String()+"/confirm", confirm, token)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusConflict {
+		t.Fatalf("confirm path conflict: %d", response.StatusCode)
+	}
+	response = request("POST", "/v1/tests/"+id.String()+"/start", strings.Replace(start, `"expectedRevision":1`, `"expectedRevision":2`, 1), token)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusConflict {
+		t.Fatalf("start content conflict: %d", response.StatusCode)
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		response = request("GET", "/v1/snapshot", "", token)
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("measurement snapshot: %d", response.StatusCode)
+		}
+		read(response, &snapshot)
+		if len(snapshot.Measurements) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("simulator produced no measurements")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if snapshot.Measurements[0].Source != "simulator" {
+		t.Fatalf("source: %+v", snapshot.Measurements[0])
+	}
+	stopID := snapshot.ActiveTest.StopCommandId
+	stop := fmt.Sprintf(`{"commandId":%q}`, stopID.String())
+	response = request("POST", "/v1/tests/"+id.String()+"/stop", stop, token)
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("stop: %d", response.StatusCode)
+	}
+	read(response, &accepted)
+	if accepted.Status != "accepted" {
+		t.Fatalf("stop acceptance: %+v", accepted)
+	}
+	for {
+		response = request("GET", "/v1/commands/"+stopID.String(), "", token)
+		var status contract.CommandStatus
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("stop status: %d", response.StatusCode)
+		}
+		read(response, &status)
+		response = request("GET", "/v1/snapshot", "", token)
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("stop snapshot: %d", response.StatusCode)
+		}
+		read(response, &snapshot)
+		if status.Status == "completed" && snapshot.ActiveTest != nil && snapshot.ActiveTest.SaveStatus == "saved" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("stop did not persist: %+v %+v", status, snapshot.ActiveTest)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if snapshot.ActiveTest.Outcome != "interrupted" {
+		t.Fatalf("outcome: %+v", snapshot.ActiveTest)
+	}
+	response = request("POST", "/v1/tests/"+id.String()+"/stop", stop, token)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("stop replay: %d", response.StatusCode)
+	}
+	read(response, &confirmed)
+	if confirmed.Status != "completed" {
+		t.Fatalf("stop replay: %+v", confirmed)
+	}
+	if err := process.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	logs, err := os.ReadDir(filepath.Join(profileDir, "logs"))
+	if err != nil || len(logs) != 1 {
+		t.Fatalf("logs: %v", err)
+	}
+	logData, err := os.ReadFile(filepath.Join(profileDir, "logs", logs[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	startAccepted, startCompleted, stopAcceptedLog, stopCompletedLog, confirmAction, conflictAction := 0, 0, 0, 0, false, false
+	startAcceptedAt, confirmAt, startCompletedAt, stopAcceptedAt, stopCompletedAt := -1, -1, -1, -1, -1
+	for index, line := range strings.Split(strings.TrimSpace(string(logData)), "\n") {
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event["command_id"] == startID.String() && event["event"] == "command.accepted" {
+			startAccepted++
+			startAcceptedAt = index
+		}
+		if event["command_id"] == startID.String() && event["event"] == "command.completed" {
+			startCompleted++
+			startCompletedAt = index
+		}
+		if event["command_id"] == stopID.String() && event["event"] == "command.accepted" {
+			stopAcceptedLog++
+			stopAcceptedAt = index
+		}
+		if event["command_id"] == stopID.String() && event["event"] == "command.completed" {
+			stopCompletedLog++
+			stopCompletedAt = index
+		}
+		if event["command_id"] == confirmID.String() && event["event"] == "command.completed" && event["action_id"] == actionID.String() {
+			confirmAction = true
+			confirmAt = index
+		}
+		if event["command_id"] == confirmID.String() && event["event"] == "command.rejected" && event["error_code"] == "command_id_conflict" && event["test_id"] == id.String() && event["action_id"] == wrongAction.String() {
+			conflictAction = true
+		}
+	}
+	if startAccepted != 1 || startCompleted != 1 || stopAcceptedLog != 1 || stopCompletedLog != 1 || !confirmAction || !conflictAction || startAcceptedAt >= confirmAt || confirmAt >= startCompletedAt || stopAcceptedAt >= stopCompletedAt {
+		t.Fatalf("command log: start=%d/%d stop=%d/%d action=%t conflict=%t order=%d/%d/%d/%d/%d", startAccepted, startCompleted, stopAcceptedLog, stopCompletedLog, confirmAction, conflictAction, startAcceptedAt, confirmAt, startCompletedAt, stopAcceptedAt, stopCompletedAt)
+	}
+	store, err := storage.Open(profileDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	record, err := store.Test(ctx, id)
+	if err != nil || record.Outcome != "interrupted" || record.SaveStatus != "saved" {
+		t.Fatalf("stored record: %+v %v", record, err)
+	}
+	measurements, err := store.Measurements(ctx, id, 0, 100)
+	if err != nil || len(measurements) == 0 || measurements[0].Source != "simulator" {
+		t.Fatalf("stored measurements: %d %v", len(measurements), err)
+	}
+	audit, err := store.Audit(ctx, id, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopAccepted, stopCompleted := 0, 0
+	for _, event := range audit {
+		if event.Action == "stop" && event.Outcome == "accepted" {
+			stopAccepted++
+		}
+		if event.Action == "stop" && event.Outcome == "completed" {
+			stopCompleted++
+		}
+	}
+	if stopAccepted != 1 || stopCompleted != 1 {
+		t.Fatalf("stop audit: %+v", audit)
+	}
+}
+
+func processAPI(t *testing.T, process *Process, method, path, body, lease string, target any) int {
+	t.Helper()
+	req, err := http.NewRequest(method, process.client.endpoint+path, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+process.client.secret)
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if lease != "" {
+		req.Header.Set("X-GK80-UI-Lease", lease)
+	}
+	response, err := process.client.http.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if target != nil {
+		if err := json.NewDecoder(io.LimitReader(response.Body, 8193)).Decode(target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return response.StatusCode
+}
+
+func startActiveDemo(t *testing.T, process *Process) (uuid.UUID, string) {
+	t.Helper()
+	var lease contract.UiLease
+	if status := processAPI(t, process, "POST", "/v1/ui-lease", fmt.Sprintf(`{"clientId":%q}`, uuid.NewString()), "", &lease); status != http.StatusOK {
+		t.Fatalf("lease: %d", status)
+	}
+	token := lease.LeaseId.String()
+	var created contract.CommandStatus
+	body := fmt.Sprintf(`{"commandId":%q,"expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":10,"direction":"pressure","actuator":false}}`, uuid.NewString())
+	if status := processAPI(t, process, "POST", "/v1/tests", body, token, &created); status != http.StatusOK || created.TestId == nil {
+		t.Fatalf("create: %d %+v", status, created)
+	}
+	id := *created.TestId
+	var accepted contract.CommandAccepted
+	start := fmt.Sprintf(`{"commandId":%q,"expectedRevision":1,"valveClosed":true,"connectionConfirmed":true}`, uuid.NewString())
+	if status := processAPI(t, process, "POST", "/v1/tests/"+id.String()+"/start", start, token, &accepted); status != http.StatusAccepted {
+		t.Fatalf("start: %d", status)
+	}
+	var snapshot contract.Snapshot
+	if status := processAPI(t, process, "GET", "/v1/snapshot", "", token, &snapshot); status != http.StatusOK || snapshot.PendingAction == nil {
+		t.Fatalf("pending: %d %+v", status, snapshot)
+	}
+	confirm := fmt.Sprintf(`{"commandId":%q,"expectedRevision":%d}`, uuid.NewString(), snapshot.Revision)
+	var confirmed contract.CommandStatus
+	path := "/v1/tests/" + id.String() + "/actions/" + snapshot.PendingAction.ActionId.String() + "/confirm"
+	if status := processAPI(t, process, "POST", path, confirm, token, &confirmed); status != http.StatusOK {
+		t.Fatalf("confirm: %d", status)
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		if status := processAPI(t, process, "GET", "/v1/snapshot", "", token, &snapshot); status != http.StatusOK {
+			t.Fatalf("snapshot: %d", status)
+		}
+		if len(snapshot.Measurements) > 0 {
+			return id, token
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("simulator produced no measurements")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestCoreOwnerExitStopsActiveRun(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	process, _, err := Start(ctx, buildCore(t), dir, "test", "0.1.0")
+	if process != nil {
+		t.Cleanup(func() { _ = process.Close(ctx) })
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := startActiveDemo(t, process)
+	if err := process.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	store, err := storage.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	record, err := store.Test(ctx, id)
+	if err != nil || record.Outcome != "interrupted" || record.SaveStatus != "saved" {
+		t.Fatalf("record: %+v %v", record, err)
+	}
+	audit, err := store.Audit(ctx, id, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range audit {
+		if event.Action == "stop" && event.Outcome == "accepted" && event.OperatorId == "system" && event.Reason != nil && *event.Reason == "owner_lost" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("owner stop audit: %+v", audit)
+	}
+}
+
+func TestCoreCrashRecoversActiveRunWithoutRestarting(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	executable := buildCore(t)
+	process, handshake, err := Start(ctx, executable, dir, "test", "0.1.0")
+	if process != nil {
+		t.Cleanup(func() { _ = process.Close(ctx) })
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, oldLease := startActiveDemo(t, process)
+	if err := process.cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-process.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("core did not exit")
+	}
+	next, nextHandshake, err := Start(ctx, executable, dir, "test", "0.1.0")
+	if next != nil {
+		t.Cleanup(func() { _ = next.Close(ctx) })
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nextHandshake.BackendRunId == handshake.BackendRunId {
+		t.Fatal("run identity reused")
+	}
+	if status := processAPI(t, next, "GET", "/v1/snapshot", "", oldLease, nil); status != http.StatusForbidden {
+		t.Fatalf("old lease: %d", status)
+	}
+	var lease contract.UiLease
+	if status := processAPI(t, next, "POST", "/v1/ui-lease", fmt.Sprintf(`{"clientId":%q}`, uuid.NewString()), "", &lease); status != http.StatusOK {
+		t.Fatalf("new lease: %d", status)
+	}
+	var snapshot contract.Snapshot
+	if status := processAPI(t, next, "GET", "/v1/snapshot", "", lease.LeaseId.String(), &snapshot); status != http.StatusOK || snapshot.ActiveTest != nil {
+		t.Fatalf("resumed state: %d %+v", status, snapshot)
+	}
+	if err := next.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	store, err := storage.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	record, err := store.Test(ctx, id)
+	if err != nil || record.Outcome != "unknown" || record.DataQuality != "incomplete" {
+		t.Fatalf("recovered: %+v %v", record, err)
+	}
+	audit, err := store.Audit(ctx, id, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range audit {
+		if event.Action == "recovered" && event.OperatorId == "system" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("recovery audit: %+v", audit)
+	}
+}

@@ -33,7 +33,7 @@ type coreHTTP struct {
 	store          commandReader
 	logger         *slog.Logger
 	pendingMu      sync.Mutex
-	pending        map[*createAttempt]struct{}
+	pending        map[*commandAttempt]struct{}
 	pendingVersion uint64
 	recoveryMu     sync.Mutex
 	recovering     bool
@@ -103,7 +103,7 @@ func (h *coreHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.pendingMu.Lock()
-		if h.admittedCreateLocked() || h.engine.HasUnresolvedCreate() {
+		if h.blocksSnapshotLocked() || h.engine.HasUnresolvedCreate() {
 			h.pendingMu.Unlock()
 			writeAPIError(w, http.StatusServiceUnavailable, "state_unavailable", "State is not yet confirmed")
 			return
@@ -112,7 +112,7 @@ func (h *coreHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.pendingMu.Unlock()
 		snapshot, err := h.leases.snapshot(owner.id, h.feed)
 		h.pendingMu.Lock()
-		unstable := version != h.pendingVersion || h.admittedCreateLocked() || h.engine.HasUnresolvedCreate()
+		unstable := version != h.pendingVersion || h.blocksSnapshotLocked() || h.engine.HasUnresolvedCreate()
 		h.pendingMu.Unlock()
 		if unstable {
 			writeAPIError(w, http.StatusServiceUnavailable, "state_unavailable", "State is not yet confirmed")
@@ -128,8 +128,12 @@ func (h *coreHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		if strings.HasPrefix(r.URL.Path, "/v1/commands/") {
 			h.commandStatus(w, r)
-		} else if strings.HasPrefix(r.URL.Path, "/v1/tests/") && strings.HasSuffix(r.URL.Path, "/readiness") {
-			h.readiness(w, r)
+		} else if strings.HasPrefix(r.URL.Path, "/v1/tests/") {
+			if strings.HasSuffix(r.URL.Path, "/readiness") {
+				h.readiness(w, r)
+			} else {
+				h.testAction(w, r)
+			}
 		} else {
 			http.NotFound(w, r)
 		}
