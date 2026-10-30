@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1309,7 +1311,77 @@ func TestOwnerReturnsKnownStopAfterFinishedTest(t *testing.T) {
 	}
 }
 
+// The real process can spend five seconds starting and eight more cleaning up a
+// failed start. This watchdog belongs only to the process test, not unit waits.
+func waitProcessReady(t *testing.T, owner *Owner, changes <-chan struct{}) {
+	t.Helper()
+	started := time.Now()
+	timer := time.NewTimer(15 * time.Second)
+	defer timer.Stop()
+	for {
+		status := owner.Status()
+		if status.Status == contract.DesktopStatusStatusReady && status.Handshake != nil {
+			return
+		}
+		if status.Status != contract.DesktopStatusStatusStarting {
+			t.Fatalf("core startup failed after %v: %+v", time.Since(started), status)
+		}
+		select {
+		case <-changes:
+		case <-timer.C:
+			t.Fatalf("core startup not resolved after %v: %+v", time.Since(started), owner.Status())
+		}
+	}
+}
+
+func TestProcessReadyWaitAllowsDelayedStartup(t *testing.T) {
+	changes := make(chan struct{}, 1)
+	core := &fakeCore{done: make(chan struct{}), degraded: make(chan struct{}), closed: make(chan struct{})}
+	identity := contract.Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), Demo: true}
+	owner := newOwner(uuid.New(), func(ctx context.Context) (ownedCore, contract.Handshake, error) {
+		select {
+		case <-time.After(2200 * time.Millisecond):
+			return core, identity, nil
+		case <-ctx.Done():
+			return nil, contract.Handshake{}, ctx.Err()
+		}
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)), false, func(contract.DesktopStatus) {
+		select {
+		case changes <- struct{}{}:
+		default:
+		}
+	})
+	t.Cleanup(func() {
+		if err := owner.Close(); err != nil {
+			t.Errorf("close owner: %v", err)
+		}
+	})
+	owner.Start()
+	waitProcessReady(t, owner, changes)
+}
+
 func TestOwnerSessionRunsAndReopensCore(t *testing.T) {
+	describeSession := func(owner *Owner) string {
+		session, err := owner.currentSession()
+		if err != nil {
+			return fmt.Sprintf("session unavailable: %v", err)
+		}
+		session.mu.Lock()
+		defer session.mu.Unlock()
+		state := session.connectionStateLocked(time.Now())
+		pending := session.stream != nil && session.stream.Pending()
+		return fmt.Sprintf("connection=%s link=%v uiAge=%v leaseRemaining=%v confirmed=%v streamActive=%v streamBroken=%v streamPending=%v snapshotPending=%v snapshot=%v probeAge=%v", state.Status, state.LinkValid, time.Since(session.lastUI), time.Until(session.leaseUntil), session.leaseConfirmed, session.streamActive, session.streamBroken, pending, session.snapshotPending, session.snapshot != nil, time.Since(session.lastProbe))
+	}
+	waitOwner := func(name string, owner *Owner, condition func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(3 * time.Second)
+		for !condition() {
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: session condition not reached; %s", name, describeSession(owner))
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)
@@ -1331,23 +1403,74 @@ func TestOwnerSessionRunsAndReopensCore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = diagnostic.Close(context.Background()) }()
+	t.Cleanup(func() {
+		if err := diagnostic.Close(context.Background()); err != nil {
+			t.Errorf("close diagnostic: %v", err)
+		}
+	})
 	logger := diagnostic.Application(diagnostics.ComponentTransport)
-	newOwner := func() *Owner {
-		owner := NewOwner(uuid.New(), executable, profile, "test", "0.1.0", logger, nil, false, func(contract.DesktopStatus) {})
+	newOwner := func() (*Owner, func()) {
+		changes := make(chan struct{}, 1)
+		owner := NewOwner(uuid.New(), executable, profile, "test", "0.1.0", logger, nil, false, func(contract.DesktopStatus) {
+			select {
+			case changes <- struct{}{}:
+			default:
+			}
+		})
+		t.Cleanup(func() {
+			if err := owner.Close(); err != nil {
+				t.Errorf("close owner: %v", err)
+			}
+		})
 		owner.Start()
-		waitStatus(t, owner, contract.DesktopStatusStatusReady)
+		waitProcessReady(t, owner, changes)
 		if err := owner.KeepAlive(context.Background()); err != nil {
 			t.Fatal(err)
 		}
-		waitSession(t, func() bool {
+		pulseStop := make(chan struct{})
+		pulseDone := make(chan struct{})
+		pulseErrors := make(chan error, 1)
+		var stopOnce sync.Once
+		go func() {
+			defer close(pulseDone)
+			for {
+				timer := time.NewTimer(2 * time.Second)
+				select {
+				case <-pulseStop:
+					timer.Stop()
+					return
+				case <-timer.C:
+					select {
+					case <-pulseStop:
+						return
+					default:
+					}
+					if err := owner.KeepAlive(context.Background()); err != nil {
+						select {
+						case pulseErrors <- err:
+						default:
+						}
+					}
+				}
+			}
+		}()
+		stopPulse := func() {
+			stopOnce.Do(func() { close(pulseStop) })
+			<-pulseDone
+			select {
+			case err := <-pulseErrors:
+				t.Errorf("UI heartbeat: %v", err)
+			default:
+			}
+		}
+		t.Cleanup(stopPulse)
+		waitOwner("initial live", owner, func() bool {
 			state, err := owner.ConnectionState(context.Background())
 			return err == nil && state.Status == contract.Live
 		})
-		return owner
+		return owner, stopPulse
 	}
-	owner := newOwner()
-	t.Cleanup(func() { _ = owner.Close() })
+	owner, stopPulse := newOwner()
 	snapshot, err := owner.Snapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -1371,7 +1494,7 @@ func TestOwnerSessionRunsAndReopensCore(t *testing.T) {
 	if err != nil || !ready.Ready {
 		t.Fatalf("readiness: %+v %v", ready, err)
 	}
-	waitSession(t, func() bool {
+	waitOwner("live after readiness", owner, func() bool {
 		state, stateErr := owner.ConnectionState(context.Background())
 		return stateErr == nil && state.Status == contract.Live
 	})
@@ -1386,9 +1509,9 @@ func TestOwnerSessionRunsAndReopensCore(t *testing.T) {
 	}
 	started, err := service.StartTest(context.Background(), id, startInput)
 	if err != nil || started.Command == nil || started.Command.Status != contract.CommandStatusStatusAccepted {
-		t.Fatalf("start: %+v %v", started, err)
+		t.Fatalf("start: %+v %v; %s", started, err, describeSession(owner))
 	}
-	waitSession(t, func() bool {
+	waitOwner("pending action", owner, func() bool {
 		snapshot, err = owner.Snapshot(context.Background())
 		state, stateErr := owner.ConnectionState(context.Background())
 		return err == nil && stateErr == nil && state.Status == contract.Live && snapshot.PendingAction != nil
@@ -1410,7 +1533,7 @@ func TestOwnerSessionRunsAndReopensCore(t *testing.T) {
 		session.mu.Unlock()
 		t.Fatalf("confirm: %+v %#v; lease=%v ui=%v probe=%v active=%v broken=%v", confirmed, err, remaining, uiAge, probeAge, active, broken)
 	}
-	waitSession(t, func() bool {
+	waitOwner("measurements", owner, func() bool {
 		snapshot, err = owner.Snapshot(context.Background())
 		return err == nil && len(snapshot.Measurements) > 0 && snapshot.ActiveTest != nil
 	})
@@ -1430,14 +1553,15 @@ func TestOwnerSessionRunsAndReopensCore(t *testing.T) {
 	if err != nil || stopped.Status != contract.CommandStatusStatusAccepted {
 		t.Fatalf("stop: %+v %v", stopped, err)
 	}
-	waitSession(t, func() bool {
+	waitOwner("stop completion", owner, func() bool {
 		stopped, err = owner.Command(context.Background(), stopID.String())
 		return err == nil && stopped.Status == contract.CommandStatusStatusCompleted
 	})
+	stopPulse()
 	if err := owner.Close(); err != nil {
 		t.Fatal(err)
 	}
-	owner = newOwner()
+	owner, stopPulse = newOwner()
 	history, err := owner.ListTests(context.Background(), contract.ListTestsParams{})
 	if err != nil || len(history.Items) != 1 || history.Items[0].TestId.String() != id {
 		t.Fatalf("reopened history: %+v %v", history, err)
@@ -1454,6 +1578,7 @@ func TestOwnerSessionRunsAndReopensCore(t *testing.T) {
 	if err != nil || len(audit.Items) == 0 {
 		t.Fatalf("reopened audit: %+v %v", audit, err)
 	}
+	stopPulse()
 	if err := owner.Close(); err != nil {
 		t.Fatal(err)
 	}
