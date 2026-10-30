@@ -42,10 +42,11 @@ const operatorID = "demo-operator"
 
 // Store is opened only while the core owns the corresponding profile lock.
 type Store struct {
-	db       *sql.DB
-	writeMu  chan struct{}
-	failed   bool
-	settings SQLiteSettings
+	db         *sql.DB
+	writeMu    chan struct{}
+	failed     bool
+	settings   SQLiteSettings
+	databaseID uuid.UUID
 }
 
 func (s *Store) lockWrite(ctx context.Context) error {
@@ -129,6 +130,9 @@ func (s *Store) configure() error {
 
 func (s *Store) Settings() SQLiteSettings { return s.settings }
 
+// DatabaseID identifies the SQLite database independently of the core process.
+func (s *Store) DatabaseID() uuid.UUID { return s.databaseID }
+
 func (s *Store) initialize() error {
 	if _, err := s.db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
 		return err
@@ -137,10 +141,15 @@ func (s *Store) initialize() error {
 	if err := s.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return err
 	}
-	if version == 2 {
+	if version == 3 {
+		id, err := readDatabaseID(s.db)
+		if err != nil {
+			return err
+		}
+		s.databaseID = id
 		return nil
 	}
-	if version != 0 && version != 1 {
+	if version != 0 && version != 1 && version != 2 {
 		return errors.New("unsupported database schema")
 	}
 	if version == 0 {
@@ -168,19 +177,51 @@ func (s *Store) initialize() error {
 			`CREATE INDEX audit_by_test ON audit(test_id, sequence)`,
 		}
 	}
-	statements = append(statements,
-		`CREATE TABLE test_actions (action_id TEXT PRIMARY KEY, test_id TEXT NOT NULL REFERENCES tests(id), instruction TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('pending', 'confirmed', 'canceled', 'unknown')))`,
-		`CREATE UNIQUE INDEX one_pending_action ON test_actions(test_id) WHERE state = 'pending'`,
-		`CREATE TABLE measurements (test_id TEXT NOT NULL REFERENCES tests(id), sequence INTEGER NOT NULL CHECK(sequence > 0), elapsed_ns INTEGER NOT NULL CHECK(elapsed_ns >= 0), channel TEXT NOT NULL, quality TEXT NOT NULL, payload BLOB NOT NULL, PRIMARY KEY(test_id, sequence))`,
-		`ALTER TABLE tests ADD COLUMN measurement_elapsed_ns INTEGER`,
-		`PRAGMA user_version = 2`,
-	)
+	if version < 2 {
+		statements = append(statements,
+			`CREATE TABLE test_actions (action_id TEXT PRIMARY KEY, test_id TEXT NOT NULL REFERENCES tests(id), instruction TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('pending', 'confirmed', 'canceled', 'unknown')))`,
+			`CREATE UNIQUE INDEX one_pending_action ON test_actions(test_id) WHERE state = 'pending'`,
+			`CREATE TABLE measurements (test_id TEXT NOT NULL REFERENCES tests(id), sequence INTEGER NOT NULL CHECK(sequence > 0), elapsed_ns INTEGER NOT NULL CHECK(elapsed_ns >= 0), channel TEXT NOT NULL, quality TEXT NOT NULL, payload BLOB NOT NULL, PRIMARY KEY(test_id, sequence))`,
+			`ALTER TABLE tests ADD COLUMN measurement_elapsed_ns INTEGER`,
+		)
+	}
+	statements = append(statements, `ALTER TABLE meta ADD COLUMN database_id TEXT`)
 	for _, statement := range statements {
 		if _, err := tx.Exec(statement); err != nil {
 			return err
 		}
 	}
-	return tx.Commit()
+	id, err := uuid.NewRandom()
+	if err != nil {
+		return err
+	}
+	result, err := tx.Exec(`UPDATE meta SET database_id = ? WHERE id = 1`, id.String())
+	if err != nil {
+		return err
+	}
+	if count, err := result.RowsAffected(); err != nil || count != 1 {
+		return errors.New("invalid database metadata")
+	}
+	if _, err := tx.Exec(`PRAGMA user_version = 3`); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.databaseID = id
+	return nil
+}
+
+func readDatabaseID(db *sql.DB) (uuid.UUID, error) {
+	var value string
+	if err := db.QueryRow(`SELECT database_id FROM meta WHERE id = 1`).Scan(&value); err != nil {
+		return uuid.Nil, errors.New("database identity unavailable")
+	}
+	id, err := uuid.Parse(value)
+	if err != nil || id == uuid.Nil || id.String() != value || id.Version() != 4 || id.Variant() != uuid.RFC4122 {
+		return uuid.Nil, errors.New("invalid database identity")
+	}
+	return id, nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }

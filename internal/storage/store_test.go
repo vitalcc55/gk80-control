@@ -511,6 +511,194 @@ func TestOpenRejectsUnknownDatabaseVersion(t *testing.T) {
 	}
 }
 
+func TestDatabaseIdentitySurvivesReopenAndRejectsCorruption(t *testing.T) {
+	dir := t.TempDir()
+	store, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	var identity string
+	if err := store.db.QueryRow(`SELECT database_id FROM meta WHERE id = 1`).Scan(&identity); err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := uuid.Parse(identity)
+	if err != nil || parsed == uuid.Nil || store.DatabaseID() != parsed {
+		t.Fatalf("invalid database identity %q: %v", identity, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reopened string
+	if err := store.db.QueryRow(`SELECT database_id FROM meta WHERE id = 1`).Scan(&reopened); err != nil || reopened != identity {
+		t.Fatalf("identity after reopen %q: %v", reopened, err)
+	}
+	if store.DatabaseID() != parsed {
+		t.Fatalf("reported identity after reopen: %s", store.DatabaseID())
+	}
+	other, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var otherID string
+	if err := other.db.QueryRow(`SELECT database_id FROM meta WHERE id = 1`).Scan(&otherID); err != nil || otherID == identity {
+		t.Fatalf("other database identity %q: %v", otherID, err)
+	}
+	if err := other.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`UPDATE meta SET database_id = ? WHERE id = 1`, uuid.Nil.String()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if corrupt, err := Open(dir); err == nil {
+		_ = corrupt.Close()
+		t.Fatal("database with a nil identity was accepted")
+	}
+}
+
+func TestOpenRejectsInvalidDatabaseIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		query string
+	}{
+		{name: "missing", query: `DELETE FROM meta WHERE id = 1`},
+		{name: "null", query: `UPDATE meta SET database_id = NULL WHERE id = 1`},
+		{name: "malformed", query: `UPDATE meta SET database_id = 'invalid' WHERE id = 1`},
+		{name: "not random UUID", query: `UPDATE meta SET database_id = '00000000-0000-0000-0000-000000000001' WHERE id = 1`},
+		{name: "wrong version", query: `UPDATE meta SET database_id = '00000000-0000-1000-8000-000000000001' WHERE id = 1`},
+		{name: "wrong variant", query: `UPDATE meta SET database_id = '00000000-0000-4000-0000-000000000001' WHERE id = 1`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			store, err := Open(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.db.Exec(tc.query); err != nil {
+				_ = store.Close()
+				t.Fatal(err)
+			}
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if corrupt, err := Open(dir); err == nil {
+				_ = corrupt.Close()
+				t.Fatal("invalid database identity accepted")
+			}
+		})
+	}
+}
+
+func TestFailedIdentityMigrationRollsBackVersionTwo(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.Create(ctx, createCommand())
+	if err != nil || created.TestId == nil {
+		_ = store.Close()
+		t.Fatalf("create: %+v %v", created, err)
+	}
+	for _, statement := range []string{
+		`ALTER TABLE meta DROP COLUMN database_id`,
+		`CREATE TRIGGER reject_identity BEFORE UPDATE ON meta BEGIN SELECT RAISE(ABORT, 'blocked'); END`,
+		`PRAGMA user_version = 2`,
+	} {
+		if _, err := store.db.Exec(statement); err != nil {
+			_ = store.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if migrated, err := Open(dir); err == nil {
+		_ = migrated.Close()
+		t.Fatal("migration succeeded despite rejected identity write")
+	} else if !strings.Contains(err.Error(), "blocked") {
+		t.Fatalf("migration did not reach the identity write: %v", err)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(dir, "demo.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	var version, columns, revision, records int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 2 {
+		t.Fatalf("version %d: %v", version, err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info('meta') WHERE name = 'database_id'`).Scan(&columns); err != nil || columns != 0 {
+		t.Fatalf("partially added identity column %d: %v", columns, err)
+	}
+	if err := db.QueryRow(`SELECT revision FROM meta WHERE id = 1`).Scan(&revision); err != nil || revision != 1 {
+		t.Fatalf("revision %d: %v", revision, err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM tests WHERE id = ?`, created.TestId.String()).Scan(&records); err != nil || records != 1 {
+		t.Fatalf("historical records %d: %v", records, err)
+	}
+}
+
+func TestMigrationKeepsVersionTwoHistory(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.Create(ctx, createCommand())
+	if err != nil || created.TestId == nil {
+		_ = store.Close()
+		t.Fatalf("create: %+v %v", created, err)
+	}
+	if _, err := store.db.Exec(`ALTER TABLE meta DROP COLUMN database_id`); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`PRAGMA user_version = 2`); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	if store.DatabaseID() == uuid.Nil {
+		t.Fatal("missing migrated database identity")
+	}
+	record, err := store.Test(ctx, *created.TestId)
+	if err != nil || record.TestId != *created.TestId {
+		t.Fatalf("migrated record: %+v %v", record, err)
+	}
+	status, err := store.Command(ctx, created.CommandId)
+	if err != nil || status.Status != "completed" || status.TestId == nil || *status.TestId != *created.TestId {
+		t.Fatalf("migrated command: %+v %v", status, err)
+	}
+	audit, err := store.Audit(ctx, *created.TestId, 0, 10)
+	if err != nil || len(audit) != 1 || audit[0].Outcome != "completed" {
+		t.Fatalf("migrated audit: %+v %v", audit, err)
+	}
+	var version, revision int
+	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 3 {
+		t.Fatalf("version %d: %v", version, err)
+	}
+	if err := store.db.QueryRow(`SELECT revision FROM meta WHERE id = 1`).Scan(&revision); err != nil || revision != 1 {
+		t.Fatalf("revision %d: %v", revision, err)
+	}
+}
+
 func TestMigrationKeepsVersionOneHistory(t *testing.T) {
 	dir := t.TempDir()
 	db, err := sql.Open("sqlite", filepath.Join(dir, "demo.sqlite"))
@@ -565,7 +753,7 @@ func TestMigrationKeepsVersionOneHistory(t *testing.T) {
 	defer func() { _ = store.Close() }()
 	var version, revision, events int
 	var operation, status string
-	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 2 {
+	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 3 {
 		t.Fatalf("version %d: %v", version, err)
 	}
 	if err := store.db.QueryRow(`SELECT revision FROM meta WHERE id = 1`).Scan(&revision); err != nil || revision != 7 {
