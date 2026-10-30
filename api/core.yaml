@@ -285,6 +285,7 @@ paths:
       operationId: subscribeEvents
       description: >-
         Авторизованный WebSocket. Первым приходит StreamReady; затем Event.
+        Одно текстовое JSON-сообщение ограничено 65536 байтами UTF-8.
         Порядок восстановления описан в документации контракта.
       responses:
         "101":

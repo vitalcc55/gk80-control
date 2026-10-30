@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"sync"
 	"time"
@@ -161,6 +162,9 @@ func writeStream(ctx context.Context, conn *websocket.Conn, value any) error {
 	body, err := json.Marshal(value)
 	if err != nil {
 		return err
+	}
+	if len(body) > contract.MaxEventBytes {
+		return errors.New("core event exceeds size limit")
 	}
 	writeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()

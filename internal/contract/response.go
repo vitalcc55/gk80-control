@@ -14,6 +14,9 @@ import (
 
 var ErrInvalidResponse = errors.New("invalid core response")
 
+// MaxEventBytes bounds one UTF-8 JSON message on the core event stream.
+const MaxEventBytes = 64 << 10
+
 // ResponseValidator validates the received JSON before Go assigns zero values.
 type ResponseValidator struct{ schemas map[string]*jsonschema.Schema }
 
@@ -30,7 +33,7 @@ func NewResponseValidator() (*ResponseValidator, error) {
 		return nil, err
 	}
 	result := &ResponseValidator{schemas: make(map[string]*jsonschema.Schema)}
-	for _, name := range []string{"UiLease", "Snapshot", "TestList", "TestRecord", "Readiness", "MeasurementPage", "AuditPage", "CommandStatus", "CommandAccepted", "ApiError"} {
+	for _, name := range []string{"UiLease", "Snapshot", "TestList", "TestRecord", "Readiness", "MeasurementPage", "AuditPage", "CommandStatus", "CommandAccepted", "ApiError", "StreamReady", "Event"} {
 		schema, err := compiler.Compile(source + "#/components/schemas/" + name)
 		if err != nil {
 			return nil, fmt.Errorf("compile response schema %s: %w", name, err)

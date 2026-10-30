@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -13,9 +14,16 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
+	"github.com/vitalcc55/gk80-control/internal/contract"
 	"github.com/vitalcc55/gk80-control/internal/demo"
 	"github.com/vitalcc55/gk80-control/internal/storage"
 )
+
+func TestStreamRejectsOversizedMessageBeforeWrite(t *testing.T) {
+	if err := writeStream(context.Background(), nil, strings.Repeat("x", contract.MaxEventBytes)); err == nil {
+		t.Fatal("oversized stream message accepted")
+	}
+}
 
 type streamGateListener struct {
 	net.Listener
