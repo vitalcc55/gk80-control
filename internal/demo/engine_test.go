@@ -2077,6 +2077,90 @@ func TestControllerStorageTimeoutStillStopsRun(t *testing.T) {
 	}
 }
 
+type heldFailedExactLookup struct {
+	*storage.Store
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *heldFailedExactLookup) LookupCreateExact(context.Context, contract.CreateTestCommand, []byte) (contract.CommandStatus, error) {
+	close(s.entered)
+	<-s.release
+	return contract.CommandStatus{}, storage.ErrStorageUnavailable
+}
+
+func TestLateLookupFailureDoesNotStopNewOwnerRun(t *testing.T) {
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	held := &heldFailedExactLookup{Store: store, entered: make(chan struct{}), release: make(chan struct{})}
+	sim := &countedSimulator{}
+	engine := newTestEngine(t, held, sim, uuid.New())
+	first, err := engine.GrantControl()
+	if err != nil {
+		t.Fatal(err)
+	}
+	create := command(10)
+	created, err := first.Create(context.Background(), create)
+	if err != nil || created.TestId == nil {
+		t.Fatalf("create: %v", err)
+	}
+	start := func(controller *Controller, id uuid.UUID) {
+		t.Helper()
+		revision := engine.State().Revision
+		if _, err := controller.Start(context.Background(), id, contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: revision, ValveClosed: true, ConnectionConfirmed: true}); err != nil {
+			t.Fatal(err)
+		}
+		state := engine.State()
+		if state.PendingAction == nil {
+			t.Fatal("missing action")
+		}
+		if _, err := controller.Confirm(context.Background(), id, state.PendingAction.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: state.Revision}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start(first, *created.TestId)
+	done := make(chan error, 1)
+	go func() {
+		_, err := first.LookupCreateExact(context.Background(), command(1), []byte("test"))
+		done <- err
+	}()
+	select {
+	case <-held.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("lookup did not start")
+	}
+	first.Revoke("ui_lost")
+	finished := waitFor(t, engine, func(state State) bool {
+		return state.Record != nil && state.Record.Stage == "finished" && state.Record.SaveStatus == "saved"
+	})
+	second, err := engine.GrantControl()
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := command(10)
+	next.ExpectedRevision = finished.Revision
+	nextCreated, err := second.Create(context.Background(), next)
+	if err != nil || nextCreated.TestId == nil {
+		t.Fatalf("new create: %v", err)
+	}
+	start(second, *nextCreated.TestId)
+	close(held.release)
+	if err := <-done; !errors.Is(err, ErrControlRevoked) {
+		t.Fatalf("old lookup: %v", err)
+	}
+	state := engine.State()
+	if state.Record == nil || state.Record.TestId != *nextCreated.TestId || state.Record.Stage != "running" || sim.starts.Load() != 2 || sim.stops.Load() != 1 {
+		t.Fatalf("new run was stopped: %+v", state)
+	}
+	second.Revoke("ui_lost")
+	waitFor(t, engine, func(state State) bool {
+		return state.Record != nil && state.Record.Stage == "finished" && state.Record.SaveStatus == "saved"
+	})
+}
+
 func TestRenewedControlKeepsPendingRejection(t *testing.T) {
 	store, err := storage.Open(t.TempDir())
 	if err != nil {

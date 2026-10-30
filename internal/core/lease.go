@@ -115,6 +115,34 @@ func (l *uiLeases) view(lease *uiLease) (contract.UiLease, error) {
 	return contract.UiLease{LeaseId: lease.id, ClientId: lease.clientID, ExpiresAt: lease.expiresAt}, nil
 }
 
+func (l *uiLeases) owner(id uuid.UUID) (*uiLease, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.expireLocked()
+	if l.closed || l.current == nil || l.current.id != id {
+		return nil, errLeaseInvalid
+	}
+	select {
+	case <-l.current.done:
+		return nil, errLeaseInvalid
+	default:
+	}
+	return l.current, nil
+}
+
+func (l *uiLeases) valid(lease *uiLease) bool {
+	_, err := l.view(lease)
+	if err != nil {
+		return false
+	}
+	select {
+	case <-lease.done:
+		return false
+	default:
+		return true
+	}
+}
+
 func (l *uiLeases) snapshot(id uuid.UUID, feed *eventFeed) (contract.Snapshot, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

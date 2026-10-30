@@ -630,3 +630,202 @@ func TestCoreProcessLeaseAndSnapshot(t *testing.T) {
 		t.Fatalf("previous run lease accepted: %d", status)
 	}
 }
+
+func TestCoreProcessCreatesExactCommandAndRecoversLostResponse(t *testing.T) {
+	ctx := context.Background()
+	executable := buildCore(t)
+	profileDir := t.TempDir()
+	rejectedID := uuid.New()
+	rejectedBody := fmt.Sprintf(`{"commandId":%q,"expectedRevision":0,"parameters":{"valve":"V","areaM2":0,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`, rejectedID.String())
+	validator, err := contract.NewInputValidator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rejected contract.CreateTestCommand
+	inspected, err := validator.Inspect("CreateTestCommand", []byte(rejectedBody), &rejected)
+	if err != nil || inspected.Valid {
+		t.Fatalf("rejection input: %v", err)
+	}
+	seed, err := storage.Open(profileDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := seed.Create(ctx, rejected); !errors.Is(err, storage.ErrInvalidCommand) {
+		_ = seed.Close()
+		t.Fatalf("seed rejection: %v", err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	process, _, err := Start(ctx, executable, profileDir, "test", "0.1.0")
+	if process != nil {
+		t.Cleanup(func() { _ = process.Close(ctx) })
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseBody := fmt.Sprintf(`{"clientId":%q}`, uuid.NewString())
+	request := func(method, path, body, lease string) *http.Response {
+		t.Helper()
+		req, err := http.NewRequest(method, process.client.endpoint+path, strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+process.client.secret)
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if lease != "" {
+			req.Header.Set("X-GK80-UI-Lease", lease)
+		}
+		response, err := process.client.http.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+	decode := func(response *http.Response, target any) {
+		t.Helper()
+		defer func() { _ = response.Body.Close() }()
+		if err := json.NewDecoder(io.LimitReader(response.Body, 8193)).Decode(target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	response := request("POST", "/v1/ui-lease", leaseBody, "")
+	var lease contract.UiLease
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("lease: %d", response.StatusCode)
+	}
+	decode(response, &lease)
+	token := lease.LeaseId.String()
+	response = request("POST", "/v1/tests", rejectedBody, token)
+	var rejectedStatus contract.CommandStatus
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("known rejected command: %d", response.StatusCode)
+	}
+	decode(response, &rejectedStatus)
+	if rejectedStatus.Status != "rejected" || rejectedStatus.CommandId != rejectedID {
+		t.Fatalf("known rejection: %+v", rejectedStatus)
+	}
+	unknownID := uuid.New()
+	unknownInvalid := strings.Replace(rejectedBody, rejectedID.String(), unknownID.String(), 1)
+	response = request("POST", "/v1/tests", unknownInvalid, token)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown invalid command: %d", response.StatusCode)
+	}
+	response = request("GET", "/v1/commands/"+unknownID.String(), "", token)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("invalid command was persisted: %d", response.StatusCode)
+	}
+	response = request("POST", "/v1/tests", strings.Replace(rejectedBody, `"pmaxPa":1000`, `"pmaxPa":1001`, 1), token)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusConflict {
+		t.Fatalf("invalid conflicting replay: %d", response.StatusCode)
+	}
+	commandID := uuid.New()
+	body := fmt.Sprintf(`{"commandId":%q,"expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`, commandID.String())
+	for _, invalid := range []string{
+		strings.Replace(body, `,"actuator":false`, "", 1),
+		strings.Replace(body, `"actuator":false`, `"actuator":null`, 1),
+		strings.Replace(body, `"expectedRevision":0`, `"expectedRevision":0,"expectedRevision":0`, 1),
+	} {
+		response = request("POST", "/v1/tests", invalid, token)
+		_ = response.Body.Close()
+		if response.StatusCode != http.StatusBadRequest {
+			t.Fatalf("invalid input: %d", response.StatusCode)
+		}
+	}
+	response = request("POST", "/v1/tests", body, token)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("create: %d", response.StatusCode)
+	}
+	// The client loses the response after the server accepted the request.
+	_ = response.Body.Close()
+	response = request("GET", "/v1/commands/"+commandID.String(), "", token)
+	var status contract.CommandStatus
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("command lookup: %d", response.StatusCode)
+	}
+	decode(response, &status)
+	if status.Status != "completed" || status.TestId == nil {
+		t.Fatalf("command: %+v", status)
+	}
+	testID := *status.TestId
+	response = request("GET", "/v1/snapshot", "", token)
+	var snapshot contract.Snapshot
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("snapshot: %d", response.StatusCode)
+	}
+	decode(response, &snapshot)
+	if snapshot.ActiveTest == nil || snapshot.ActiveTest.TestId != testID {
+		t.Fatalf("snapshot: %+v", snapshot)
+	}
+	response = request("GET", "/v1/tests/"+testID.String()+"/readiness", "", token)
+	var readiness contract.Readiness
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("readiness: %d", response.StatusCode)
+	}
+	decode(response, &readiness)
+	if !readiness.Ready {
+		t.Fatalf("readiness: %+v", readiness)
+	}
+	equivalent := strings.Replace(body, `"areaM2":1,`, `"areaM2":1.00,`, 1)
+	response = request("POST", "/v1/tests", equivalent, token)
+	var repeated contract.CommandStatus
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("repeat: %d", response.StatusCode)
+	}
+	decode(response, &repeated)
+	if repeated.TestId == nil || *repeated.TestId != testID {
+		t.Fatalf("repeat: %+v", repeated)
+	}
+	conflicting := strings.Replace(body, `"areaM2":1,`, `"areaM2":1.0000000000000001,`, 1)
+	response = request("POST", "/v1/tests", conflicting, token)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusConflict {
+		t.Fatalf("identity conflict: %d", response.StatusCode)
+	}
+	revisionID := uuid.New()
+	outdated := strings.Replace(body, commandID.String(), revisionID.String(), 1)
+	response = request("POST", "/v1/tests", outdated, token)
+	var rejectedRevision contract.CommandStatus
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("revision rejection: %d", response.StatusCode)
+	}
+	decode(response, &rejectedRevision)
+	if rejectedRevision.Status != "rejected" || rejectedRevision.Reason == nil || *rejectedRevision.Reason != "revision" {
+		t.Fatalf("revision rejection: %+v", rejectedRevision)
+	}
+	if err := process.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	logs, err := os.ReadDir(filepath.Join(profileDir, "logs"))
+	if err != nil || len(logs) != 1 {
+		t.Fatalf("core logs: %v", err)
+	}
+	logData, err := os.ReadFile(filepath.Join(profileDir, "logs", logs[0].Name()))
+	if err != nil || !strings.Contains(string(logData), commandID.String()) || !strings.Contains(string(logData), testID.String()) || !strings.Contains(string(logData), `"event":"command.completed"`) {
+		t.Fatalf("missing command correlation: %v", err)
+	}
+	completed, conflict, revision := 0, false, false
+	for _, line := range strings.Split(strings.TrimSpace(string(logData)), "\n") {
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event["command_id"] == commandID.String() && event["event"] == "command.completed" {
+			completed++
+		}
+		if event["command_id"] == commandID.String() && event["event"] == "command.rejected" && event["error_code"] == "command_id_conflict" {
+			conflict = true
+		}
+		if event["command_id"] == revisionID.String() && event["event"] == "command.rejected" && event["error_code"] == "revision" {
+			revision = true
+		}
+	}
+	if completed != 1 || !conflict || !revision {
+		t.Fatalf("command diagnostics: completed=%d conflict=%t revision=%t", completed, conflict, revision)
+	}
+}

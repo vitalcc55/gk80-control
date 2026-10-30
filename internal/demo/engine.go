@@ -188,7 +188,8 @@ func (c *Controller) expire() {
 	}
 }
 
-func (c *Controller) Done() <-chan struct{} { return c.ctx.Done() }
+func (c *Controller) Done() <-chan struct{}    { return c.ctx.Done() }
+func (c *Controller) Context() context.Context { return c.ctx }
 
 func (e *Engine) allowed(control *Controller) bool {
 	e.mu.Lock()
@@ -249,14 +250,52 @@ func operationError(ctx context.Context, err error) error {
 }
 
 func (c *Controller) Create(ctx context.Context, cmd contract.CreateTestCommand) (contract.CommandStatus, error) {
-	return c.engine.create(ctx, cmd, nil, c)
+	return c.engine.create(ctx, cmd, nil, c, nil)
 }
 
 func (c *Controller) CreateExact(ctx context.Context, cmd contract.CreateTestCommand, identity []byte) (contract.CommandStatus, error) {
 	if len(identity) == 0 {
 		return contract.CommandStatus{}, storage.ErrInvalidCommand
 	}
-	return c.engine.create(ctx, cmd, append([]byte(nil), identity...), c)
+	return c.engine.create(ctx, cmd, append([]byte(nil), identity...), c, nil)
+}
+
+func (c *Controller) CreateExactWithDisposition(ctx context.Context, cmd contract.CreateTestCommand, identity []byte) (contract.CommandStatus, bool, error) {
+	if len(identity) == 0 {
+		return contract.CommandStatus{}, false, storage.ErrInvalidCommand
+	}
+	replayed := false
+	result, err := c.engine.create(ctx, cmd, append([]byte(nil), identity...), c, &replayed)
+	return result, replayed, err
+}
+
+// LookupCreateExact resolves replays without executing a new command.
+func (c *Controller) LookupCreateExact(ctx context.Context, cmd contract.CreateTestCommand, identity []byte) (contract.CommandStatus, error) {
+	e := c.engine
+	e.mu.Lock()
+	if !e.allowedLocked(c) {
+		e.mu.Unlock()
+		return contract.CommandStatus{}, ErrControlRevoked
+	}
+	current := e.active
+	e.mu.Unlock()
+	result, err := e.store.LookupCreateExact(ctx, cmd, identity)
+	e.mu.Lock()
+	if !e.allowedLocked(c) {
+		e.mu.Unlock()
+		return contract.CommandStatus{}, ErrControlRevoked
+	}
+	stop := !errors.Is(err, storage.ErrCommandNotFound) && unexpectedStorageError(err) &&
+		(ctx.Err() == nil || !errors.Is(err, ctx.Err())) &&
+		current != nil && e.active == current && !current.stopping && !current.naturalDone
+	if stop {
+		e.acceptStopLocked(current, "system", "storage_error")
+	}
+	e.mu.Unlock()
+	if stop {
+		go e.finishStop(current)
+	}
+	return result, err
 }
 
 func (c *Controller) Start(ctx context.Context, id uuid.UUID, cmd contract.StartTestCommand) (contract.CommandStatus, error) {
@@ -395,6 +434,26 @@ func (e *Engine) Shutdown(ctx context.Context, reason string) error {
 }
 
 func (e *Engine) Changes() <-chan struct{} { return e.changed }
+
+// NeedsRefresh reports recoverable in-memory uncertainty without performing I/O.
+func (e *Engine) NeedsRefresh() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.unresolvedCreate != nil || (e.active != nil && e.active.record.SaveStatus == "unknown" && (e.active.naturalDone || e.active.stopping))
+}
+
+func (e *Engine) HasUnresolvedCreate() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.unresolvedCreate != nil
+}
+
+// CreatePending identifies an admitted create whose persisted outcome is unresolved.
+func (e *Engine) CreatePending(id uuid.UUID) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.unresolvedCreate != nil && e.unresolvedCreate.command.CommandId == id
+}
 func (e *Engine) signal() {
 	select {
 	case e.changed <- struct{}{}:
@@ -452,7 +511,7 @@ func copyCommand(status contract.CommandStatus) contract.CommandStatus {
 }
 
 func (e *Engine) Create(ctx context.Context, command contract.CreateTestCommand) (contract.CommandStatus, error) {
-	return e.create(ctx, command, nil, nil)
+	return e.create(ctx, command, nil, nil, nil)
 }
 
 // CreateExact retains the identity of the validated JSON received by core.
@@ -460,10 +519,10 @@ func (e *Engine) CreateExact(ctx context.Context, command contract.CreateTestCom
 	if len(identity) == 0 {
 		return contract.CommandStatus{}, storage.ErrInvalidCommand
 	}
-	return e.create(ctx, command, append([]byte(nil), identity...), nil)
+	return e.create(ctx, command, append([]byte(nil), identity...), nil, nil)
 }
 
-func (e *Engine) create(ctx context.Context, command contract.CreateTestCommand, identity []byte, control *Controller) (contract.CommandStatus, error) {
+func (e *Engine) create(ctx context.Context, command contract.CreateTestCommand, identity []byte, control *Controller, replayed *bool) (contract.CommandStatus, error) {
 	if err := e.acquire(ctx); err != nil {
 		return contract.CommandStatus{}, err
 	}
@@ -496,6 +555,9 @@ func (e *Engine) create(ctx context.Context, command contract.CreateTestCommand,
 		known, lookupErr = e.store.LookupCreateExact(ctx, command, identity)
 	}
 	if !errors.Is(lookupErr, storage.ErrCommandNotFound) {
+		if replayed != nil && known.CommandId != uuid.Nil {
+			*replayed = true
+		}
 		e.abortOnLookupError(ctx, lookupErr)
 		if !e.allowed(control) {
 			return contract.CommandStatus{}, ErrControlRevoked
@@ -518,6 +580,10 @@ func (e *Engine) create(ctx context.Context, command contract.CreateTestCommand,
 	if !e.allowedLocked(control) {
 		e.mu.Unlock()
 		return contract.CommandStatus{}, ErrControlRevoked
+	}
+	if err := ctx.Err(); err != nil {
+		e.mu.Unlock()
+		return contract.CommandStatus{}, err
 	}
 	pending := pendingCreate{command: command, identity: identity}
 	e.unresolvedCreate = &pending

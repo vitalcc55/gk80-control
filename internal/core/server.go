@@ -117,9 +117,14 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, fallback io.Wri
 	go func() { feed.run(feedCtx); close(feedDone) }()
 	var server *http.Server
 	var listener net.Listener
+	var handler *coreHTTP
 	defer func() {
 		leases.close()
 		stopFeed()
+		var workersDone <-chan struct{}
+		if handler != nil {
+			workersDone = handler.stopWorkers()
+		}
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 		defer cancel()
 		engineDone := make(chan error, 1)
@@ -152,6 +157,14 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, fallback io.Wri
 			retainResources = true
 			runErr = errors.Join(runErr, errors.New("core events shutdown unconfirmed"))
 		}
+		if workersDone != nil {
+			select {
+			case <-workersDone:
+			case <-shutdownCtx.Done():
+				retainResources = true
+				runErr = errors.Join(runErr, errors.New("core requests shutdown unconfirmed"))
+			}
+		}
 		if retainResources {
 			retainedCoreResources.Lock()
 			retainedCoreResources.items = append(retainedCoreResources.items, struct {
@@ -169,8 +182,9 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, fallback io.Wri
 	if err != nil {
 		return errors.New("core listener unavailable")
 	}
+	handler = &coreHTTP{secret: bootstrap.Secret, handshake: handshakeHandler(bootstrap.Secret, runID), validator: validator, leases: leases, feed: feed, engine: engine, store: store, logger: logger.Application(diagnostics.ComponentCore)}
 	server = &http.Server{
-		Handler:           &coreHTTP{secret: bootstrap.Secret, handshake: handshakeHandler(bootstrap.Secret, runID), validator: validator, leases: leases, feed: feed},
+		Handler:           handler,
 		ReadHeaderTimeout: 3 * time.Second,
 		ReadTimeout:       5 * time.Second,
 		MaxHeaderBytes:    16 * 1024,

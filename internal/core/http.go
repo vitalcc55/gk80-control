@@ -1,13 +1,16 @@
 package core
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/google/uuid"
 	"github.com/vitalcc55/gk80-control/internal/contract"
@@ -16,12 +19,60 @@ import (
 
 const leaseHeader = "X-GK80-UI-Lease"
 
+type commandReader interface {
+	Command(context.Context, uuid.UUID) (contract.CommandStatus, error)
+}
+
 type coreHTTP struct {
-	secret    string
-	handshake http.Handler
-	validator *contract.InputValidator
-	leases    *uiLeases
-	feed      *eventFeed
+	secret         string
+	handshake      http.Handler
+	validator      *contract.InputValidator
+	leases         *uiLeases
+	feed           *eventFeed
+	engine         *demo.Engine
+	store          commandReader
+	logger         *slog.Logger
+	pendingMu      sync.Mutex
+	pending        map[*createAttempt]struct{}
+	pendingVersion uint64
+	recoveryMu     sync.Mutex
+	recovering     bool
+	workerMu       sync.Mutex
+	workers        int
+	workersClosing bool
+	workersDone    chan struct{}
+}
+
+func (h *coreHTTP) beginWorker() bool {
+	h.workerMu.Lock()
+	defer h.workerMu.Unlock()
+	if h.workersClosing || h.workers >= 32 {
+		return false
+	}
+	h.workers++
+	return true
+}
+
+func (h *coreHTTP) endWorker() {
+	h.workerMu.Lock()
+	defer h.workerMu.Unlock()
+	h.workers--
+	if h.workersClosing && h.workers == 0 {
+		close(h.workersDone)
+	}
+}
+
+func (h *coreHTTP) stopWorkers() <-chan struct{} {
+	h.workerMu.Lock()
+	defer h.workerMu.Unlock()
+	if !h.workersClosing {
+		h.workersClosing = true
+		h.workersDone = make(chan struct{})
+		if h.workers == 0 {
+			close(h.workersDone)
+		}
+	}
+	return h.workersDone
 }
 
 func (h *coreHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -44,19 +95,44 @@ func (h *coreHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed")
 			return
 		}
-		id, present, err := parseLeaseHeader(r)
-		if err != nil || !present {
-			writeAPIError(w, http.StatusForbidden, "lease_invalid", "UI lease required")
+		owner, ok := h.requestOwner(w, r)
+		if !ok {
 			return
 		}
-		snapshot, err := h.leases.snapshot(id, h.feed)
+		if !h.recoverSnapshot(w, r, owner) {
+			return
+		}
+		h.pendingMu.Lock()
+		if h.admittedCreateLocked() || h.engine.HasUnresolvedCreate() {
+			h.pendingMu.Unlock()
+			writeAPIError(w, http.StatusServiceUnavailable, "state_unavailable", "State is not yet confirmed")
+			return
+		}
+		version := h.pendingVersion
+		h.pendingMu.Unlock()
+		snapshot, err := h.leases.snapshot(owner.id, h.feed)
+		h.pendingMu.Lock()
+		unstable := version != h.pendingVersion || h.admittedCreateLocked() || h.engine.HasUnresolvedCreate()
+		h.pendingMu.Unlock()
+		if unstable {
+			writeAPIError(w, http.StatusServiceUnavailable, "state_unavailable", "State is not yet confirmed")
+			return
+		}
 		if err != nil {
 			writeAPIError(w, http.StatusForbidden, "lease_invalid", "UI lease required")
 			return
 		}
 		writeJSON(w, http.StatusOK, snapshot)
+	case "/v1/tests":
+		h.createTest(w, r)
 	default:
-		http.NotFound(w, r)
+		if strings.HasPrefix(r.URL.Path, "/v1/commands/") {
+			h.commandStatus(w, r)
+		} else if strings.HasPrefix(r.URL.Path, "/v1/tests/") && strings.HasSuffix(r.URL.Path, "/readiness") {
+			h.readiness(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
 	}
 }
 

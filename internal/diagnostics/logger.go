@@ -37,6 +37,7 @@ const (
 	CommandAccepted     Event = "command.accepted"
 	CommandRejected     Event = "command.rejected"
 	CommandCompleted    Event = "command.completed"
+	CommandObserved     Event = "command.observed"
 	frameworkMessage    Event = "framework.message"
 	libraryMessage      Event = "library.message"
 )
@@ -58,6 +59,7 @@ var eventCatalog = map[Event]eventSpec{
 	CommandAccepted:     {slog.LevelInfo, "Command accepted"},
 	CommandRejected:     {slog.LevelInfo, "Command rejected"},
 	CommandCompleted:    {slog.LevelInfo, "Command completed"},
+	CommandObserved:     {slog.LevelInfo, "Command result observed"},
 	frameworkMessage:    {slog.LevelInfo, "Framework diagnostic"},
 	libraryMessage:      {slog.LevelInfo, "Library diagnostic"},
 }
@@ -192,6 +194,7 @@ func newLogger(role Role, runID uuid.UUID, writer io.WriteCloser, fallback io.Wr
 type fields struct {
 	command, test, action, backendRun       uuid.UUID
 	errorCode                               string
+	commandStatus                           string
 	sqliteVersion, journalMode, synchronous string
 	exitCode                                *int64
 	grouped                                 bool
@@ -230,8 +233,13 @@ func (f *fields) add(attr slog.Attr) {
 			}
 		case "error_code":
 			switch value {
-			case "unavailable", "invalid_command", "command_id_conflict", "storage_unavailable":
+			case "unavailable", "invalid_command", "command_id_conflict", "storage_unavailable", "revision", "active_test", "invalid_state", "action_mismatch", "test_not_found", "not_ready":
 				f.errorCode = value
+			}
+		case "command_status":
+			switch value {
+			case "accepted", "completed", "rejected", "failed", "unknown":
+				f.commandStatus = value
 			}
 		case "sqlite_version":
 			if len(value) > 0 && len(value) <= 32 {
@@ -281,6 +289,9 @@ func (l *Logger) emit(event Event, spec eventSpec, component Component, values f
 	}
 	if values.errorCode != "" {
 		record.AddAttrs(slog.String("error_code", values.errorCode))
+	}
+	if values.commandStatus != "" {
+		record.AddAttrs(slog.String("command_status", values.commandStatus))
 	}
 	if values.sqliteVersion != "" {
 		record.AddAttrs(slog.String("sqlite_version", values.sqliteVersion))
