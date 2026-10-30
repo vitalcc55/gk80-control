@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { type ComponentProps, StrictMode } from 'react';
 import { beforeEach, expect, it, vi } from 'vitest';
@@ -8,6 +8,8 @@ import { History } from '../src/desktop/History';
 import { LiveApp as RealLiveApp } from '../src/desktop/LiveApp';
 import { desktopDemoService } from '../src/desktop/wails-bridge';
 import {
+  type CommandDispatch,
+  CommandDispatchDelivery,
   CommandStatusStatus,
   ConnectionStateStatus,
   type DesktopStatus,
@@ -781,6 +783,333 @@ it('does not send another creation after an unknown response and remount', async
   expect(screen.getByText(/Команда:/)).toBeTruthy();
 }, 10000);
 
+it.each(['rejected response', 'not sent response'] as const)(
+  'clears the unknown creation message after the same command is confirmed: %s',
+  async (lateOutcome) => {
+    let snapshot: Snapshot = {
+      apiVersion: 'v1',
+      backendRunId: backend,
+      revision: 0,
+      lastEventSequence: 0,
+      activeTest: null,
+      pendingAction: null,
+      measurements: [],
+    };
+    const bridge: SessionBridge = {
+      beginSessionCheck: async () => 'ticket',
+      keepAlive: async () => {},
+      sessionView: async () => ({
+        connection: {
+          hostRunId: host,
+          revision: 1,
+          status: ConnectionStateStatus.Live,
+          linkValid: true,
+          leaseAcquireUnknown: false,
+          streamGeneration: 0,
+        },
+        snapshot,
+        validForMs: 6000,
+        linkValidForMs: 6000,
+      }),
+    };
+    let allowRead = false;
+    let rejectCreate: (error: Error) => void = () => {};
+    let finishCreate: (value: CommandDispatch) => void = () => {};
+    const delayedCreate = new Promise<CommandDispatch>((resolve, reject) => {
+      finishCreate = resolve;
+      rejectCreate = reject;
+    });
+    api.list.mockResolvedValue({ items: [], nextAfter: null });
+    api.create.mockReturnValue(delayedCreate);
+    api.command.mockImplementation(async (id: string) => {
+      if (!allowRead) throw new Error('temporarily unavailable');
+      return { commandId: id, testId, status: CommandStatusStatus.CommandStatusStatusCompleted };
+    });
+    api.readiness.mockResolvedValue({ testId, revision: 1, ready: true, checks: [] });
+    render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+    const user = userEvent.setup();
+    const newTest = await screen.findByRole('button', { name: 'Новое испытание' });
+    await waitFor(() => expect(newTest.hasAttribute('disabled')).toBe(false));
+    await user.click(newTest);
+    await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
+    await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
+    await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+    await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
+    await screen.findByText(/Исход команды пока неизвестен/);
+    allowRead = true;
+    await user.click(screen.getByRole('button', { name: 'Проверить состояние' }));
+    await screen.findByText(/Действие подтверждено ядром; ожидаем состояние/);
+    await act(async () => {
+      if (lateOutcome === 'rejected response') rejectCreate(new Error('response lost'));
+      else finishCreate({ delivery: CommandDispatchDelivery.NotSent, command: null });
+      await delayedCreate.catch(() => {});
+    });
+    expect(screen.queryByText(/Исход команды пока неизвестен/)).toBeNull();
+    expect(screen.getByText(/Команда: выполнена/)).toBeTruthy();
+    expect(
+      screen.getByRole('button', { name: 'Создание испытания…' }).hasAttribute('disabled'),
+    ).toBe(true);
+    snapshot = { ...snapshot, revision: 1, lastEventSequence: 1, activeTest: record };
+    await waitFor(() => expect(screen.queryByText(/Команда: выполнена/)).toBeNull(), {
+      timeout: 8000,
+    });
+    expect(screen.queryByText(/Действие подтверждено ядром; ожидаем состояние/)).toBeNull();
+    expect(api.create).toHaveBeenCalledOnce();
+  },
+  15000,
+);
+
+it('does not restore an unknown message after a later successful lookup', async () => {
+  const createId = '66666666-6666-4666-8666-666666666666';
+  sessionStorage.setItem(
+    'gk80.demo.pending-command',
+    JSON.stringify([{ id: createId, kind: 'create', testId: null, retired: false }]),
+  );
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 0,
+        lastEventSequence: 0,
+        activeTest: null,
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  let rejectFirst: (error: Error) => void = () => {};
+  const first = new Promise<never>((_resolve, reject) => {
+    rejectFirst = reject;
+  });
+  api.list.mockResolvedValue({ items: [], nextAfter: null });
+  api.command.mockReturnValueOnce(first).mockResolvedValue({
+    commandId: createId,
+    testId,
+    status: CommandStatusStatus.CommandStatusStatusCompleted,
+  });
+  render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  await waitFor(() => expect(api.command).toHaveBeenCalledOnce());
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Проверить состояние' }));
+  await screen.findByText(/Команда: выполнена/);
+  await act(async () => {
+    rejectFirst(new Error('late failure'));
+    await first.catch(() => {});
+  });
+  expect(screen.queryByText(/Исход команды пока неизвестен/)).toBeNull();
+  expect(screen.getByText(/Команда: выполнена/)).toBeTruthy();
+  expect(api.create).not.toHaveBeenCalled();
+});
+
+it('keeps an unknown stop message when a different command is confirmed', async () => {
+  const createId = '66666666-6666-4666-8666-666666666666';
+  sessionStorage.setItem(
+    'gk80.demo.pending-command',
+    JSON.stringify([
+      { id: stopId, kind: 'stop', testId, retired: false },
+      { id: createId, kind: 'create', testId: null, retired: false },
+    ]),
+  );
+  let snapshot: Snapshot = {
+    apiVersion: 'v1',
+    backendRunId: backend,
+    revision: 0,
+    lastEventSequence: 0,
+    activeTest: null,
+    pendingAction: null,
+    measurements: [],
+  };
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot,
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.list.mockResolvedValue({ items: [], nextAfter: null });
+  api.readiness.mockResolvedValue({ testId, revision: 1, ready: true, checks: [] });
+  api.command.mockImplementation(async (id: string) => {
+    if (id === stopId) throw new Error('stop status unavailable');
+    return { commandId: id, testId, status: CommandStatusStatus.CommandStatusStatusCompleted };
+  });
+  render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  await screen.findByText(/Исход команды пока неизвестен/);
+  const createCheck = screen.getAllByRole('button', { name: 'Проверить состояние' })[1];
+  if (!createCheck) throw new Error('create status check missing');
+  await userEvent.setup().click(createCheck);
+  await screen.findByText(/Команда: выполнена/);
+  expect(screen.getByText(/Исход команды пока неизвестен/)).toBeTruthy();
+  expect(screen.getByText(new RegExp(`Остановка испытания ${testId}`))).toBeTruthy();
+  snapshot = { ...snapshot, revision: 1, lastEventSequence: 1, activeTest: record };
+  await waitFor(() => expect(screen.queryByText(/Команда: выполнена/)).toBeNull(), {
+    timeout: 8000,
+  });
+  expect(screen.getByText(/Исход команды пока неизвестен/)).toBeTruthy();
+  expect(screen.getByText(new RegExp(`Остановка испытания ${testId}`))).toBeTruthy();
+  expect(api.create).not.toHaveBeenCalled();
+}, 15000);
+
+it('keeps another command unknown when an earlier command fails', async () => {
+  const createId = '66666666-6666-4666-8666-666666666666';
+  sessionStorage.setItem(
+    'gk80.demo.pending-command',
+    JSON.stringify([
+      { id: stopId, kind: 'stop', testId, retired: true },
+      { id: createId, kind: 'create', testId: null, retired: false },
+    ]),
+  );
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 0,
+        lastEventSequence: 0,
+        activeTest: null,
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  let finishStop: (value: {
+    commandId: string;
+    testId: string;
+    status: CommandStatusStatus;
+  }) => void = () => {};
+  const stop = new Promise<{ commandId: string; testId: string; status: CommandStatusStatus }>(
+    (resolve) => {
+      finishStop = resolve;
+    },
+  );
+  api.list.mockResolvedValue({ items: [], nextAfter: null });
+  api.command.mockImplementation(async (id: string) => {
+    if (id === stopId) return stop;
+    throw new Error('creation status unavailable');
+  });
+  render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  await waitFor(() => expect(api.command).toHaveBeenCalledWith(stopId));
+  const createCheck = screen.getAllByRole('button', { name: 'Проверить состояние' })[1];
+  if (!createCheck) throw new Error('create status check missing');
+  await userEvent.setup().click(createCheck);
+  await screen.findByText(/Исход команды пока неизвестен/);
+  await act(async () => {
+    finishStop({
+      commandId: stopId,
+      testId,
+      status: CommandStatusStatus.CommandStatusStatusFailed,
+    });
+    await stop;
+  });
+  expect(
+    await screen.findByText(new RegExp(`Испытание ${testId}: Остановка не выполнена`)),
+  ).toBeTruthy();
+  expect(screen.getByText(/Исход команды пока неизвестен/)).toBeTruthy();
+  expect(api.create).not.toHaveBeenCalled();
+});
+
+it('keeps separate failed stop results visible until the operator hides them', async () => {
+  const stops = [
+    { id: stopId, testId },
+    { id: '66666666-6666-4666-8666-666666666666', testId: '77777777-7777-4777-8777-777777777777' },
+    { id: '88888888-8888-4888-8888-888888888888', testId: '99999999-9999-4999-8999-999999999999' },
+  ];
+  sessionStorage.setItem(
+    'gk80.demo.pending-command',
+    JSON.stringify(stops.map((item) => ({ ...item, kind: 'stop', retired: true }))),
+  );
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 0,
+        lastEventSequence: 0,
+        activeTest: null,
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.list.mockResolvedValue({ items: [], nextAfter: null });
+  api.command.mockImplementation(async (id: string) => ({
+    commandId: id,
+    testId: stops.find((item) => item.id === id)?.testId,
+    status: CommandStatusStatus.CommandStatusStatusFailed,
+  }));
+  const view = render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  const user = userEvent.setup();
+  for (const item of stops) {
+    const row = await screen.findByText(new RegExp(`ID ${item.id}`));
+    await user.click(within(row).getByRole('button', { name: 'Проверить состояние' }));
+    await waitFor(() => expect(row.textContent).toContain('завершилась с ошибкой'));
+  }
+  for (const item of stops) {
+    const row = screen.getByText(new RegExp(`ID ${item.id}`));
+    expect(row.textContent).toContain(`Остановка испытания ${item.testId}`);
+    expect(row.textContent).toContain('Безопасное давление не подтверждено');
+  }
+  const first = screen.getByText(new RegExp(`ID ${stops[0]?.id}`));
+  await user.click(within(first).getByRole('button', { name: 'Скрыть наблюдение команды' }));
+  expect(screen.queryByText(new RegExp(`ID ${stops[0]?.id}`))).toBeNull();
+  for (const item of stops.slice(1))
+    expect(screen.getByText(new RegExp(`ID ${item.id}`))).toBeTruthy();
+  view.unmount();
+  api.command.mockRejectedValue(new Error('core unavailable'));
+  render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  for (const item of stops.slice(1)) {
+    const row = await screen.findByText(new RegExp(`ID ${item.id}`));
+    expect(row.textContent).toContain('Безопасное давление не подтверждено');
+    expect(row.textContent).toContain('исход неизвестен');
+  }
+  expect(api.stop).not.toHaveBeenCalled();
+});
+
 it('keeps a confirmed not-sent result when the service wrapper changes', async () => {
   const snapshot: Snapshot = {
     apiVersion: 'v1',
@@ -903,6 +1232,230 @@ it('allows stopping while another command is unresolved and reports a confirmed 
   expect(api.stop).toHaveBeenCalledWith(testId, { commandId: stopId });
   await screen.findByText(/Остановка не выполнена или отклонена/);
 });
+
+it('does not report an unknown stop after its confirmed response', async () => {
+  const snapshot: Snapshot = {
+    apiVersion: 'v1',
+    backendRunId: backend,
+    revision: 2,
+    lastEventSequence: 2,
+    activeTest: { ...record, stage: TestRecordStage.Running },
+    pendingAction: null,
+    measurements: [],
+  };
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot,
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  let rejectLookup: (error: Error) => void = () => {};
+  const lookup = new Promise<never>((_resolve, reject) => {
+    rejectLookup = reject;
+  });
+  let finishStop: (value: {
+    commandId: string;
+    testId: string;
+    status: CommandStatusStatus;
+  }) => void = () => {};
+  const stop = new Promise<{ commandId: string; testId: string; status: CommandStatusStatus }>(
+    (resolve) => {
+      finishStop = resolve;
+    },
+  );
+  api.command.mockReturnValue(lookup);
+  api.stop.mockReturnValue(stop);
+  render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  await userEvent
+    .setup()
+    .click(await screen.findByRole('button', { name: 'Остановить испытание' }));
+  await waitFor(() => expect(api.command).toHaveBeenCalledWith(stopId));
+  await act(async () => {
+    finishStop({
+      commandId: stopId,
+      testId,
+      status: CommandStatusStatus.CommandStatusStatusCompleted,
+    });
+    await stop;
+  });
+  await screen.findByText('Остановка подтверждена ядром.');
+  await act(async () => {
+    rejectLookup(new Error('late failure'));
+    await lookup.catch(() => {});
+  });
+  expect(screen.queryByText(/Исход команды пока неизвестен/)).toBeNull();
+  expect(screen.getByText('Остановка подтверждена ядром.')).toBeTruthy();
+  expect(screen.getByText(/Команда: выполнена/)).toBeTruthy();
+  expect(api.stop).toHaveBeenCalledOnce();
+});
+
+it('keeps a storage warning when stop fails', async () => {
+  const snapshot: Snapshot = {
+    apiVersion: 'v1',
+    backendRunId: backend,
+    revision: 2,
+    lastEventSequence: 2,
+    activeTest: { ...record, stage: TestRecordStage.Running },
+    pendingAction: null,
+    measurements: [],
+  };
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot,
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  let finishLookup: (value: { commandId: string; status: CommandStatusStatus }) => void = () => {};
+  const heldLookup = new Promise<{ commandId: string; status: CommandStatusStatus }>((resolve) => {
+    finishLookup = resolve;
+  });
+  api.command.mockReturnValue(heldLookup);
+  api.stop.mockResolvedValue({
+    commandId: stopId,
+    testId,
+    status: CommandStatusStatus.CommandStatusStatusFailed,
+  });
+  const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+    throw new Error('unavailable');
+  });
+  const view = render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  await userEvent
+    .setup()
+    .click(await screen.findByRole('button', { name: 'Остановить испытание' }));
+  expect(await screen.findByText(/Остановка не выполнена или отклонена/)).toBeTruthy();
+  expect(screen.getByText(/Не удалось обновить список команд в интерфейсе/)).toBeTruthy();
+  setItem.mockRestore();
+  api.command.mockResolvedValue({
+    commandId: stopId,
+    testId,
+    status: CommandStatusStatus.CommandStatusStatusFailed,
+  });
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Проверить состояние' }));
+  await waitFor(() =>
+    expect(screen.queryByText(/Не удалось обновить список команд в интерфейсе/)).toBeNull(),
+  );
+  view.unmount();
+  await act(async () => {
+    finishLookup({ commandId: stopId, status: CommandStatusStatus.CommandStatusStatusUnknown });
+    await heldLookup;
+  });
+});
+
+it('clears an unknown stop when the separate stop check confirms it', async () => {
+  const oldId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  sessionStorage.setItem(
+    'gk80.demo.pending-command',
+    JSON.stringify([{ id: oldId, kind: 'start', testId, retired: true }]),
+  );
+  let snapshot: Snapshot = {
+    apiVersion: 'v1',
+    backendRunId: backend,
+    revision: 2,
+    lastEventSequence: 2,
+    activeTest: { ...record, stage: TestRecordStage.Running },
+    pendingAction: null,
+    measurements: [],
+  };
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot,
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  let finishOld: (value: { commandId: string; status: CommandStatusStatus }) => void = () => {};
+  const old = new Promise<{ commandId: string; status: CommandStatusStatus }>((resolve) => {
+    finishOld = resolve;
+  });
+  let finishStop: (value: {
+    commandId: string;
+    testId: string;
+    status: CommandStatusStatus;
+  }) => void = () => {};
+  const stopCheck = new Promise<{ commandId: string; testId: string; status: CommandStatusStatus }>(
+    (resolve) => {
+      finishStop = resolve;
+    },
+  );
+  let stopReads = 0;
+  let allowConfirmation = false;
+  api.command.mockImplementation(async (id: string) => {
+    if (id === oldId) return old;
+    stopReads++;
+    if (!allowConfirmation) throw new Error('temporarily unavailable');
+    return stopCheck;
+  });
+  api.stop.mockResolvedValue({
+    commandId: stopId,
+    testId,
+    status: CommandStatusStatus.CommandStatusStatusAccepted,
+  });
+  const view = render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  await waitFor(() => expect(api.command).toHaveBeenCalledWith(oldId));
+  await userEvent
+    .setup()
+    .click(await screen.findByRole('button', { name: 'Остановить испытание' }));
+  const stopCheckButton = screen.getAllByRole('button', { name: 'Проверить состояние' })[1];
+  if (!stopCheckButton) throw new Error('stop status check missing');
+  await userEvent.setup().click(stopCheckButton);
+  await screen.findByText(/Исход команды пока неизвестен/);
+  const previousReads = stopReads;
+  allowConfirmation = true;
+  snapshot = {
+    ...snapshot,
+    lastEventSequence: 3,
+    activeTest: { ...record, stage: TestRecordStage.Running },
+  };
+  await waitFor(() => expect(stopReads).toBeGreaterThan(previousReads), { timeout: 8000 });
+  await act(async () => {
+    finishStop({
+      commandId: stopId,
+      testId,
+      status: CommandStatusStatus.CommandStatusStatusCompleted,
+    });
+    await stopCheck;
+  });
+  expect(await screen.findByText('Остановка подтверждена ядром.')).toBeTruthy();
+  expect(screen.queryByText(/Исход команды пока неизвестен/)).toBeNull();
+  expect(screen.getByText(new RegExp(`Команда: выполнена.*${stopId}`))).toBeTruthy();
+  view.unmount();
+  await act(async () => {
+    finishOld({ commandId: oldId, status: CommandStatusStatus.CommandStatusStatusUnknown });
+    await old;
+  });
+}, 15000);
 
 it('explains when a pending start was canceled by stop', async () => {
   const startId = '66666666-6666-4666-8666-666666666666';

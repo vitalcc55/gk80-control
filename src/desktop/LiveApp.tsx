@@ -193,6 +193,12 @@ function mergeStatus(previous: CommandStatus | null, next: CommandStatus): Comma
   return next;
 }
 
+function terminalStatus(status: CommandStatus | null): boolean {
+  return (
+    status?.status === 'completed' || status?.status === 'rejected' || status?.status === 'failed'
+  );
+}
+
 function stopPendingMessage(record: Snapshot['activeTest']): string {
   return record?.stage === 'finished' && record.outcome === 'interrupted'
     ? 'Испытание прервано по состоянию ядра; исход запроса остановки ещё не подтверждён.'
@@ -329,6 +335,23 @@ function ActiveLiveApp({
   const [pending, setPending] = useState<Pending[]>(restored ?? volatilePending ?? []);
   const pendingRef = useRef(pending);
   const [message, setMessage] = useState('');
+  const [storageMessage, setStorageMessage] = useState('');
+  const [commandMessages, setCommandMessages] = useState<Map<string, string>>(() => new Map());
+  const setCommandMessage = useCallback((id: string, text: string) => {
+    setCommandMessages((current) => {
+      if ((current.get(id) ?? '') === text) return current;
+      const next = new Map(current);
+      if (text) next.set(id, text);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
+  const unknownMessage = useCallback(
+    (id: string) => {
+      setCommandMessage(id, 'Исход команды пока неизвестен. Автоматический повтор не выполняется.');
+    },
+    [setCommandMessage],
+  );
   const [stopMessage, setStopMessageValue] = useState('');
   const stopMessageRegion = useRef<HTMLDivElement>(null);
   const stopMessageValue = useRef('');
@@ -468,6 +491,7 @@ function ActiveLiveApp({
       pendingStorageUnknown = false;
       setStorageUnconfirmed(false);
       setVolatileStopTracking(false);
+      setStorageMessage('');
       return true;
     } catch {
       if (allowVolatile) {
@@ -476,7 +500,7 @@ function ActiveLiveApp({
         setPending(values);
         setVolatileStopTracking(true);
       }
-      setMessage(
+      setStorageMessage(
         'Не удалось обновить список команд в интерфейсе; проверьте их состояние перед продолжением.',
       );
       return false;
@@ -489,9 +513,20 @@ function ActiveLiveApp({
           pendingRef.current.filter((item) => item.id !== id),
           true,
         );
+      setCommandMessage(id, '');
     },
-    [savePending],
+    [savePending, setCommandMessage],
   );
+  const updateTrackedStatus = useCallback((id: string, status: CommandStatus) => {
+    const current = pendingRef.current.find((item) => item.id === id);
+    if (!current) return;
+    const merged = mergeStatus(current.status, status);
+    if (JSON.stringify(current.status) === JSON.stringify(merged)) return;
+    pendingRef.current = pendingRef.current.map((item) =>
+      item.id === id ? { ...item, status: merged } : item,
+    );
+    setPending(pendingRef.current);
+  }, []);
   const lookup = useCallback(
     async (item: Pending, manual = false) => {
       if (!beginCall('lookup', item.id, manual ? 2 : 1)) {
@@ -504,10 +539,11 @@ function ActiveLiveApp({
         if (lifecycle.current !== generation || status.commandId !== item.id) return;
         const existing = pendingRef.current.find((current) => current.id === item.id);
         if (!existing) return;
-        const merged = mergeStatus(existing.status, status);
+        let merged = mergeStatus(existing.status, status);
         if (item.kind === 'stop') {
           const stopStatus = mergeStatus(stopStatuses.current.get(item.id) ?? null, merged);
           stopStatuses.current.set(item.id, stopStatus);
+          merged = stopStatus;
           if (lastStopId.current === item.id) {
             if (stopStatus.status === 'completed') setStopMessage('Остановка подтверждена ядром.');
             else if (stopStatus.status === 'failed' || stopStatus.status === 'rejected')
@@ -522,29 +558,56 @@ function ActiveLiveApp({
           );
           setPending(pendingRef.current);
         }
+        if (merged.status === 'completed')
+          setCommandMessage(item.id, 'Действие подтверждено ядром; ожидаем состояние.');
+        else if (merged.status === 'accepted')
+          setCommandMessage(item.id, 'Команда принята или её исход ещё не подтверждён.');
         if (merged.status === 'rejected' || merged.status === 'failed') {
-          setMessage(
-            merged.reason === 'canceled_by_stop'
-              ? 'Запуск отменён при остановке испытания до подтверждения оператора.'
-              : 'Команда отклонена или не выполнена.',
-          );
-          forget(item.id);
+          if (item.kind === 'stop') {
+            const failure =
+              'Остановка не выполнена или отклонена. Безопасное давление не подтверждено.';
+            if (lastStopId.current === null || lastStopId.current === item.id) {
+              lastStopId.current = item.id;
+              setStopRequestedFor(item.testId);
+              setStopMessage(failure);
+            }
+            savePending(
+              pendingRef.current.map((current) =>
+                current.id === item.id ? { ...current, retired: true } : current,
+              ),
+              true,
+            );
+            setCommandMessage(item.id, '');
+          } else {
+            setMessage(
+              merged.reason === 'canceled_by_stop'
+                ? 'Запуск отменён при остановке испытания до подтверждения оператора.'
+                : 'Команда отклонена или не выполнена.',
+            );
+            forget(item.id);
+          }
         }
       } catch {
+        const current = pendingRef.current.find((pendingItem) => pendingItem.id === item.id);
+        const knownStop = item.kind === 'stop' ? (stopStatuses.current.get(item.id) ?? null) : null;
         if (
           lifecycle.current === generation &&
-          pendingRef.current.some((current) => current.id === item.id)
+          current &&
+          !terminalStatus(current.status) &&
+          !terminalStatus(knownStop)
         )
-          setMessage('Исход команды пока неизвестен. Повторная команда не отправлена.');
+          unknownMessage(item.id);
       } finally {
         endCall('lookup', item.id);
       }
     },
-    [forget, setStopMessage, service],
+    [forget, savePending, setCommandMessage, setStopMessage, service, unknownMessage],
   );
   useEffect(() => {
-    if (!pending.length || !fresh) return;
-    for (const item of pending) {
+    if (!fresh || (!pending.length && !pendingRef.current.length)) return;
+    const tracked = pendingRef.current;
+    if (!tracked.length) return;
+    for (const item of tracked) {
       const expected = item.status?.testId ?? item.testId;
       if (
         item.status?.status === 'completed' &&
@@ -564,16 +627,36 @@ function ActiveLiveApp({
       }
     }
     if (
-      record?.stage === 'finished' &&
-      pending.some((item) => !item.retired && item.testId === record.testId)
+      tracked.some(
+        (item) =>
+          item.kind === 'stop' &&
+          !item.retired &&
+          (item.status?.status === 'failed' || item.status?.status === 'rejected'),
+      )
     ) {
       savePending(
-        pending.map((item) => (item.testId === record.testId ? { ...item, retired: true } : item)),
+        tracked.map((item) =>
+          item.kind === 'stop' &&
+          (item.status?.status === 'failed' || item.status?.status === 'rejected')
+            ? { ...item, retired: true }
+            : item,
+        ),
         true,
       );
       return;
     }
-    const item = pending[lookupIndex.current++ % pending.length];
+    if (
+      record?.stage === 'finished' &&
+      tracked.some((item) => !item.retired && item.testId === record.testId)
+    ) {
+      savePending(
+        tracked.map((item) => (item.testId === record.testId ? { ...item, retired: true } : item)),
+        true,
+      );
+      return;
+    }
+    const unresolved = tracked.filter((item) => !terminalStatus(item.status));
+    const item = unresolved[lookupIndex.current++ % unresolved.length];
     if (item) void lookup(item);
   }, [
     pending,
@@ -610,6 +693,8 @@ function ActiveLiveApp({
             return;
           const merged = mergeStatus(stopStatuses.current.get(id) ?? null, status);
           stopStatuses.current.set(id, merged);
+          updateTrackedStatus(id, merged);
+          if (terminalStatus(merged)) setCommandMessage(id, '');
           if (merged.status === 'completed') setStopMessage('Остановка подтверждена ядром.');
           else if (merged.status === 'failed' || merged.status === 'rejected')
             setStopMessage(
@@ -621,7 +706,15 @@ function ActiveLiveApp({
       .finally(() => {
         endCall('lookup', id);
       });
-  }, [stopRequested, record, fresh, setStopMessage, service]);
+  }, [
+    stopRequested,
+    record,
+    fresh,
+    setCommandMessage,
+    setStopMessage,
+    service,
+    updateTrackedStatus,
+  ]);
 
   async function submit(
     kind: Exclude<Pending['kind'], 'stop'>,
@@ -645,7 +738,7 @@ function ActiveLiveApp({
       setMessage('Не удалось сохранить идентификатор. Новая команда не отправлена.');
       return;
     }
-    setMessage('Команда отправлена. Ожидаем подтверждения ядра.');
+    setCommandMessage(item.id, 'Команда отправлена. Ожидаем подтверждения ядра.');
     try {
       const dispatch = await send(item.id);
       if (
@@ -656,7 +749,9 @@ function ActiveLiveApp({
       if (dispatch.delivery === 'notSent' && dispatch.command === null) {
         const existing = pendingRef.current.find((current) => current.id === item.id);
         if (existing?.status && existing.status.status !== 'unknown') {
-          setMessage(
+          if (terminalStatus(existing.status)) return;
+          setCommandMessage(
+            item.id,
             'Ранее найденное состояние команды требует проверки; новый запрос не отправлен.',
           );
           return;
@@ -669,7 +764,8 @@ function ActiveLiveApp({
       }
       const result = dispatch.command;
       if (dispatch.delivery !== 'response' || !result || result.commandId !== item.id) {
-        setMessage('Исход команды пока неизвестен. Повторная команда не отправлена.');
+        const current = pendingRef.current.find((pendingItem) => pendingItem.id === item.id);
+        if (current && !terminalStatus(current.status)) unknownMessage(item.id);
         return;
       }
       const existing = pendingRef.current.find((current) => current.id === item.id);
@@ -683,17 +779,16 @@ function ActiveLiveApp({
         setMessage('Команда отклонена или не выполнена.');
         forget(item.id);
       } else
-        setMessage(
+        setCommandMessage(
+          item.id,
           merged.status === 'completed'
             ? 'Действие подтверждено ядром; ожидаем состояние.'
             : 'Команда принята или её исход ещё не подтверждён.',
         );
     } catch {
-      if (
-        lifecycle.current === generation &&
-        pendingRef.current.some((current) => current.id === item.id)
-      )
-        setMessage('Исход команды пока неизвестен. Повторная команда не отправлена.');
+      const current = pendingRef.current.find((pendingItem) => pendingItem.id === item.id);
+      if (lifecycle.current === generation && current && !terminalStatus(current.status))
+        unknownMessage(item.id);
     }
   }
   async function stop() {
@@ -731,6 +826,8 @@ function ActiveLiveApp({
       }
       const merged = mergeStatus(stopStatuses.current.get(record.stopCommandId) ?? null, result);
       stopStatuses.current.set(record.stopCommandId, merged);
+      if (terminalStatus(merged)) setCommandMessage(record.stopCommandId, '');
+      updateTrackedStatus(record.stopCommandId, merged);
       setStopMessage(
         merged.status === 'completed'
           ? 'Остановка подтверждена ядром.'
@@ -812,8 +909,18 @@ function ActiveLiveApp({
                   </p>
                 )}
               </div>
-              <div className="demo-command-message" tabIndex={message ? 0 : -1}>
+              <div
+                className="demo-command-message"
+                tabIndex={message || storageMessage || commandMessages.size ? 0 : -1}
+              >
+                {storageMessage && <p role="alert">{storageMessage}</p>}
                 {message && <p role="status">{message}</p>}
+                {[...commandMessages].map(([id, text]) => (
+                  <p role="status" key={id}>
+                    {commandMessages.size > 1 ? `Команда ${id}: ` : ''}
+                    {text}
+                  </p>
+                ))}
               </div>
             </div>
             <div
@@ -861,9 +968,9 @@ function ActiveLiveApp({
               )}
               {pending.map((item) => (
                 <p key={item.id}>
-                  Команда: {commandStatusLabel(item.status?.status)}.{' '}
-                  {item.kind === 'stop' &&
-                    `Остановка испытания ${item.testId ?? 'неизвестно'}; команда ${item.id}. `}
+                  Команда: {commandStatusLabel(item.status?.status)}. ID {item.id}.{' '}
+                  {item.kind === 'stop' && `Остановка испытания ${item.testId ?? 'неизвестно'}. `}
+                  {item.kind === 'stop' && 'Безопасное давление не подтверждено. '}
                   <button
                     type="button"
                     onClick={() => {
@@ -874,7 +981,7 @@ function ActiveLiveApp({
                   </button>
                   {item.retired && (
                     <button type="button" onClick={() => forget(item.id)}>
-                      Скрыть наблюдение завершённого испытания
+                      Скрыть наблюдение команды
                     </button>
                   )}
                 </p>
