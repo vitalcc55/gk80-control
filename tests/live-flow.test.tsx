@@ -666,6 +666,7 @@ it('uses core confirmation and measurements for the operator path', async () => 
     { name: 'Подтвердить действие' },
     { timeout: 8000 },
   );
+  await screen.findByText(/Команда: принята; завершение команды не подтверждено/);
   await waitFor(() => expect(confirm.hasAttribute('disabled')).toBe(false));
   await user.click(confirm);
   expect(api.confirm).toHaveBeenCalledTimes(1);
@@ -728,7 +729,7 @@ it('does not send another creation after an unknown response and remount', async
   const restored = await screen.findByRole('button', { name: 'Новое испытание' });
   expect(restored.hasAttribute('disabled')).toBe(true);
   expect(api.create).toHaveBeenCalledTimes(1);
-  expect(screen.getByText(/Исход команды:/)).toBeTruthy();
+  expect(screen.getByText(/Команда:/)).toBeTruthy();
 }, 10000);
 
 it('keeps a confirmed not-sent result when the service wrapper changes', async () => {
@@ -781,7 +782,13 @@ it('keeps a confirmed not-sent result when the service wrapper changes', async (
   await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
   await user.type(screen.getByLabelText(/производителя, Па/), '10000');
   await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
-  await screen.findByText(/Исход команды: unknown/);
+  await screen.findByText(/Команда: исход неизвестен/);
+  await waitFor(() => expect(api.command).toHaveBeenCalled());
+  const initialLookup = api.command.mock.results[0]?.value;
+  expect(initialLookup).toBeDefined();
+  await act(async () => {
+    await initialLookup;
+  });
   view.rerender(
     <LiveApp session={bridge} service={replacement} hostRunId={host} backendRunId={backend} />,
   );
@@ -1293,7 +1300,7 @@ it('can retry reading an unavailable command list without sending a command', as
   render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   await userEvent.setup().click(screen.getByRole('button', { name: 'Повторить чтение команд' }));
   getItem.mockRestore();
-  expect(screen.getByText(/Исход команды:/)).toBeTruthy();
+  expect(screen.getByText(/Команда:/)).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Новое испытание' }).hasAttribute('disabled')).toBe(
     true,
   );

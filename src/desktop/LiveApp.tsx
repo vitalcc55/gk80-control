@@ -51,6 +51,22 @@ type Pending = {
   status: CommandStatus | null;
   retired: boolean;
 };
+
+function commandStatusLabel(status: CommandStatus['status'] | undefined): string {
+  switch (status) {
+    case 'accepted':
+      return 'принята; завершение команды не подтверждено';
+    case 'completed':
+      return 'выполнена';
+    case 'rejected':
+      return 'отклонена';
+    case 'failed':
+      return 'завершилась с ошибкой';
+    default:
+      return 'исход неизвестен';
+  }
+}
+
 const storageKey = 'gk80.demo.pending-command';
 let volatilePending: Pending[] | null = null;
 let pendingStorageUnknown = false;
@@ -841,7 +857,7 @@ function ActiveLiveApp({
               )}
               {pending.map((item) => (
                 <p key={item.id}>
-                  Исход команды: {item.status?.status ?? 'неизвестен'}.{' '}
+                  Команда: {commandStatusLabel(item.status?.status)}.{' '}
                   {item.kind === 'stop' &&
                     `Остановка испытания ${item.testId ?? 'неизвестно'}; команда ${item.id}. `}
                   <button
