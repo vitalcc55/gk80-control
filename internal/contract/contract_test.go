@@ -139,8 +139,11 @@ func TestDesktopReadyRequiresConfirmedDemoHandshake(t *testing.T) {
 	validateJSON(t, schema, status, true)
 	status.Status = DesktopStatusStatusReady
 	validateJSON(t, schema, status, false)
-	status.Handshake = &Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), Demo: true}
+	status.Handshake = &Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), DatabaseId: uuid.New(), Demo: true}
 	validateJSON(t, schema, status, true)
+	status.Handshake.DatabaseId = uuid.Nil
+	validateJSON(t, schema, status, false)
+	status.Handshake.DatabaseId = uuid.New()
 	status.Handshake.BackendRunId = uuid.Nil
 	validateJSON(t, schema, status, false)
 	status.Handshake.BackendRunId = uuid.New()

@@ -201,6 +201,7 @@ export enum EventType {
 export interface Handshake {
     "apiVersion": string;
     "backendRunId": types$0.UUID;
+    "databaseId": types$0.UUID;
     "demo": boolean;
 }
 

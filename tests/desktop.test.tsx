@@ -19,7 +19,12 @@ function status(revision: number, state: DesktopStatusStatus): DesktopStatus {
     status: state,
     handshake:
       state === DesktopStatusStatus.DesktopStatusStatusReady
-        ? { apiVersion: 'v1', backendRunId: '6c229f38-3426-4608-bd72-dcd0d3b2bcd7', demo: true }
+        ? {
+            apiVersion: 'v1',
+            backendRunId: '6c229f38-3426-4608-bd72-dcd0d3b2bcd7',
+            databaseId: '9a0dce72-7219-45fc-8025-568b49e70919',
+            demo: true,
+          }
         : null,
     diagnosticsDegraded: false,
   };
@@ -205,6 +210,29 @@ it('rejects a nil backend run identifier', async () => {
   const ready = status(1, DesktopStatusStatus.DesktopStatusStatusReady);
   if (!ready.handshake) throw new Error('test handshake missing');
   ready.handshake.backendRunId = '00000000-0000-0000-0000-000000000000';
+  const bridge: DesktopBridge = {
+    status: async () => ready,
+    verify: async () => ready,
+    subscribe: () => () => {},
+  };
+  render(<DesktopApp bridge={bridge} />);
+  expect(await screen.findByText('Не удалось получить состояние приложения')).toBeTruthy();
+  expect(screen.queryByText('При запуске ядро ответило')).toBeNull();
+});
+
+it.each([
+  undefined,
+  null,
+  '',
+  'bad',
+  '00000000-0000-0000-0000-000000000000',
+  ['00000000-0000-0000-0000-000000000000'],
+  ['9a0dce72-7219-45fc-8025-568b49e70919'],
+])('rejects an invalid database identity: %s', async (databaseId) => {
+  const ready = status(1, DesktopStatusStatus.DesktopStatusStatusReady);
+  if (!ready.handshake) throw new Error('test handshake missing');
+  if (databaseId === undefined) Reflect.deleteProperty(ready.handshake, 'databaseId');
+  else Reflect.set(ready.handshake, 'databaseId', databaseId);
   const bridge: DesktopBridge = {
     status: async () => ready,
     verify: async () => ready,

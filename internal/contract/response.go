@@ -33,7 +33,7 @@ func NewResponseValidator() (*ResponseValidator, error) {
 		return nil, err
 	}
 	result := &ResponseValidator{schemas: make(map[string]*jsonschema.Schema)}
-	for _, name := range []string{"UiLease", "Snapshot", "TestList", "TestRecord", "Readiness", "MeasurementPage", "AuditPage", "CommandStatus", "CommandAccepted", "ApiError", "StreamReady", "Event"} {
+	for _, name := range []string{"Handshake", "UiLease", "Snapshot", "TestList", "TestRecord", "Readiness", "MeasurementPage", "AuditPage", "CommandStatus", "CommandAccepted", "ApiError", "StreamReady", "Event"} {
 		schema, err := compiler.Compile(source + "#/components/schemas/" + name)
 		if err != nil {
 			return nil, fmt.Errorf("compile response schema %s: %w", name, err)

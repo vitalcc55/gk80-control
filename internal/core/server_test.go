@@ -257,7 +257,13 @@ func TestHandshakeErrorsMatchContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := handshakeHandler("known-secret", uuid.New())
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	databaseID := store.DatabaseID()
+	handler := handshakeHandler("known-secret", uuid.New(), databaseID)
 	for _, authorization := range []string{"", "Bearer wrong", "wrong", "Bearer known-secret-extra"} {
 		req := httptest.NewRequest(http.MethodGet, "/v1/handshake", nil)
 		req.Header.Set("Authorization", authorization)
@@ -284,5 +290,13 @@ func TestHandshakeErrorsMatchContract(t *testing.T) {
 	handler.ServeHTTP(response, req)
 	if response.Code != http.StatusMethodNotAllowed || response.Header().Get("Allow") != "GET" {
 		t.Fatalf("method response: %d %v", response.Code, response.Header())
+	}
+	req = httptest.NewRequest(http.MethodGet, "/v1/handshake", nil)
+	req.Header.Set("Authorization", "Bearer known-secret")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, req)
+	var handshake contract.Handshake
+	if err := json.Unmarshal(response.Body.Bytes(), &handshake); err != nil || response.Code != http.StatusOK || handshake.DatabaseId != databaseID {
+		t.Fatalf("authorized identity: %d %+v %v", response.Code, handshake, err)
 	}
 }

@@ -2,12 +2,10 @@
 package transport
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -84,15 +82,10 @@ func (c *Client) Handshake(ctx context.Context) (contract.Handshake, error) {
 	if err != nil || len(body) > 8192 {
 		return result, errors.New("invalid core handshake response")
 	}
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&result); err != nil {
+	if err := validateResponse("Handshake", body, &result); err != nil {
 		return contract.Handshake{}, errors.New("invalid core handshake response")
 	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return contract.Handshake{}, errors.New("invalid core handshake response")
-	}
-	if result.ApiVersion != "v1" || !result.Demo || result.BackendRunId == uuid.Nil {
+	if result.ApiVersion != "v1" || !result.Demo || result.BackendRunId == uuid.Nil || result.DatabaseId == uuid.Nil {
 		return contract.Handshake{}, errors.New("unsupported core identity")
 	}
 	return result, nil

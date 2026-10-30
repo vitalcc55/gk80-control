@@ -10,15 +10,21 @@ interface ViewState {
   bridgeError: boolean;
 }
 
+function validUUID(value: unknown): boolean {
+  return (
+    typeof value === 'string' &&
+    value !== '00000000-0000-0000-0000-000000000000' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
+  );
+}
+
 function confirmed(status: DesktopStatus): boolean {
   if (status.status !== 'ready') return status.handshake === null;
   return (
     status.handshake?.demo === true &&
     status.handshake.apiVersion === 'v1' &&
-    status.handshake.backendRunId !== '00000000-0000-0000-0000-000000000000' &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-      status.handshake.backendRunId,
-    )
+    validUUID(status.handshake.backendRunId) &&
+    validUUID(status.handshake.databaseId)
   );
 }
 

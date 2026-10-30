@@ -2034,7 +2034,7 @@ func waitProcessReady(t *testing.T, owner *Owner, changes <-chan struct{}) {
 func TestProcessReadyWaitAllowsDelayedStartup(t *testing.T) {
 	changes := make(chan struct{}, 1)
 	core := &fakeCore{done: make(chan struct{}), degraded: make(chan struct{}), closed: make(chan struct{})}
-	identity := contract.Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), Demo: true}
+	identity := contract.Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), DatabaseId: uuid.New(), Demo: true}
 	owner := newOwner(uuid.New(), func(ctx context.Context) (ownedCore, contract.Handshake, error) {
 		select {
 		case <-time.After(2200 * time.Millisecond):

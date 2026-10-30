@@ -211,7 +211,7 @@ func run(ctx context.Context, input io.Reader, output io.Writer, fallback io.Wri
 	if err != nil {
 		return errors.New("core listener unavailable")
 	}
-	handler = &coreHTTP{secret: bootstrap.Secret, handshake: handshakeHandler(bootstrap.Secret, runID), validator: validator, leases: leases, feed: feed, engine: engine, store: store, history: store, streams: newStreamGroup(), logger: logger.Application(diagnostics.ComponentCore)}
+	handler = &coreHTTP{secret: bootstrap.Secret, handshake: handshakeHandler(bootstrap.Secret, runID, store.DatabaseID()), validator: validator, leases: leases, feed: feed, engine: engine, store: store, history: store, streams: newStreamGroup(), logger: logger.Application(diagnostics.ComponentCore)}
 	stopCommandLogging, commandLogDone = startCommandLogging(engine, handler, logger)
 	server = &http.Server{
 		Handler:           handler,
@@ -240,7 +240,7 @@ func run(ctx context.Context, input io.Reader, output io.Writer, fallback io.Wri
 	return nil
 }
 
-func handshakeHandler(secret string, runID uuid.UUID) http.Handler {
+func handshakeHandler(secret string, runID, databaseID uuid.UUID) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/handshake" {
 			http.NotFound(w, r)
@@ -260,7 +260,7 @@ func handshakeHandler(secret string, runID uuid.UUID) http.Handler {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(contract.Handshake{ApiVersion: "v1", BackendRunId: runID, Demo: true})
+		_ = json.NewEncoder(w).Encode(contract.Handshake{ApiVersion: "v1", BackendRunId: runID, DatabaseId: databaseID, Demo: true})
 	})
 }
 

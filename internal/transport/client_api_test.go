@@ -162,6 +162,9 @@ func TestNativeClientRunsAndReopensDemo(t *testing.T) {
 	if nextHandshake.BackendRunId == handshake.BackendRunId {
 		t.Fatal("run identity reused")
 	}
+	if handshake.DatabaseId == uuid.Nil || nextHandshake.DatabaseId != handshake.DatabaseId {
+		t.Fatalf("database identity changed across restart: %s -> %s", handshake.DatabaseId, nextHandshake.DatabaseId)
+	}
 	client = reopened.client
 	lease, err = client.AcquireLease(ctx, uuid.New(), nil)
 	if err != nil {

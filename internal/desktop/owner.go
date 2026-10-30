@@ -35,6 +35,7 @@ type Owner struct {
 	sessionErr        error
 	coreExitLogged    bool
 	backendID         uuid.UUID
+	databaseID        uuid.UUID
 	verifyGate        chan struct{}
 	starter           startCore
 	log               *slog.Logger
@@ -340,10 +341,14 @@ func (o *Owner) markDegraded() {
 func (o *Owner) run() {
 	defer close(o.workerDone)
 	process, handshake, err := o.starter(o.ctx)
+	if err == nil && (handshake.DatabaseId == uuid.Nil || handshake.BackendRunId == uuid.Nil || handshake.ApiVersion != "v1" || !handshake.Demo) {
+		err = errSessionUnavailable
+	}
 	o.mu.Lock()
 	o.process = process
 	if err == nil {
 		o.backendID = handshake.BackendRunId
+		o.databaseID = handshake.DatabaseId
 	}
 	closing := o.status.Status == contract.DesktopStatusStatusClosing
 	o.mu.Unlock()
@@ -513,12 +518,13 @@ func (o *Owner) Verify(ctx context.Context) contract.DesktopStatus {
 	process := o.process
 	state := o.status.Status
 	backendID := o.backendID
+	databaseID := o.databaseID
 	o.mu.Unlock()
-	if (state != contract.DesktopStatusStatusReady && state != contract.DesktopStatusStatusUnavailable) || process == nil || backendID == uuid.Nil {
+	if (state != contract.DesktopStatusStatusReady && state != contract.DesktopStatusStatusUnavailable) || process == nil || backendID == uuid.Nil || databaseID == uuid.Nil {
 		return o.Status()
 	}
 	handshake, err := process.Handshake(ctx)
-	if err == nil && (handshake.BackendRunId != backendID || handshake.ApiVersion != "v1" || !handshake.Demo) {
+	if err == nil && (handshake.BackendRunId != backendID || handshake.DatabaseId != databaseID || handshake.ApiVersion != "v1" || !handshake.Demo) {
 		err = errSessionUnavailable
 	}
 	if ctx.Err() != nil {

@@ -195,7 +195,7 @@ func TestCoreEventDeliveryIsBoundedAndReportsGap(t *testing.T) {
 }
 
 func TestOwnerReportsDegradedAndCoreExit(t *testing.T) {
-	identity := contract.Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), Demo: true}
+	identity := contract.Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), DatabaseId: uuid.New(), Demo: true}
 	core := &fakeCore{done: make(chan struct{}), degraded: make(chan struct{}), closed: make(chan struct{}), handshake: func(context.Context) (contract.Handshake, error) { return identity, nil }}
 	owner := newTestOwner(func(context.Context) (ownedCore, contract.Handshake, error) { return core, identity, nil })
 	owner.Start()
@@ -258,7 +258,7 @@ func TestOwnerDistinguishesOccupiedProfile(t *testing.T) {
 }
 
 func TestDelayedVerificationCannotRestoreExitedCore(t *testing.T) {
-	identity := contract.Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), Demo: true}
+	identity := contract.Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), DatabaseId: uuid.New(), Demo: true}
 	started, release := make(chan struct{}), make(chan struct{})
 	core := &fakeCore{done: make(chan struct{}), degraded: make(chan struct{}), closed: make(chan struct{}), handshake: func(context.Context) (contract.Handshake, error) { close(started); <-release; return identity, nil }}
 	owner := newTestOwner(func(context.Context) (ownedCore, contract.Handshake, error) { return core, identity, nil })
@@ -279,7 +279,7 @@ func TestDelayedVerificationCannotRestoreExitedCore(t *testing.T) {
 }
 
 func TestOwnerRecoversVerifiedConnectionToSameCore(t *testing.T) {
-	identity := contract.Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), Demo: true}
+	identity := contract.Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), DatabaseId: uuid.New(), Demo: true}
 	var calls int
 	core := &fakeCore{done: make(chan struct{}), degraded: make(chan struct{}), closed: make(chan struct{}), handshake: func(context.Context) (contract.Handshake, error) {
 		calls++
@@ -302,8 +302,37 @@ func TestOwnerRecoversVerifiedConnectionToSameCore(t *testing.T) {
 	}
 }
 
+func TestOwnerRejectsChangedDatabaseIdentity(t *testing.T) {
+	identity := contract.Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), DatabaseId: uuid.New(), Demo: true}
+	changed := identity
+	changed.DatabaseId = uuid.New()
+	var calls int
+	core := &fakeCore{done: make(chan struct{}), degraded: make(chan struct{}), closed: make(chan struct{}), handshake: func(context.Context) (contract.Handshake, error) {
+		calls++
+		if calls == 1 {
+			return changed, nil
+		}
+		return identity, nil
+	}}
+	owner := newTestOwner(func(context.Context) (ownedCore, contract.Handshake, error) { return core, identity, nil })
+	owner.Start()
+	status := waitStatus(t, owner, contract.DesktopStatusStatusReady)
+	if status.Handshake == nil || status.Handshake.DatabaseId != identity.DatabaseId {
+		t.Fatalf("initial identity: %+v", status)
+	}
+	if status := owner.Verify(context.Background()); status.Status != contract.DesktopStatusStatusUnavailable || status.Handshake != nil {
+		t.Fatalf("changed identity accepted: %+v", status)
+	}
+	if status := owner.Verify(context.Background()); status.Status != contract.DesktopStatusStatusReady || status.Handshake == nil || status.Handshake.DatabaseId != identity.DatabaseId {
+		t.Fatalf("original identity not restored: %+v", status)
+	}
+	if err := owner.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestOwnerPreservesUnconfirmedSessionShutdown(t *testing.T) {
-	identity := contract.Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), Demo: true}
+	identity := contract.Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), DatabaseId: uuid.New(), Demo: true}
 	core := &fakeCore{done: make(chan struct{}), degraded: make(chan struct{}), closed: make(chan struct{}), handshake: func(context.Context) (contract.Handshake, error) { return identity, nil }}
 	owner := newTestOwner(func(context.Context) (ownedCore, contract.Handshake, error) { return core, identity, nil })
 	owner.Start()
@@ -328,7 +357,7 @@ func TestOwnerPreservesUnconfirmedSessionShutdown(t *testing.T) {
 }
 
 func TestOwnerSeparatesUnconfirmedSessionFromConfirmedCoreExit(t *testing.T) {
-	identity := contract.Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), Demo: true}
+	identity := contract.Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), DatabaseId: uuid.New(), Demo: true}
 	core := &fakeCore{done: make(chan struct{}), degraded: make(chan struct{}), closed: make(chan struct{})}
 	core.onClose = func() { close(core.done) }
 	owner := newTestOwner(func(context.Context) (ownedCore, contract.Handshake, error) { return core, identity, nil })
@@ -353,7 +382,7 @@ func TestOwnerSeparatesUnconfirmedSessionFromConfirmedCoreExit(t *testing.T) {
 }
 
 func TestOwnerReportsUnconfirmedActiveTestAfterCoreExit(t *testing.T) {
-	identity := contract.Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), Demo: true}
+	identity := contract.Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), DatabaseId: uuid.New(), Demo: true}
 	core := &fakeCore{done: make(chan struct{}), degraded: make(chan struct{}), closed: make(chan struct{})}
 	owner := newTestOwner(func(context.Context) (ownedCore, contract.Handshake, error) { return core, identity, nil })
 	owner.Start()
@@ -381,7 +410,7 @@ func TestOwnerReportsUnconfirmedActiveTestAfterCoreExit(t *testing.T) {
 }
 
 func TestOwnerReportsBothUnconfirmedSessionAndCoreExit(t *testing.T) {
-	identity := contract.Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), Demo: true}
+	identity := contract.Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), DatabaseId: uuid.New(), Demo: true}
 	core := &fakeCore{done: make(chan struct{}), degraded: make(chan struct{}), closed: make(chan struct{}), closeErr: transport.ErrCleanupUnconfirmed}
 	owner := newTestOwner(func(context.Context) (ownedCore, contract.Handshake, error) { return core, identity, nil })
 	owner.Start()
@@ -446,7 +475,7 @@ func TestOwnerTimeoutDoesNotInventUnconfirmedSessionOrCore(t *testing.T) {
 }
 
 func TestVerificationFailureIsNotHiddenByDiagnosticChange(t *testing.T) {
-	identity := contract.Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), Demo: true}
+	identity := contract.Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), DatabaseId: uuid.New(), Demo: true}
 	started, release := make(chan struct{}), make(chan struct{})
 	core := &fakeCore{done: make(chan struct{}), degraded: make(chan struct{}), closed: make(chan struct{}), handshake: func(context.Context) (contract.Handshake, error) {
 		close(started)
@@ -479,7 +508,7 @@ func TestVerificationFailureIsNotHiddenByDiagnosticChange(t *testing.T) {
 }
 
 func TestCanceledLaterVerificationDoesNotHideEarlierFailure(t *testing.T) {
-	identity := contract.Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), Demo: true}
+	identity := contract.Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), DatabaseId: uuid.New(), Demo: true}
 	started, release := make(chan struct{}), make(chan struct{})
 	core := &fakeCore{done: make(chan struct{}), degraded: make(chan struct{}), closed: make(chan struct{}), handshake: func(context.Context) (contract.Handshake, error) {
 		close(started)
@@ -505,7 +534,7 @@ func TestCanceledLaterVerificationDoesNotHideEarlierFailure(t *testing.T) {
 }
 
 func TestCloseReportsCoreFailureAndObservesLateDiagnosticFailure(t *testing.T) {
-	identity := contract.Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), Demo: true}
+	identity := contract.Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), DatabaseId: uuid.New(), Demo: true}
 	core := &fakeCore{done: make(chan struct{}), degraded: make(chan struct{}), closed: make(chan struct{}), closeErr: errors.New("core failed")}
 	core.onClose = func() { close(core.degraded); close(core.done) }
 	owner := newTestOwner(func(context.Context) (ownedCore, contract.Handshake, error) { return core, identity, nil })

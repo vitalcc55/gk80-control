@@ -23,6 +23,7 @@ type Process struct {
 	input       io.WriteCloser
 	client      *Client
 	ready       Ready
+	databaseID  uuid.UUID
 	done        chan struct{}
 	waitErr     error
 	closeOnce   sync.Once
@@ -171,6 +172,7 @@ func Start(ctx context.Context, executable, profileDir, profileID, appVersion st
 	if err != nil || handshake.BackendRunId != ready.BackendRunID || handshake.ApiVersion != ready.APIVersion || !handshake.Demo {
 		return fail(errors.New("core identity could not be confirmed"))
 	}
+	process.databaseID = handshake.DatabaseId
 	return process, handshake, nil
 }
 
@@ -205,7 +207,7 @@ func (p *Process) Handshake(ctx context.Context) (contract.Handshake, error) {
 	if err != nil {
 		return contract.Handshake{}, err
 	}
-	if result.BackendRunId != p.ready.BackendRunID || result.ApiVersion != p.ready.APIVersion || !result.Demo {
+	if result.BackendRunId != p.ready.BackendRunID || result.ApiVersion != p.ready.APIVersion || !result.Demo || result.DatabaseId != p.databaseID || p.databaseID == uuid.Nil {
 		return contract.Handshake{}, errors.New("core identity changed")
 	}
 	return result, nil

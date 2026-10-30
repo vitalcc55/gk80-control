@@ -485,6 +485,7 @@ type EventType string
 type Handshake struct {
 	ApiVersion   string             `json:"apiVersion"`
 	BackendRunId openapi_types.UUID `json:"backendRunId"`
+	DatabaseId   openapi_types.UUID `json:"databaseId"`
 	Demo         bool               `json:"demo"`
 }
 

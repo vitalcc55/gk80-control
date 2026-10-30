@@ -117,7 +117,12 @@ it('shows diagnostics already degraded when the live session opens', async () =>
     revision: 1,
     connectionRevision: 1,
     status: DesktopStatusStatus.DesktopStatusStatusReady,
-    handshake: { apiVersion: 'v1', backendRunId: backend, demo: true },
+    handshake: {
+      apiVersion: 'v1',
+      backendRunId: backend,
+      databaseId: '9a0dce72-7219-45fc-8025-568b49e70919',
+      demo: true,
+    },
     diagnosticsDegraded: true,
   };
   const desktop: DesktopBridge = {
@@ -162,7 +167,12 @@ it('preserves the live form when diagnostics degrade', async () => {
     revision: 1,
     connectionRevision: 1,
     status: DesktopStatusStatus.DesktopStatusStatusReady,
-    handshake: { apiVersion: 'v1', backendRunId: backend, demo: true },
+    handshake: {
+      apiVersion: 'v1',
+      backendRunId: backend,
+      databaseId: '9a0dce72-7219-45fc-8025-568b49e70919',
+      demo: true,
+    },
     diagnosticsDegraded: false,
   };
   let notify: (status: DesktopStatus) => void = () => {};
@@ -219,7 +229,12 @@ it('keeps stop available when diagnostics degrade during a live test', async () 
     revision: 1,
     connectionRevision: 1,
     status: DesktopStatusStatus.DesktopStatusStatusReady,
-    handshake: { apiVersion: 'v1', backendRunId: backend, demo: true },
+    handshake: {
+      apiVersion: 'v1',
+      backendRunId: backend,
+      databaseId: '9a0dce72-7219-45fc-8025-568b49e70919',
+      demo: true,
+    },
     diagnosticsDegraded: false,
   };
   let notify: (status: DesktopStatus) => void = () => {};
