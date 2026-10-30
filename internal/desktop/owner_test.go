@@ -102,6 +102,28 @@ func TestConnectionNotificationsWaitForDeliveryAcknowledgement(t *testing.T) {
 	}
 }
 
+func TestWaitConnectionReportsUnknownLeaseAcquisition(t *testing.T) {
+	owner := newTestOwner(nil)
+	defer owner.cancel()
+	client := &testSessionClient{unknown: true}
+	session := newDemoSession(owner.ctx, client, uuid.New(), uuid.New())
+	defer session.close()
+	session.onChange = owner.signalConnection
+	owner.session = session
+	owner.process = &fakeCore{done: make(chan struct{})}
+	owner.status.Status = contract.DesktopStatusStatusReady
+	before := session.connectionState()
+	if err := session.keepAlive(context.Background()); err == nil {
+		t.Fatal("lost acquisition reply was reported as successful")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	notice, err := owner.WaitConnection(ctx, before.Revision, 0)
+	if err != nil || !notice.Connection.LeaseAcquireUnknown || notice.Connection.Revision <= before.Revision || notice.Connection.LinkValid {
+		t.Fatalf("unknown acquisition was not delivered by the passive wait: %+v %v", notice, err)
+	}
+}
+
 func TestWaitConnectionObservesChangesWithoutEventAcknowledgement(t *testing.T) {
 	owner := newTestOwner(nil)
 	defer owner.cancel()
@@ -300,8 +322,126 @@ func TestOwnerPreservesUnconfirmedSessionShutdown(t *testing.T) {
 	owner.session = session
 	owner.mu.Unlock()
 	defer session.close()
-	if err := owner.Close(); !errors.Is(err, transport.ErrCleanupUnconfirmed) {
+	if err := owner.Close(); !errors.Is(err, ErrSessionShutdownUnconfirmed) {
 		t.Fatalf("unconfirmed session shutdown was hidden: %v", err)
+	}
+}
+
+func TestOwnerSeparatesUnconfirmedSessionFromConfirmedCoreExit(t *testing.T) {
+	identity := contract.Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), Demo: true}
+	core := &fakeCore{done: make(chan struct{}), degraded: make(chan struct{}), closed: make(chan struct{})}
+	core.onClose = func() { close(core.done) }
+	owner := newTestOwner(func(context.Context) (ownedCore, contract.Handshake, error) { return core, identity, nil })
+	owner.Start()
+	waitStatus(t, owner, contract.DesktopStatusStatusReady)
+	session := newDemoSession(context.Background(), &testSessionClient{}, uuid.New(), identity.BackendRunId)
+	session.mu.Lock()
+	session.unknownAcquire = true
+	session.mu.Unlock()
+	owner.mu.Lock()
+	owner.session = session
+	owner.mu.Unlock()
+	err := owner.Close()
+	if !errors.Is(err, ErrSessionShutdownUnconfirmed) || errors.Is(err, transport.ErrCleanupUnconfirmed) || !owner.CoreExitConfirmed() {
+		t.Fatalf("unconfirmed session must not imply unconfirmed core exit: %v", err)
+	}
+	select {
+	case <-core.done:
+	default:
+		t.Fatal("core exit was not observed")
+	}
+}
+
+func TestOwnerReportsUnconfirmedActiveTestAfterCoreExit(t *testing.T) {
+	identity := contract.Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), Demo: true}
+	core := &fakeCore{done: make(chan struct{}), degraded: make(chan struct{}), closed: make(chan struct{})}
+	owner := newTestOwner(func(context.Context) (ownedCore, contract.Handshake, error) { return core, identity, nil })
+	owner.Start()
+	waitStatus(t, owner, contract.DesktopStatusStatusReady)
+	session := newDemoSession(context.Background(), &testSessionClient{}, uuid.New(), identity.BackendRunId)
+	session.mu.Lock()
+	session.snapshot = &contract.Snapshot{ActiveTest: &contract.TestRecord{
+		TestId: uuid.New(), StopCommandId: uuid.New(), Stage: "running", SaveStatus: "saved",
+	}}
+	session.mu.Unlock()
+	owner.mu.Lock()
+	owner.session = session
+	owner.mu.Unlock()
+	session.close()
+	close(core.done)
+	select {
+	case <-owner.workerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("owner did not observe core exit")
+	}
+	err := owner.Close()
+	if !errors.Is(err, ErrSessionShutdownUnconfirmed) || !owner.CoreExitConfirmed() {
+		t.Fatalf("core exit or active test uncertainty was lost: %v", err)
+	}
+}
+
+func TestOwnerReportsBothUnconfirmedSessionAndCoreExit(t *testing.T) {
+	identity := contract.Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), Demo: true}
+	core := &fakeCore{done: make(chan struct{}), degraded: make(chan struct{}), closed: make(chan struct{}), closeErr: transport.ErrCleanupUnconfirmed}
+	owner := newTestOwner(func(context.Context) (ownedCore, contract.Handshake, error) { return core, identity, nil })
+	owner.Start()
+	waitStatus(t, owner, contract.DesktopStatusStatusReady)
+	session := newDemoSession(context.Background(), &testSessionClient{}, uuid.New(), identity.BackendRunId)
+	session.mu.Lock()
+	session.unknownAcquire = true
+	session.mu.Unlock()
+	owner.mu.Lock()
+	owner.session = session
+	owner.mu.Unlock()
+	err := owner.Close()
+	if !errors.Is(err, transport.ErrCleanupUnconfirmed) || !errors.Is(err, ErrSessionShutdownUnconfirmed) || owner.CoreExitConfirmed() {
+		t.Fatalf("both uncertainties must remain visible: %v", err)
+	}
+}
+
+func TestOwnerTimeoutPreservesUnconfirmedSession(t *testing.T) {
+	started, release := make(chan struct{}), make(chan struct{})
+	owner := newTestOwner(func(context.Context) (ownedCore, contract.Handshake, error) {
+		close(started)
+		<-release
+		return nil, contract.Handshake{}, errors.New("startup interrupted")
+	})
+	owner.Start()
+	<-started
+	session := newDemoSession(context.Background(), &testSessionClient{}, uuid.New(), uuid.New())
+	session.mu.Lock()
+	session.unknownAcquire = true
+	session.mu.Unlock()
+	owner.mu.Lock()
+	owner.session = session
+	owner.mu.Unlock()
+	err := owner.Close()
+	close(release)
+	<-owner.workerDone
+	if !errors.Is(err, errOwnerShutdownUnconfirmed) || !errors.Is(err, ErrSessionShutdownUnconfirmed) || !errors.Is(err, transport.ErrCleanupUnconfirmed) {
+		t.Fatalf("timeout hid an uncertainty: %v", err)
+	}
+}
+
+func TestOwnerTimeoutDoesNotInventUnconfirmedSessionOrCore(t *testing.T) {
+	started, release := make(chan struct{}), make(chan struct{})
+	owner := newTestOwner(func(context.Context) (ownedCore, contract.Handshake, error) {
+		close(started)
+		<-release
+		return nil, contract.Handshake{}, errors.New("startup interrupted")
+	})
+	owner.Start()
+	<-started
+	done := make(chan struct{})
+	close(done)
+	owner.mu.Lock()
+	owner.process = &fakeCore{done: done}
+	owner.mu.Unlock()
+	err := owner.Close()
+	close(release)
+	<-owner.workerDone
+	if !errors.Is(err, errOwnerShutdownUnconfirmed) || errors.Is(err, ErrSessionShutdownUnconfirmed) || errors.Is(err, transport.ErrCleanupUnconfirmed) {
+		t.Fatalf("timeout invented an unconfirmed session or core: %v", err)
 	}
 }
 

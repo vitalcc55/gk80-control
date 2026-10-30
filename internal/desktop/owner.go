@@ -23,6 +23,8 @@ type ownedCore interface {
 
 type startCore func(context.Context) (ownedCore, contract.Handshake, error)
 
+var errOwnerShutdownUnconfirmed = errors.New("desktop owner shutdown could not be confirmed")
+
 // Owner serializes startup, observation and shutdown of its own core process.
 type Owner struct {
 	mu                sync.Mutex
@@ -483,6 +485,22 @@ func (o *Owner) Status() contract.DesktopStatus {
 	return result
 }
 
+// CoreExitConfirmed reports only a signalled exit of the owned core process.
+func (o *Owner) CoreExitConfirmed() bool {
+	o.mu.Lock()
+	process := o.process
+	o.mu.Unlock()
+	if process == nil {
+		return false
+	}
+	select {
+	case <-process.Done():
+		return true
+	default:
+		return false
+	}
+}
+
 // Verify never lets an old reply overwrite a later exit or shutdown.
 func (o *Owner) Verify(ctx context.Context) contract.DesktopStatus {
 	select {
@@ -559,7 +577,18 @@ func (o *Owner) Close() error {
 	select {
 	case <-o.workerDone:
 	case <-time.After(10 * time.Second):
-		return transport.ErrCleanupUnconfirmed
+		o.mu.Lock()
+		process := o.process
+		sessionErr := o.sessionErr
+		o.mu.Unlock()
+		if process != nil {
+			select {
+			case <-process.Done():
+				return errors.Join(errOwnerShutdownUnconfirmed, sessionErr)
+			default:
+			}
+		}
+		return errors.Join(errOwnerShutdownUnconfirmed, transport.ErrCleanupUnconfirmed, sessionErr)
 	}
 	o.notifyStopOnce.Do(func() { close(o.stopNotifications) })
 	select {

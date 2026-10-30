@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type {
+  ConnectionState,
   Event as CoreEvent,
   SessionView,
 } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
@@ -12,6 +13,9 @@ import {
   type SessionBridge,
   watchConnection,
 } from './bridge';
+
+// One demo UI owns one session; retain its terminal outcome across React remounts.
+let lastUnknownAcquire: { hostRunId: string; backendRunId: string } | null = null;
 
 export function SessionStatus({
   bridge,
@@ -33,6 +37,10 @@ export function SessionStatus({
     hostRunId: string;
     backendRunId: string;
   } | null>(null);
+  const [unknownAcquire, setUnknownAcquire] = useState<{
+    hostRunId: string;
+    backendRunId: string;
+  } | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -45,6 +53,9 @@ export function SessionStatus({
     let requiredSequence = 0;
     let snapshotSequence = 0;
     let heartbeatConfirmed = false;
+    let terminalAcquire =
+      lastUnknownAcquire?.hostRunId === hostRunId &&
+      lastUnknownAcquire.backendRunId === backendRunId;
     let minimumObservationStart = -1;
     let linkRevision = -1;
     let linkGeneration = -1;
@@ -54,16 +65,42 @@ export function SessionStatus({
       if (!gapReported) onGap?.();
       gapReported = true;
     }
+    function observeUnknownAcquire(state: ConnectionState): boolean {
+      if (
+        state.hostRunId === hostRunId &&
+        Number.isSafeInteger(state.revision) &&
+        state.revision >= Math.max(0, linkRevision) &&
+        Number.isSafeInteger(state.streamGeneration) &&
+        state.streamGeneration >= Math.max(0, linkGeneration) &&
+        state.leaseAcquireUnknown &&
+        !terminalAcquire
+      ) {
+        terminalAcquire = true;
+        lastUnknownAcquire = { hostRunId, backendRunId };
+        setUnknownAcquire(lastUnknownAcquire);
+        setConfirmed(null);
+        clearTimeout(timer);
+        unsubscribe?.();
+        unsubscribe = undefined;
+        clearTimeout(expiration);
+        clearTimeout(linkExpiration);
+        onView?.(null, 0);
+        reportGap();
+      }
+      return terminalAcquire;
+    }
     let eventsReady = !bridge.enableConnectionEvents;
     let enablePending = false;
     let stopEnable: (() => void) | undefined;
     let watchReady = !bridge.waitConnection;
     let watchTimeout: ReturnType<typeof setTimeout> | undefined;
     setConfirmed(null);
+    setUnknownAcquire(terminalAcquire ? { hostRunId, backendRunId } : null);
     onView?.(null, 0);
     const stopEvents = bridge.subscribeConnection?.((state) => {
       if (!mounted || state.hostRunId !== hostRunId || !Number.isSafeInteger(state.revision))
         return;
+      observeUnknownAcquire(state);
       if (state.revision >= linkRevision && Number.isSafeInteger(state.streamGeneration)) {
         if (!state.linkValid || (linkGeneration >= 0 && state.streamGeneration > linkGeneration)) {
           setConfirmed(null);
@@ -75,7 +112,7 @@ export function SessionStatus({
       if (state.revision > revision) {
         requiredRevision = Math.max(requiredRevision, state.revision);
         onView?.(null, 0);
-        if (state.status === 'live') requestSessionObservation(bridge);
+        if (!terminalAcquire && state.status === 'live') requestSessionObservation(bridge);
       }
       void bridge.acknowledgeConnection?.(state.hostRunId, state.revision).catch(() => {});
     });
@@ -98,10 +135,11 @@ export function SessionStatus({
       if (event.backendRunId === backendRunId && Number.isSafeInteger(event.sequence))
         void bridge.acknowledgeCoreEvent?.(event.backendRunId, event.sequence).catch(() => {});
     });
-    const stopWatch = watchConnection(bridge, (notice) => {
+    const stopWatch = watchConnection(bridge, hostRunId, backendRunId, (notice) => {
       if (!mounted) return;
       clearTimeout(watchTimeout);
       const state = notice?.connection;
+      if (state) observeUnknownAcquire(state);
       if (notice?.event) coreEvent(notice.event);
       if (
         notice?.gap &&
@@ -128,10 +166,11 @@ export function SessionStatus({
         linkGeneration = Math.max(linkGeneration, state.streamGeneration);
       }
       if (!watchReady || (state && state.revision > revision)) {
-        if (state && Number.isSafeInteger(state.revision))
+        if (watchReady && state && Number.isSafeInteger(state.revision))
           requiredRevision = Math.max(requiredRevision, state.revision);
         onView?.(null, 0);
-        if (watchReady && state?.status === 'live') requestSessionObservation(bridge);
+        if (!terminalAcquire && watchReady && state?.status === 'live')
+          requestSessionObservation(bridge);
       }
       watchTimeout = setTimeout(() => {
         watchReady = false;
@@ -157,6 +196,11 @@ export function SessionStatus({
     }
     function applyResult(result: { view: SessionView; started: number } | null) {
       if (!mounted) return;
+      if (terminalAcquire || (result && observeUnknownAcquire(result.view.connection))) {
+        setConfirmed(null);
+        onView?.(null, 0);
+        return;
+      }
       if (result && result.view.connection.revision < revision) return;
       if (result) {
         const { view, started } = result;
@@ -221,7 +265,7 @@ export function SessionStatus({
             remaining > 0;
           if (live) {
             snapshotSequence = view.snapshot?.lastEventSequence ?? 0;
-            markSnapshotSequence(bridge, snapshotSequence);
+            markSnapshotSequence(bridge, hostRunId, backendRunId, snapshotSequence);
           }
           if (view.connection.linkValid) gapReported = false;
           onView?.(live ? view : null, live ? started + view.validForMs : 0);
@@ -237,30 +281,38 @@ export function SessionStatus({
         onView?.(null, 0);
       }
     }
-    const stopObserving = readLastSession(bridge, (view, started) => {
-      if (heartbeatConfirmed && started > minimumObservationStart) applyResult({ view, started });
-      else if (
-        !heartbeatConfirmed &&
-        view.connection.hostRunId === hostRunId &&
-        Number.isSafeInteger(view.connection.revision) &&
-        Number.isSafeInteger(view.connection.streamGeneration) &&
-        view.connection.revision > linkRevision
-      ) {
-        linkRevision = view.connection.revision;
-        linkGeneration = Math.max(linkGeneration, view.connection.streamGeneration);
-      }
-    });
+    const stopObserving = readLastSession(
+      bridge,
+      (view, started) => {
+        if (!mounted || observeUnknownAcquire(view.connection)) return;
+        if (heartbeatConfirmed && started > minimumObservationStart) applyResult({ view, started });
+        else if (
+          !heartbeatConfirmed &&
+          view.connection.hostRunId === hostRunId &&
+          Number.isSafeInteger(view.connection.revision) &&
+          Number.isSafeInteger(view.connection.streamGeneration) &&
+          view.connection.revision > linkRevision
+        ) {
+          linkRevision = view.connection.revision;
+          linkGeneration = Math.max(linkGeneration, view.connection.streamGeneration);
+        }
+      },
+      (view) => {
+        if (mounted) observeUnknownAcquire(view.connection);
+      },
+    );
     function read() {
+      if (!mounted || terminalAcquire) return;
       if (!eventsReady) ensureEvents();
       unsubscribe = readSession(bridge, (result) => {
-        if (!mounted) return;
+        if (!mounted || terminalAcquire) return;
         if (result) heartbeatConfirmed = true;
         else {
           heartbeatConfirmed = false;
           minimumObservationStart = performance.now();
         }
         applyResult(result);
-        timer = setTimeout(read, 2000);
+        if (!terminalAcquire) timer = setTimeout(read, 2000);
       });
     }
     read();
@@ -283,6 +335,8 @@ export function SessionStatus({
     confirmed?.bridge === bridge &&
     confirmed.hostRunId === hostRunId &&
     confirmed.backendRunId === backendRunId;
+  const needsRestart =
+    unknownAcquire?.hostRunId === hostRunId && unknownAcquire.backendRunId === backendRunId;
   const [showUpdating, setShowUpdating] = useState(false);
   useEffect(() => {
     if (!isConfirmed || snapshotAccepted) {
@@ -296,18 +350,22 @@ export function SessionStatus({
     <div role="status" className="session-status">
       <p className="session-status-title">
         <span>
-          {isConfirmed
-            ? 'При последней проверке связь с ядром подтверждена'
-            : 'Состояние управления не подтверждено'}
+          {needsRestart
+            ? 'Получение управления не подтверждено'
+            : isConfirmed
+              ? 'При последней проверке связь с ядром подтверждена'
+              : 'Состояние управления не подтверждено'}
         </span>
       </p>
       <p className="session-status-help">
         <span>
-          {isConfirmed
-            ? showUpdating
-              ? 'Ожидаем актуальное состояние ядра; действия временно недоступны.'
-              : ''
-            : 'Если связь не восстанавливается, закройте приложение и запустите его снова.'}
+          {needsRestart
+            ? 'Закройте приложение. Запустите снова только после завершения ядра.'
+            : isConfirmed
+              ? showUpdating
+                ? 'Ожидаем актуальное состояние ядра; действия временно недоступны.'
+                : ''
+              : 'Если связь не восстанавливается, закройте приложение и запустите его снова.'}
         </span>
       </p>
     </div>

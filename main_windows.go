@@ -27,15 +27,30 @@ const profileID = "demo-gk80-control"
 
 func main() {
 	if err := runSafely(); err != nil {
-		showFatal(errors.Is(err, transport.ErrCleanupUnconfirmed))
+		var shutdown *shutdownFailure
+		coreExited := errors.As(err, &shutdown) && shutdown.coreExited
+		showFatal(errors.Is(err, transport.ErrCleanupUnconfirmed), errors.Is(err, desktop.ErrSessionShutdownUnconfirmed), coreExited)
 		os.Exit(1)
 	}
 }
 
-func showFatal(cleanupUnconfirmed bool) {
+type shutdownFailure struct {
+	err        error
+	coreExited bool
+}
+
+func (e *shutdownFailure) Error() string { return e.err.Error() }
+func (e *shutdownFailure) Unwrap() error { return e.err }
+
+func showFatal(cleanupUnconfirmed, sessionUnconfirmed, coreExited bool) {
 	text := "Не удалось запустить или корректно завершить приложение ГК80."
-	if cleanupUnconfirmed {
-		text += " Завершение ядра не подтверждено."
+	if coreExited {
+		text += " Принадлежащее приложению ядро завершено."
+	} else if cleanupUnconfirmed {
+		text += " Завершение ядра не подтверждено. Не запускайте приложение снова, пока завершение ядра не подтверждено."
+	}
+	if sessionUnconfirmed {
+		text += " Завершение сеанса не подтверждено. Если вы создавали или проводили испытание, проверьте его запись в истории после безопасного повторного запуска."
 	}
 	message, _ := windows.UTF16PtrFromString(text)
 	title, _ := windows.UTF16PtrFromString("ГК80")
@@ -117,6 +132,9 @@ func run() (resultErr error) {
 		if panicValue != nil {
 			resultErr = errors.Join(resultErr, errors.New("desktop failure"))
 		}
+		if resultErr != nil {
+			resultErr = &shutdownFailure{err: resultErr, coreExited: owner.CoreExitConfirmed()}
+		}
 	}()
 	app = application.New(application.Options{
 		Name: "ГК80", Description: "Демонстрационное приложение ГК80",
@@ -138,7 +156,7 @@ func run() (resultErr error) {
 				if logCloseErr != nil || logger.Status().Degraded || owner.Status().DiagnosticsDegraded {
 					showDiagnosticWarning()
 				}
-				showFatal(errors.Is(closeErr, transport.ErrCleanupUnconfirmed))
+				showFatal(errors.Is(closeErr, transport.ErrCleanupUnconfirmed), errors.Is(closeErr, desktop.ErrSessionShutdownUnconfirmed), owner.CoreExitConfirmed())
 			}
 		},
 	})

@@ -433,11 +433,14 @@ type ConnectionNotice struct {
 
 // ConnectionState defines model for ConnectionState.
 type ConnectionState struct {
-	HostRunId        openapi_types.UUID    `json:"hostRunId"`
-	LinkValid        bool                  `json:"linkValid"`
-	Revision         int64                 `json:"revision"`
-	Status           ConnectionStateStatus `json:"status"`
-	StreamGeneration int64                 `json:"streamGeneration"`
+	HostRunId openapi_types.UUID `json:"hostRunId"`
+
+	// LeaseAcquireUnknown Исход получения права UI неизвестен; повторное получение в этой сессии запрещено.
+	LeaseAcquireUnknown bool                  `json:"leaseAcquireUnknown"`
+	LinkValid           bool                  `json:"linkValid"`
+	Revision            int64                 `json:"revision"`
+	Status              ConnectionStateStatus `json:"status"`
+	StreamGeneration    int64                 `json:"streamGeneration"`
 }
 
 // ConnectionStateStatus defines model for ConnectionState.Status.

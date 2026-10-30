@@ -102,6 +102,11 @@ export interface ConnectionNotice {
  */
 export interface ConnectionState {
     "hostRunId": types$0.UUID;
+
+    /**
+     * LeaseAcquireUnknown Исход получения права UI неизвестен; повторное получение в этой сессии запрещено.
+     */
+    "leaseAcquireUnknown": boolean;
     "linkValid": boolean;
     "revision": number;
     "status": ConnectionStateStatus;

@@ -27,6 +27,9 @@ var errSessionUnavailable = errors.New("demo session is not confirmed")
 var errSessionBusy = errors.New("demo session operation is in progress")
 var errCommandNotSent = errors.New("this command attempt was not sent")
 
+// ErrSessionShutdownUnconfirmed reports an unknown session or test outcome, not process exit.
+var ErrSessionShutdownUnconfirmed = errors.New("session shutdown could not be confirmed")
+
 type sessionStream interface {
 	Next(context.Context) (contract.Event, error)
 	Poll(context.Context) (contract.Event, bool, error)
@@ -92,6 +95,7 @@ type demoSession struct {
 	activeTestID     uuid.UUID
 	activeStopID     uuid.UUID
 	activeGeneration uint64
+	savedTests       map[uuid.UUID]uuid.UUID
 	unknownAcquire   bool
 	streamActive     bool
 	streamGeneration int64
@@ -125,7 +129,7 @@ func (s *demoSession) changedLocked() {
 func newDemoSession(parent context.Context, client sessionClient, hostID, backendID uuid.UUID) *demoSession {
 	ctx, cancel := context.WithCancel(parent)
 	actionsCtx, cancelActions := context.WithCancel(ctx)
-	return &demoSession{client: client, hostID: hostID, backendID: backendID, clientID: uuid.New(), commands: make(map[uuid.UUID]contract.CommandStatus), commandPayloads: make(map[uuid.UUID]string), inFlight: make(map[uuid.UUID]bool), ambiguous: make(map[uuid.UUID]bool), knownStops: make(map[uuid.UUID]uuid.UUID), ctx: ctx, cancel: cancel, actionsCtx: actionsCtx, cancelActions: cancelActions, revision: 1, lastStatus: contract.Disconnected}
+	return &demoSession{client: client, hostID: hostID, backendID: backendID, clientID: uuid.New(), commands: make(map[uuid.UUID]contract.CommandStatus), commandPayloads: make(map[uuid.UUID]string), inFlight: make(map[uuid.UUID]bool), ambiguous: make(map[uuid.UUID]bool), knownStops: make(map[uuid.UUID]uuid.UUID), savedTests: make(map[uuid.UUID]uuid.UUID), ctx: ctx, cancel: cancel, actionsCtx: actionsCtx, cancelActions: cancelActions, revision: 1, lastStatus: contract.Disconnected}
 }
 
 // keepAlive is triggered by the mounted UI, not by a host timer or WebSocket.
@@ -305,7 +309,7 @@ func (s *demoSession) connectionStateLocked(now time.Time) contract.ConnectionSt
 			s.onState(previousLink, linkValid)
 		}
 	}
-	return contract.ConnectionState{HostRunId: s.hostID, Revision: s.revision, Status: status, LinkValid: linkValid, StreamGeneration: s.streamGeneration}
+	return contract.ConnectionState{HostRunId: s.hostID, Revision: s.revision, Status: status, LinkValid: linkValid, LeaseAcquireUnknown: s.unknownAcquire, StreamGeneration: s.streamGeneration}
 }
 
 // sessionView takes a single ordered snapshot of connection freshness and data.
@@ -645,6 +649,31 @@ func terminalCommand(status contract.CommandStatusStatus) bool {
 	return status == contract.CommandStatusStatusCompleted || status == contract.CommandStatusStatusRejected || status == contract.CommandStatusStatusFailed
 }
 
+// createCoveredLocked requires a later snapshot or a confirmed saved record.
+// Older snapshots can arrive after the command response and cannot establish its outcome.
+func (s *demoSession) createCoveredLocked(id uuid.UUID, status contract.CommandStatus, snapshot *contract.Snapshot) bool {
+	identity := s.commandPayloads[id]
+	if !strings.HasPrefix(identity, "create:") || status.Status != contract.CommandStatusStatusCompleted {
+		return true
+	}
+	if status.TestId == nil || *status.TestId == uuid.Nil {
+		return false
+	}
+	inputValidation.once.Do(func() { inputValidation.validator, inputValidation.err = contract.NewInputValidator() })
+	if inputValidation.err != nil {
+		return false
+	}
+	var command contract.CreateTestCommand
+	input, err := inputValidation.validator.InspectCanonical("CreateTestCommand", []byte(strings.TrimPrefix(identity, "create:")), &command)
+	if err != nil || !input.Valid || command.CommandId != id {
+		return false
+	}
+	if s.savedTests[*status.TestId] != uuid.Nil {
+		return true
+	}
+	return snapshot != nil && snapshot.BackendRunId == s.backendID && snapshot.Revision > command.ExpectedRevision
+}
+
 func mergeCommandStatus(current, next contract.CommandStatus) contract.CommandStatus {
 	if terminalCommand(current.Status) || (current.Status == contract.CommandStatusStatusAccepted && next.Status == contract.CommandStatusStatusUnknown) {
 		return current
@@ -700,6 +729,55 @@ func (s *demoSession) rememberStopLocked(record contract.TestRecord) {
 		s.activeGeneration++
 	}
 	s.rememberStopPairLocked(record)
+}
+
+func (s *demoSession) rememberSavedLocked(record contract.TestRecord) {
+	if record.TestId == uuid.Nil || record.StopCommandId == uuid.Nil || record.Stage != "finished" || record.SaveStatus != "saved" {
+		return
+	}
+	if s.activeTestID == record.TestId && s.activeStopID != record.StopCommandId {
+		return
+	}
+	matched := s.activeTestID == record.TestId && s.activeStopID == record.StopCommandId
+	if s.snapshot != nil && s.snapshot.ActiveTest != nil {
+		current := s.snapshot.ActiveTest
+		if current.TestId == record.TestId {
+			if current.StopCommandId != record.StopCommandId {
+				return
+			}
+			matched = true
+		}
+	}
+	for id, status := range s.commands {
+		if strings.HasPrefix(s.commandPayloads[id], "create:") && status.Status == contract.CommandStatusStatusCompleted && status.TestId != nil && *status.TestId == record.TestId {
+			matched = true
+		}
+	}
+	if matched {
+		// Keep evidence only while a bounded command or the current snapshot refers to it.
+		for testID := range s.savedTests {
+			referenced := s.activeTestID == testID || (s.snapshot != nil && s.snapshot.ActiveTest != nil && s.snapshot.ActiveTest.TestId == testID)
+			for id, status := range s.commands {
+				if strings.HasPrefix(s.commandPayloads[id], "create:") && status.TestId != nil && *status.TestId == testID {
+					referenced = true
+					break
+				}
+			}
+			if !referenced {
+				delete(s.savedTests, testID)
+			}
+		}
+		s.savedTests[record.TestId] = record.StopCommandId
+	}
+}
+
+func (s *demoSession) savedRecordLocked(record *contract.TestRecord) *contract.TestRecord {
+	if record == nil || record.TestId == uuid.Nil || record.StopCommandId == uuid.Nil || s.savedTests[record.TestId] != record.StopCommandId {
+		return record
+	}
+	copy := *record
+	copy.Stage, copy.SaveStatus = "finished", "saved"
+	return &copy
 }
 
 func (s *demoSession) rememberStopPairLocked(record contract.TestRecord) {
@@ -824,7 +902,7 @@ func (s *demoSession) command(ctx context.Context, id uuid.UUID, identity string
 	}
 	if len(s.commands) >= limit {
 		for previous, status := range s.commands {
-			if terminalCommand(status.Status) && !s.inFlight[previous] {
+			if terminalCommand(status.Status) && !s.inFlight[previous] && s.createCoveredLocked(previous, status, s.snapshot) {
 				delete(s.commands, previous)
 				delete(s.commandPayloads, previous)
 				delete(s.ambiguous, previous)
@@ -977,14 +1055,16 @@ func (s *demoSession) close() {
 // shutdown attempts a single stop and confirms its result before releasing control.
 func (s *demoSession) shutdown(ctx context.Context) error {
 	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return nil
+	if !s.closed {
+		s.closing = true
+		s.cancelActions()
+		s.changedLocked()
+		_ = s.connectionStateLocked(time.Now())
 	}
-	s.closing = true
-	s.cancelActions()
-	s.changedLocked()
-	_ = s.connectionStateLocked(time.Now())
+	leasePending := !s.leaseGate.TryLock()
+	if !leasePending {
+		s.leaseGate.Unlock()
+	}
 	lease := s.leaseID
 	unknownAcquire := s.unknownAcquire
 	var active *contract.TestRecord
@@ -995,14 +1075,25 @@ func (s *demoSession) shutdown(ctx context.Context) error {
 	if s.activeTestID != uuid.Nil && s.activeStopID != uuid.Nil && (active == nil || active.TestId != s.activeTestID) {
 		active = &contract.TestRecord{TestId: s.activeTestID, StopCommandId: s.activeStopID, Stage: "running"}
 	}
-	s.mu.Unlock()
-	leasePending := !s.leaseGate.TryLock()
-	if !leasePending {
-		s.leaseGate.Unlock()
+	active = s.savedRecordLocked(active)
+	unconfirmed := unknownAcquire || leasePending || s.cleanupUnknown
+	if active != nil && (active.Stage != "finished" || active.SaveStatus != "saved") {
+		unconfirmed = true
 	}
-	if lease == uuid.Nil {
-		if unknownAcquire || leasePending {
-			return transport.ErrCleanupUnconfirmed
+	if s.activeTestID != uuid.Nil && (active == nil || active.TestId != s.activeTestID) {
+		unconfirmed = true
+	}
+	for id, status := range s.commands {
+		if !terminalCommand(status.Status) || !s.createCoveredLocked(id, status, s.snapshot) || (active != nil && active.Stage == "finished" && id == active.StopCommandId && status.Status != contract.CommandStatusStatusCompleted) {
+			unconfirmed = true
+			break
+		}
+	}
+	closed := s.closed
+	s.mu.Unlock()
+	if closed || lease == uuid.Nil {
+		if unconfirmed {
+			return ErrSessionShutdownUnconfirmed
 		}
 		return nil
 	}
@@ -1012,62 +1103,101 @@ func (s *demoSession) shutdown(ctx context.Context) error {
 	fresh, snapshotErr := s.client.Snapshot(ctx, lease)
 	snapshotKnown := snapshotErr == nil && fresh.BackendRunId == s.backendID
 	if snapshotKnown {
-		active = fresh.ActiveTest
+		s.mu.Lock()
+		active = s.savedRecordLocked(fresh.ActiveTest)
+		s.mu.Unlock()
 		if active != nil && active.Stage != "finished" {
 			s.startShutdownStop(ctx, lease, active)
 		}
 	}
+	unknown := unknownAcquire || leasePending
 	s.mu.Lock()
 	pending := make([]uuid.UUID, 0, len(s.commands))
 	for id, status := range s.commands {
 		if !terminalCommand(status.Status) {
 			pending = append(pending, id)
+		} else if active != nil && active.Stage == "finished" && id == active.StopCommandId && status.Status != contract.CommandStatusStatusCompleted {
+			unknown = true
 		}
 	}
 	s.mu.Unlock()
-	unknown := unknownAcquire || leasePending
+	confirmFinishedStop := false
 	for _, id := range pending {
 		s.mu.Lock()
 		unresolved := s.inFlight[id] || s.ambiguous[id]
+		identity := s.commandPayloads[id]
 		s.mu.Unlock()
 		if unresolved {
-			unknown = true
+			stopForActive := active != nil && id == active.StopCommandId
+			if stopForActive && active.Stage == "finished" {
+				stopIdentity, err := commandIdentity("stop:"+active.TestId.String(), contract.StopTestCommand{CommandId: id})
+				if err == nil && identity == stopIdentity {
+					confirmFinishedStop = true
+				} else {
+					unknown = true
+				}
+			} else if !stopForActive {
+				unknown = true
+			}
 			continue
 		}
 		status, err := s.client.Command(ctx, lease, id)
-		if err == nil {
-			s.mu.Lock()
-			if existing, ok := s.commands[id]; ok && !s.inFlight[id] && !s.ambiguous[id] {
+		s.mu.Lock()
+		if existing, ok := s.commands[id]; ok && !s.inFlight[id] && !s.ambiguous[id] {
+			if err == nil {
 				s.commands[id] = mergeCommandStatus(existing, status)
 			}
-			s.mu.Unlock()
+			if terminalCommand(s.commands[id].Status) {
+				status, err = s.commands[id], nil
+			}
 		}
-		if (err != nil || !terminalCommand(status.Status)) && (active == nil || id != active.StopCommandId) {
+		s.mu.Unlock()
+		stopForActive := active != nil && id == active.StopCommandId
+		if stopForActive && active.Stage == "finished" {
+			if err != nil || status.Status != contract.CommandStatusStatusCompleted {
+				unknown = true
+			}
+		} else if (err != nil || !terminalCommand(status.Status)) && !stopForActive {
 			unknown = true
 		}
 	}
+	s.mu.Lock()
+	for id, status := range s.commands {
+		if !s.createCoveredLocked(id, status, &fresh) {
+			unknown = true
+		}
+	}
+	s.mu.Unlock()
 	var result error
 	s.mu.Lock()
 	cleanupUnknown := s.cleanupUnknown
 	s.mu.Unlock()
 	if unknown || !snapshotKnown || cleanupUnknown {
-		result = transport.ErrCleanupUnconfirmed
+		result = ErrSessionShutdownUnconfirmed
 	}
-	if active != nil && active.Stage != "finished" {
+	if active != nil && (active.Stage != "finished" || confirmFinishedStop) {
 		stopID := active.StopCommandId
-		s.startShutdownStop(ctx, lease, active)
+		if active.Stage != "finished" {
+			s.startShutdownStop(ctx, lease, active)
+		}
 		for {
+			s.mu.Lock()
+			cached, tracked := s.commands[stopID]
+			s.mu.Unlock()
+			if tracked && cached.Status == contract.CommandStatusStatusCompleted {
+				break
+			}
 			status, err := s.client.Command(ctx, lease, stopID)
 			if err == nil && status.Status == contract.CommandStatusStatusCompleted {
 				break
 			}
 			if err == nil && (status.Status == contract.CommandStatusStatusFailed || status.Status == contract.CommandStatusStatusRejected) {
-				result = transport.ErrCleanupUnconfirmed
+				result = ErrSessionShutdownUnconfirmed
 				break
 			}
 			select {
 			case <-ctx.Done():
-				return transport.ErrCleanupUnconfirmed
+				return ErrSessionShutdownUnconfirmed
 			case <-time.After(100 * time.Millisecond):
 			}
 		}
@@ -1080,13 +1210,13 @@ func (s *demoSession) shutdown(ctx context.Context) error {
 			}
 			select {
 			case <-ctx.Done():
-				return transport.ErrCleanupUnconfirmed
+				return ErrSessionShutdownUnconfirmed
 			case <-time.After(100 * time.Millisecond):
 			}
 		}
 	}
 	if err := s.client.ReleaseLease(ctx, lease); err != nil {
-		result = transport.ErrCleanupUnconfirmed
+		result = ErrSessionShutdownUnconfirmed
 	}
 	return result
 }
@@ -1135,10 +1265,10 @@ func (s *demoSession) wait(ctx context.Context) error {
 		unknown := s.cleanupUnknown
 		s.mu.Unlock()
 		if unknown {
-			return transport.ErrCleanupUnconfirmed
+			return ErrSessionShutdownUnconfirmed
 		}
 		return nil
 	case <-ctx.Done():
-		return transport.ErrCleanupUnconfirmed
+		return ErrSessionShutdownUnconfirmed
 	}
 }

@@ -5,6 +5,7 @@ import {
   readSession,
   requestSessionObservation,
   type SessionBridge,
+  watchConnection,
 } from '../src/desktop/bridge';
 import { SessionStatus } from '../src/desktop/SessionStatus';
 import {
@@ -21,6 +22,7 @@ const view: SessionView = {
     revision: 1,
     status: ConnectionStateStatus.Live,
     linkValid: true,
+    leaseAcquireUnknown: false,
     streamGeneration: 0,
   },
   snapshot: {
@@ -39,6 +41,388 @@ const view: SessionView = {
 function call<T>(promise: Promise<T>): Promise<T> {
   return promise;
 }
+
+it('reports unknown initial acquisition from a passive view without restoring freshness', async () => {
+  vi.useFakeTimers();
+  const unknownHost = 'a1111111-1111-4111-8111-111111111111';
+  const unknown: SessionView = {
+    ...view,
+    connection: {
+      ...view.connection,
+      hostRunId: unknownHost,
+      revision: 2,
+      status: ConnectionStateStatus.Disconnected,
+      linkValid: false,
+      leaseAcquireUnknown: true,
+    },
+    snapshot: null,
+    validForMs: 0,
+    linkValidForMs: 0,
+  };
+  let finishObservation: (value: SessionView) => void = () => {};
+  const observation = new Promise<SessionView>((resolve) => {
+    finishObservation = resolve;
+  });
+  const keepAlive = vi.fn().mockRejectedValue(new Error('response lost'));
+  const onView = vi.fn();
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive,
+    sessionView: vi.fn().mockResolvedValue(view),
+    observeSession: vi.fn().mockReturnValue(observation),
+  };
+  render(
+    <SessionStatus
+      bridge={bridge}
+      hostRunId={unknownHost}
+      backendRunId={view.snapshot?.backendRunId ?? ''}
+      onView={onView}
+    />,
+  );
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  await act(async () => {
+    finishObservation(unknown);
+    await observation;
+    await vi.advanceTimersByTimeAsync(10000);
+  });
+  expect(screen.getByText('Получение управления не подтверждено')).toBeTruthy();
+  expect(screen.getByText(/Запустите снова только после завершения ядра/)).toBeTruthy();
+  expect(screen.queryByText('При последней проверке связь с ядром подтверждена')).toBeNull();
+  expect(onView.mock.calls.every(([snapshot]) => snapshot === null)).toBe(true);
+  expect(keepAlive).toHaveBeenCalledTimes(1);
+  expect(bridge.sessionView).not.toHaveBeenCalled();
+});
+
+it('keeps the unknown acquisition after a delayed older live event', async () => {
+  vi.useFakeTimers();
+  const unknownHost = 'b2222222-2222-4222-8222-222222222222';
+  let notify: (state: SessionView['connection']) => void = () => {};
+  const keepAlive = vi.fn().mockReturnValue(new Promise<void>(() => {}));
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive,
+    sessionView: vi.fn().mockResolvedValue(view),
+    subscribeConnection: (callback) => {
+      notify = callback;
+      return () => {};
+    },
+  };
+  render(
+    <SessionStatus
+      bridge={bridge}
+      hostRunId={unknownHost}
+      backendRunId={view.snapshot?.backendRunId ?? ''}
+    />,
+  );
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  act(() => {
+    notify({
+      ...view.connection,
+      hostRunId: unknownHost,
+      revision: 2,
+      status: ConnectionStateStatus.Disconnected,
+      linkValid: false,
+      leaseAcquireUnknown: true,
+    });
+    notify({ ...view.connection, hostRunId: unknownHost });
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(10000);
+  });
+  expect(screen.getByText('Получение управления не подтверждено')).toBeTruthy();
+  expect(screen.queryByText('При последней проверке связь с ядром подтверждена')).toBeNull();
+  expect(keepAlive).toHaveBeenCalledTimes(1);
+});
+
+it('retains the terminal acquisition outcome across bridge replacement and remount', async () => {
+  vi.useFakeTimers();
+  const unknownHost = 'c3333333-3333-4333-8333-333333333333';
+  const backendRunId = view.snapshot?.backendRunId ?? '';
+  let notify: (state: SessionView['connection']) => void = () => {};
+  const first: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: vi.fn().mockReturnValue(new Promise<void>(() => {})),
+    sessionView: vi.fn().mockResolvedValue(view),
+    subscribeConnection: (callback) => {
+      notify = callback;
+      return () => {};
+    },
+  };
+  const replacement: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: vi.fn().mockResolvedValue(undefined),
+    sessionView: vi.fn().mockResolvedValue(view),
+  };
+  const mounted = render(
+    <SessionStatus bridge={first} hostRunId={unknownHost} backendRunId={backendRunId} />,
+  );
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  act(() => {
+    notify({
+      ...view.connection,
+      hostRunId: unknownHost,
+      revision: 2,
+      status: ConnectionStateStatus.Disconnected,
+      linkValid: false,
+      leaseAcquireUnknown: true,
+    });
+  });
+  mounted.rerender(
+    <SessionStatus bridge={replacement} hostRunId={unknownHost} backendRunId={backendRunId} />,
+  );
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(10000);
+  });
+  expect(screen.getByText('Получение управления не подтверждено')).toBeTruthy();
+  expect(replacement.keepAlive).not.toHaveBeenCalled();
+  mounted.unmount();
+  const remounted = render(
+    <SessionStatus bridge={replacement} hostRunId={unknownHost} backendRunId={backendRunId} />,
+  );
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(10000);
+  });
+  expect(screen.getByText('Получение управления не подтверждено')).toBeTruthy();
+  expect(replacement.keepAlive).not.toHaveBeenCalled();
+  const freshHost = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+  const fresh: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: vi.fn().mockResolvedValue(undefined),
+    sessionView: async () => ({
+      ...view,
+      connection: { ...view.connection, hostRunId: freshHost },
+    }),
+  };
+  remounted.rerender(
+    <SessionStatus bridge={fresh} hostRunId={freshHost} backendRunId={backendRunId} />,
+  );
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  expect(screen.queryByText('Получение управления не подтверждено')).toBeNull();
+  expect(fresh.keepAlive).toHaveBeenCalledOnce();
+});
+
+it('reports a delayed unknown observation after a newer observation fails', async () => {
+  vi.useFakeTimers();
+  const unknownHost = 'd4444444-4444-4444-8444-444444444444';
+  let finish: (value: SessionView) => void = () => {};
+  const delayed = new Promise<SessionView>((resolve) => {
+    finish = resolve;
+  });
+  const never = new Promise<SessionView>(() => {});
+  const keepAlive = vi.fn().mockRejectedValue(new Error('unavailable'));
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive,
+    sessionView: vi.fn().mockResolvedValue(view),
+    observeSession: vi
+      .fn()
+      .mockReturnValueOnce(delayed)
+      .mockRejectedValueOnce(new Error('later observation failed'))
+      .mockReturnValue(never),
+  };
+  render(
+    <SessionStatus
+      bridge={bridge}
+      hostRunId={unknownHost}
+      backendRunId={view.snapshot?.backendRunId ?? ''}
+    />,
+  );
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(4001);
+  });
+  await act(async () => {
+    finish({
+      ...view,
+      connection: {
+        ...view.connection,
+        hostRunId: unknownHost,
+        revision: 2,
+        status: ConnectionStateStatus.Disconnected,
+        linkValid: false,
+        leaseAcquireUnknown: true,
+      },
+      snapshot: null,
+      validForMs: 0,
+      linkValidForMs: 0,
+    });
+    await delayed;
+  });
+  expect(screen.getByText('Получение управления не подтверждено')).toBeTruthy();
+  const attempts = keepAlive.mock.calls.length;
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(10000);
+  });
+  expect(keepAlive).toHaveBeenCalledTimes(attempts);
+});
+
+it('keeps late connection notices from an old host out of the replacement watcher', async () => {
+  vi.useFakeTimers();
+  let finishOld: (notice: ConnectionNotice) => void = () => {};
+  let finishNew: (notice: ConnectionNotice) => void = () => {};
+  const oldRequest = new Promise<ConnectionNotice>((resolve) => {
+    finishOld = resolve;
+  });
+  const newRequest = new Promise<ConnectionNotice>((resolve) => {
+    finishNew = resolve;
+  });
+  const waitConnection = vi
+    .fn()
+    .mockReturnValueOnce(oldRequest)
+    .mockReturnValueOnce(newRequest)
+    .mockReturnValue(new Promise<ConnectionNotice>(() => {}));
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => view,
+    waitConnection,
+  };
+  const oldHost = view.connection.hostRunId;
+  const newHost = 'e5555555-5555-4555-8555-555555555555';
+  const oldBackend = view.snapshot?.backendRunId ?? '';
+  const newBackend = 'f6666666-6666-4666-8666-666666666666';
+  const notices = vi.fn();
+  const stopOld = watchConnection(bridge, oldHost, oldBackend, () => {});
+  await vi.advanceTimersByTimeAsync(0);
+  stopOld();
+  const stopNew = watchConnection(bridge, newHost, newBackend, notices);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(waitConnection).toHaveBeenCalledTimes(2);
+  expect(waitConnection).toHaveBeenNthCalledWith(2, 0, 0);
+  await act(async () => {
+    finishOld({
+      connection: { ...view.connection, revision: 100 },
+      event: null,
+      gap: false,
+      snapshotBoundary: 0,
+    });
+    await oldRequest;
+  });
+  expect(notices).not.toHaveBeenCalled();
+  await act(async () => {
+    finishNew({
+      connection: { ...view.connection, hostRunId: newHost, revision: 1 },
+      event: null,
+      gap: false,
+      snapshotBoundary: 0,
+    });
+    await newRequest;
+  });
+  expect(notices).toHaveBeenCalledWith(
+    expect.objectContaining({
+      connection: expect.objectContaining({ hostRunId: newHost, revision: 1 }),
+    }),
+  );
+  stopNew();
+});
+
+it('bounds replacement waits and resumes when an old slot is released', async () => {
+  vi.useFakeTimers();
+  let finishOld: (notice: ConnectionNotice) => void = () => {};
+  const oldRequest = new Promise<ConnectionNotice>((resolve) => {
+    finishOld = resolve;
+  });
+  const never = new Promise<ConnectionNotice>(() => {});
+  const newHost = 'f7777777-7777-4777-8777-777777777777';
+  const newBackend = 'a8888888-8888-4888-8888-888888888888';
+  const replacement: ConnectionNotice = {
+    connection: { ...view.connection, hostRunId: newHost },
+    event: null,
+    gap: false,
+    snapshotBoundary: 0,
+  };
+  const waitConnection = vi
+    .fn()
+    .mockReturnValueOnce(oldRequest)
+    .mockReturnValueOnce(never)
+    .mockReturnValueOnce(never)
+    .mockResolvedValueOnce(replacement)
+    .mockReturnValue(never);
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => view,
+    waitConnection,
+  };
+  const stopOld = watchConnection(
+    bridge,
+    view.connection.hostRunId,
+    view.snapshot?.backendRunId ?? '',
+    () => {},
+  );
+  await vi.advanceTimersByTimeAsync(4001);
+  expect(waitConnection).toHaveBeenCalledTimes(2);
+  stopOld();
+  const notices = vi.fn();
+  const stopNew = watchConnection(bridge, newHost, newBackend, notices);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(waitConnection).toHaveBeenCalledTimes(3);
+  await vi.advanceTimersByTimeAsync(4001);
+  expect(waitConnection).toHaveBeenCalledTimes(3);
+  expect(notices).toHaveBeenCalledWith(null);
+  finishOld({ connection: view.connection, event: null, gap: false, snapshotBoundary: 0 });
+  await vi.advanceTimersByTimeAsync(500);
+  expect(waitConnection).toHaveBeenCalledTimes(4);
+  expect(notices).toHaveBeenCalledWith(replacement);
+  stopNew();
+});
+
+it('delivers a late unknown lease notice after a newer wait fails', async () => {
+  vi.useFakeTimers();
+  let finish: (notice: ConnectionNotice) => void = () => {};
+  const delayed = new Promise<ConnectionNotice>((resolve) => {
+    finish = resolve;
+  });
+  const never = new Promise<ConnectionNotice>(() => {});
+  const waitConnection = vi
+    .fn()
+    .mockReturnValueOnce(delayed)
+    .mockRejectedValueOnce(new Error('later wait failed'))
+    .mockReturnValue(never);
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => view,
+    waitConnection,
+  };
+  const notices = vi.fn();
+  const stop = watchConnection(
+    bridge,
+    view.connection.hostRunId,
+    view.snapshot?.backendRunId ?? '',
+    notices,
+  );
+  await vi.advanceTimersByTimeAsync(4001);
+  expect(waitConnection).toHaveBeenCalledTimes(2);
+  await act(async () => {
+    finish({
+      connection: {
+        ...view.connection,
+        revision: 2,
+        status: ConnectionStateStatus.Disconnected,
+        linkValid: false,
+        leaseAcquireUnknown: true,
+      },
+      event: null,
+      gap: false,
+      snapshotBoundary: 0,
+    });
+    await delayed;
+  });
+  expect(notices).toHaveBeenCalledWith(
+    expect.objectContaining({
+      connection: expect.objectContaining({ leaseAcquireUnknown: true }),
+    }),
+  );
+  stop();
+});
 
 it('does not treat a delayed session response as fresh or overlap calls', async () => {
   vi.useFakeTimers();
@@ -274,6 +658,7 @@ it('does not mark normal snapshot recovery or old notices as a measurement gap',
       revision: 2,
       status: ConnectionStateStatus.Recovering,
       linkValid: true,
+      leaseAcquireUnknown: false,
       streamGeneration: 0,
     }),
   );
@@ -283,6 +668,7 @@ it('does not mark normal snapshot recovery or old notices as a measurement gap',
       revision: 0,
       status: ConnectionStateStatus.Disconnected,
       linkValid: false,
+      leaseAcquireUnknown: false,
       streamGeneration: 0,
     }),
   );
@@ -293,6 +679,7 @@ it('does not mark normal snapshot recovery or old notices as a measurement gap',
       revision: 3,
       status: ConnectionStateStatus.Disconnected,
       linkValid: false,
+      leaseAcquireUnknown: false,
       streamGeneration: 0,
     }),
   );
@@ -409,6 +796,7 @@ it('refreshes immediately after live notification without sending another heartb
       revision: 2,
       status: ConnectionStateStatus.Recovering,
       linkValid: true,
+      leaseAcquireUnknown: false,
       streamGeneration: 0,
     }),
   );
@@ -459,6 +847,7 @@ it('does not let an older observation restore freshness after heartbeat failure'
       revision: 2,
       status: ConnectionStateStatus.Live,
       linkValid: true,
+      leaseAcquireUnknown: false,
       streamGeneration: 0,
     }),
   );
@@ -586,6 +975,7 @@ it('invalidates the last confirmed view when a newer connection event arrives', 
       revision: 2,
       status: ConnectionStateStatus.Recovering,
       linkValid: true,
+      leaseAcquireUnknown: false,
       streamGeneration: 0,
     }),
   );
@@ -628,6 +1018,7 @@ it('does not restore a view overtaken by a connection event', async () => {
       revision: 2,
       status: ConnectionStateStatus.Recovering,
       linkValid: true,
+      leaseAcquireUnknown: false,
       streamGeneration: 0,
     }),
   );
@@ -680,6 +1071,7 @@ it('detects a connection change even when the push notification is lost', async 
         revision: 2,
         status: ConnectionStateStatus.Recovering,
         linkValid: false,
+        leaseAcquireUnknown: false,
         streamGeneration: 0,
       },
       event: null,

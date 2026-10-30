@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  type Dispatch,
+  type SetStateAction,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
 import {
   ActiveParametersScreen,
   draftFrom,
@@ -14,17 +21,10 @@ import {
   type Snapshot,
   TestParametersDirection,
 } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
-import {
-  Command,
-  ConfirmAction,
-  CreateTest,
-  Readiness as ReadTestReadiness,
-  StartTest,
-  StopTest,
-} from '../generated/wails/github.com/vitalcc55/gk80-control/internal/desktop/service';
 import type { TestParameters as FormParameters } from '../model';
 import { readLastSession, type SessionBridge } from './bridge';
 import { beginCall, countCalls, endCall, totalCalls, useCallRevision } from './call-limits';
+import type { DemoService } from './demo-service';
 import { History } from './History';
 import { LiveRun } from './LiveRun';
 import { SessionStatus } from './SessionStatus';
@@ -63,17 +63,28 @@ type ReadinessRead = {
   timer: ReturnType<typeof setTimeout> | undefined;
   start: () => void;
 };
-const readinessReads = new Map<string, ReadinessRead>();
+const readinessReadsByService = new Map<DemoService, Map<string, ReadinessRead>>();
+let readinessReadCount = 0;
 
 function observeReadiness(
+  service: DemoService,
+  hostRunId: string,
+  backendRunId: string,
   testId: string,
   revision: number,
   listener: (value: Readiness | null) => void,
 ) {
-  const key = `${testId}:${revision}`;
-  let pending = readinessReads.get(key);
+  let readinessReads = readinessReadsByService.get(service);
+  if (!readinessReads) {
+    readinessReads = new Map<string, ReadinessRead>();
+    readinessReadsByService.set(service, readinessReads);
+  }
+  const reads = readinessReads;
+  const key = `${hostRunId}:${backendRunId}:${testId}:${revision}`;
+  let pending = reads.get(key);
   if (!pending) {
-    if (readinessReads.size >= 64) {
+    if (readinessReadCount >= 64) {
+      if (!reads.size) readinessReadsByService.delete(service);
       queueMicrotask(() => listener(null));
       return () => {};
     }
@@ -86,8 +97,15 @@ function observeReadiness(
       timer: undefined,
       start: () => {},
     };
-    readinessReads.set(key, pending);
+    reads.set(key, pending);
+    readinessReadCount += 1;
     const current = pending;
+    const forgetRead = () => {
+      if (reads.get(key) !== current) return;
+      reads.delete(key);
+      readinessReadCount -= 1;
+      if (!reads.size) readinessReadsByService.delete(service);
+    };
     const schedule = (delay: number) => {
       if (!current.listeners.size || current.success || current.timer) return;
       current.timer = setTimeout(() => {
@@ -100,7 +118,8 @@ function observeReadiness(
       current.inFlight += 1;
       const attempt = ++current.attempt;
       const watchdog = setTimeout(() => schedule(0), 4000);
-      void ReadTestReadiness(testId)
+      void service
+        .readiness(testId)
         .then(
           (value) => {
             if (attempt <= current.completed) return;
@@ -119,7 +138,7 @@ function observeReadiness(
           clearTimeout(watchdog);
           current.inFlight -= 1;
           if (current.listeners.size) schedule(2000);
-          else if (!current.inFlight) readinessReads.delete(key);
+          else if (!current.inFlight) forgetRead();
         });
     };
   }
@@ -137,7 +156,11 @@ function observeReadiness(
       current.success = false;
       clearTimeout(current.timer);
       current.timer = undefined;
-      if (!current.inFlight) readinessReads.delete(key);
+      if (!current.inFlight && reads.get(key) === current) {
+        reads.delete(key);
+        readinessReadCount -= 1;
+        if (!reads.size) readinessReadsByService.delete(service);
+      }
     }
   };
 }
@@ -223,25 +246,63 @@ function restorePending(): Pending[] | null {
   return pendingStorageUnknown ? null : stored;
 }
 
-export function LiveApp({
-  session,
-  hostRunId,
-  backendRunId,
-  diagnosticsDegraded = false,
-}: {
+type LiveAppProps = {
   session: SessionBridge;
+  service: DemoService;
   hostRunId: string;
   backendRunId: string;
   diagnosticsDegraded?: boolean;
+};
+
+export function LiveApp(props: LiveAppProps) {
+  const [draft, setDraft] = useState(newDraft);
+  const [draftAvailable, setDraftAvailable] = useState(false);
+  const [showForm, setShowForm] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  return (
+    <ActiveLiveApp
+      key={`${props.hostRunId}:${props.backendRunId}`}
+      {...props}
+      draft={draft}
+      setDraft={setDraft}
+      draftAvailable={draftAvailable}
+      setDraftAvailable={setDraftAvailable}
+      showForm={showForm}
+      setShowForm={setShowForm}
+      showHistory={showHistory}
+      setShowHistory={setShowHistory}
+    />
+  );
+}
+
+function ActiveLiveApp({
+  session,
+  service,
+  hostRunId,
+  backendRunId,
+  diagnosticsDegraded = false,
+  draft,
+  setDraft,
+  draftAvailable,
+  setDraftAvailable,
+  showForm,
+  setShowForm,
+  showHistory,
+  setShowHistory,
+}: LiveAppProps & {
+  draft: ReturnType<typeof newDraft>;
+  setDraft: Dispatch<SetStateAction<ReturnType<typeof newDraft>>>;
+  draftAvailable: boolean;
+  setDraftAvailable: Dispatch<SetStateAction<boolean>>;
+  showForm: boolean;
+  setShowForm: Dispatch<SetStateAction<boolean>>;
+  showHistory: boolean;
+  setShowHistory: Dispatch<SetStateAction<boolean>>;
 }) {
   const [connection, setConnection] = useState<{ view: SessionView; expiresAt: number } | null>(
     null,
   );
-  const [draft, setDraft] = useState(newDraft);
   const [lastSnapshot, setLastSnapshot] = useState<Snapshot | null>(null);
-  const [showForm, setShowForm] = useState(false);
-  const [draftAvailable, setDraftAvailable] = useState(false);
-  const [showHistory, setShowHistory] = useState(false);
   const [showSavedParameters, setShowSavedParameters] = useState(false);
   const [readiness, setReadiness] = useState<Readiness | null>(null);
   const [readinessConfirmed, setReadinessConfirmed] = useState(false);
@@ -351,7 +412,7 @@ export function LiveApp({
   useEffect(() => {
     setReadinessConfirmed(false);
     if (fresh && stage === 'preparing' && activeId && revision !== undefined) {
-      return observeReadiness(activeId, revision, (value) => {
+      return observeReadiness(service, hostRunId, backendRunId, activeId, revision, (value) => {
         if (value) {
           setReadiness(value);
           setReadinessConfirmed(true);
@@ -362,7 +423,7 @@ export function LiveApp({
       });
     }
     return undefined;
-  }, [fresh, activeId, stage, revision]);
+  }, [fresh, activeId, stage, revision, service, hostRunId, backendRunId]);
 
   const savePending = useCallback((values: Pending[], allowVolatile = false): boolean => {
     try {
@@ -423,7 +484,7 @@ export function LiveApp({
       }
       const generation = lifecycle.current;
       try {
-        const status = await Command(item.id);
+        const status = await service.command(item.id);
         if (lifecycle.current !== generation || status.commandId !== item.id) return;
         const existing = pendingRef.current.find((current) => current.id === item.id);
         if (!existing) return;
@@ -459,7 +520,7 @@ export function LiveApp({
         endCall('lookup', item.id);
       }
     },
-    [forget, setStopMessage],
+    [forget, setStopMessage, service],
   );
   useEffect(() => {
     if (!pending.length || !fresh) return;
@@ -494,7 +555,18 @@ export function LiveApp({
     }
     const item = pending[lookupIndex.current++ % pending.length];
     if (item) void lookup(item);
-  }, [pending, fresh, record, snapshot, lookup, forget, savePending]);
+  }, [
+    pending,
+    fresh,
+    record,
+    snapshot,
+    lookup,
+    forget,
+    savePending,
+    setShowForm,
+    setDraft,
+    setDraftAvailable,
+  ]);
 
   useEffect(() => {
     if (!stopRequested || !record || !fresh) return;
@@ -506,7 +578,8 @@ export function LiveApp({
     if (record.stage === 'finished' && record.outcome === 'interrupted')
       setStopMessage(stopPendingMessage(record));
     if (!beginCall('lookup', id, 1)) return;
-    void Command(id)
+    void service
+      .command(id)
       .then(
         (status) => {
           if (
@@ -528,7 +601,7 @@ export function LiveApp({
       .finally(() => {
         endCall('lookup', id);
       });
-  }, [stopRequested, record, fresh, setStopMessage]);
+  }, [stopRequested, record, fresh, setStopMessage, service]);
 
   async function submit(
     kind: Exclude<Pending['kind'], 'stop'>,
@@ -630,7 +703,7 @@ export function LiveApp({
     const generation = lifecycle.current;
     setStopMessage('Запрошена остановка. Ожидаем подтверждения ядра.');
     try {
-      const result = await StopTest(record.testId, { commandId: record.stopCommandId });
+      const result = await service.stopTest(record.testId, { commandId: record.stopCommandId });
       if (lifecycle.current !== generation || currentTest.current !== record.testId) return;
       if (result.commandId !== record.stopCommandId) {
         setStopMessage('Исход остановки неизвестен; безопасное давление не подтверждено.');
@@ -796,6 +869,7 @@ export function LiveApp({
           </section>
           {(showHistory || (!record && !showForm)) && (
             <History
+              service={service}
               available={fresh}
               disabled={!fresh || blocking || (!!record && record.stage !== 'finished')}
               onNew={() => {
@@ -842,7 +916,7 @@ export function LiveApp({
               onContinue={(parameters) => {
                 if (!snapshot) return;
                 void submit('create', null, (commandId) =>
-                  CreateTest({
+                  service.createTest({
                     commandId,
                     expectedRevision: snapshot.revision,
                     parameters: {
@@ -885,7 +959,7 @@ export function LiveApp({
                 onStart={(checks) => {
                   if (snapshot)
                     void submit('start', record.testId, (commandId) =>
-                      StartTest(record.testId, {
+                      service.startTest(record.testId, {
                         commandId,
                         expectedRevision: snapshot.revision,
                         ...checks,
@@ -922,7 +996,7 @@ export function LiveApp({
                 const action = snapshot.pendingAction;
                 if (action)
                   void submit('confirm', record.testId, (commandId) =>
-                    ConfirmAction(record.testId, action.actionId, {
+                    service.confirmAction(record.testId, action.actionId, {
                       commandId,
                       expectedRevision: snapshot.revision,
                     }),

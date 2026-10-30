@@ -468,8 +468,13 @@ func TestDemoSessionDoesNotRepeatUnknownInitialLease(t *testing.T) {
 	client := &testSessionClient{unknown: true}
 	session := newDemoSession(context.Background(), client, uuid.New(), uuid.New())
 	defer session.close()
+	before := session.connectionState()
 	if err := session.keepAlive(context.Background()); err == nil {
 		t.Fatal("lost first response was reported successful")
+	}
+	view, err := session.sessionView()
+	if err != nil || !view.Connection.LeaseAcquireUnknown || view.Connection.Revision <= before.Revision || view.Connection.Status == contract.Live || view.Connection.LinkValid || view.ValidForMs != 0 || view.LinkValidForMs != 0 {
+		t.Fatalf("unknown acquisition was not exposed without freshness: %+v %v", view, err)
 	}
 	if err := session.keepAlive(context.Background()); err == nil {
 		t.Fatal("unknown ownership was reported successful")
@@ -478,6 +483,123 @@ func TestDemoSessionDoesNotRepeatUnknownInitialLease(t *testing.T) {
 	defer client.mu.Unlock()
 	if client.acquires != 1 || session.connectionState().Status == contract.Live {
 		t.Fatalf("unknown acquisition was retried: %d", client.acquires)
+	}
+}
+
+func TestDemoSessionReportsMalformedInitialLeaseAsUnknown(t *testing.T) {
+	client := &testSessionClient{acquire: func(context.Context, uuid.UUID, *uuid.UUID) (contract.UiLease, error) {
+		return contract.UiLease{}, nil
+	}}
+	session := newDemoSession(context.Background(), client, uuid.New(), uuid.New())
+	defer session.close()
+	if err := session.keepAlive(context.Background()); err == nil {
+		t.Fatal("malformed first acquisition was reported successful")
+	}
+	state := session.connectionState()
+	if !state.LeaseAcquireUnknown || state.Status == contract.Live || state.LinkValid {
+		t.Fatalf("malformed acquisition was not exposed: %+v", state)
+	}
+	if err := session.keepAlive(context.Background()); err == nil {
+		t.Fatal("unknown acquisition was retried")
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if client.acquires != 1 {
+		t.Fatalf("unexpected acquire count: %d", client.acquires)
+	}
+}
+
+func TestDemoSessionShutdownDetectsInFlightFirstLease(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	client := &testSessionClient{acquire: func(context.Context, uuid.UUID, *uuid.UUID) (contract.UiLease, error) {
+		close(entered)
+		<-release
+		return contract.UiLease{}, &transport.RequestError{Code: "unavailable", OutcomeUnknown: true}
+	}}
+	session := newDemoSession(context.Background(), client, uuid.New(), uuid.New())
+	defer session.close()
+	done := make(chan error, 1)
+	go func() { done <- session.keepAlive(context.Background()) }()
+	<-entered
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- session.shutdown(context.Background()) }()
+	var err error
+	select {
+	case err = <-shutdownDone:
+	case <-time.After(time.Second):
+		close(release)
+		t.Fatal("shutdown waited for an in-flight acquisition")
+	}
+	close(release)
+	if keepAliveErr := <-done; keepAliveErr == nil {
+		t.Error("acquisition unexpectedly confirmed during shutdown")
+	}
+	if !errors.Is(err, ErrSessionShutdownUnconfirmed) {
+		t.Fatalf("in-flight acquisition was not reported: %v", err)
+	}
+	if err := session.keepAlive(context.Background()); err == nil {
+		t.Fatal("acquisition was admitted after shutdown")
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if client.acquires != 1 {
+		t.Fatalf("acquisition repeated: %d", client.acquires)
+	}
+}
+
+func TestDemoSessionShutdownWithoutLeasePreservesUnknownOutcomes(t *testing.T) {
+	id, stopID, commandID := uuid.New(), uuid.New(), uuid.New()
+	active := &contract.TestRecord{TestId: id, StopCommandId: stopID, Stage: "running", SaveStatus: "saved"}
+	finished := &contract.TestRecord{TestId: id, StopCommandId: stopID, Stage: "finished", SaveStatus: "saved"}
+	unsaved := &contract.TestRecord{TestId: id, StopCommandId: stopID, Stage: "finished", SaveStatus: "failed"}
+	for _, test := range []struct {
+		name     string
+		closed   bool
+		record   *contract.TestRecord
+		pending  bool
+		tracked  bool
+		terminal bool
+		unknown  bool
+		wantErr  bool
+	}{
+		{name: "empty", wantErr: false},
+		{name: "already closed and empty", closed: true, wantErr: false},
+		{name: "active without lease", record: active, wantErr: true},
+		{name: "active after core exit", closed: true, record: active, wantErr: true},
+		{name: "saved finished after core exit", closed: true, record: finished, wantErr: false},
+		{name: "unsaved finished after core exit", closed: true, record: unsaved, wantErr: true},
+		{name: "pending command without lease", pending: true, wantErr: true},
+		{name: "pending command after core exit", closed: true, pending: true, wantErr: true},
+		{name: "tracked test without snapshot", tracked: true, wantErr: true},
+		{name: "terminal command without lease", terminal: true, wantErr: false},
+		{name: "unknown acquisition after core exit", closed: true, unknown: true, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			session := newDemoSession(context.Background(), &testSessionClient{}, uuid.New(), uuid.New())
+			defer session.close()
+			session.mu.Lock()
+			if test.record != nil {
+				session.snapshot = &contract.Snapshot{ActiveTest: test.record}
+			}
+			if test.pending {
+				session.commands[commandID] = contract.CommandStatus{CommandId: commandID, Status: contract.CommandStatusStatusUnknown}
+			}
+			if test.tracked {
+				session.activeTestID = id
+			}
+			if test.terminal {
+				session.commands[commandID] = contract.CommandStatus{CommandId: commandID, Status: contract.CommandStatusStatusCompleted}
+			}
+			session.unknownAcquire = test.unknown
+			session.mu.Unlock()
+			if test.closed {
+				session.close()
+			}
+			err := session.shutdown(context.Background())
+			if errors.Is(err, ErrSessionShutdownUnconfirmed) != test.wantErr {
+				t.Fatalf("shutdown outcome: %v; want uncertainty=%v", err, test.wantErr)
+			}
+		})
 	}
 }
 
@@ -653,6 +775,499 @@ func TestDemoSessionRecoversAfterFailedStreamLeaseExpires(t *testing.T) {
 		t.Fatalf("new lease after confirmed expiration: %v", err)
 	}
 	waitSession(t, func() bool { return session.connectionState().Status == contract.Live })
+}
+
+func TestDemoSessionShutdownWithoutLeaseReportsCreateBeforeSnapshot(t *testing.T) {
+	run, testID, commandID := uuid.New(), uuid.New(), uuid.New()
+	session := newDemoSession(context.Background(), &testSessionClient{}, uuid.New(), run)
+	defer session.close()
+	session.snapshot = &contract.Snapshot{BackendRunId: run, Revision: 5}
+	session.commands[commandID] = contract.CommandStatus{CommandId: commandID, TestId: &testID, Status: contract.CommandStatusStatusCompleted}
+	identity, err := commandIdentity("create", contract.CreateTestCommand{CommandId: commandID, ExpectedRevision: 5, Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.commandPayloads[commandID] = identity
+	if err := session.shutdown(context.Background()); !errors.Is(err, ErrSessionShutdownUnconfirmed) {
+		t.Fatalf("created test absent from snapshot was reported as confirmed: %v", err)
+	}
+}
+
+func TestDemoSessionCreateCoverageUsesSnapshotRevisionAndBackend(t *testing.T) {
+	run, otherRun, testID, commandID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	session := newDemoSession(context.Background(), &testSessionClient{}, uuid.New(), run)
+	defer session.close()
+	identity, err := commandIdentity("create", contract.CreateTestCommand{CommandId: commandID, ExpectedRevision: 5, Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.commandPayloads[commandID] = identity
+	status := contract.CommandStatus{CommandId: commandID, TestId: &testID, Status: contract.CommandStatusStatusCompleted}
+	for _, tc := range []struct {
+		name     string
+		snapshot *contract.Snapshot
+		covered  bool
+	}{
+		{name: "no snapshot"},
+		{name: "before creation", snapshot: &contract.Snapshot{BackendRunId: run, Revision: 5}},
+		{name: "other backend", snapshot: &contract.Snapshot{BackendRunId: otherRun, Revision: 6}},
+		{name: "later empty snapshot", snapshot: &contract.Snapshot{BackendRunId: run, Revision: 6}, covered: true},
+		{name: "later different test", snapshot: &contract.Snapshot{BackendRunId: run, Revision: 7, ActiveTest: &contract.TestRecord{TestId: uuid.New()}}, covered: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := session.createCoveredLocked(commandID, status, tc.snapshot); got != tc.covered {
+				t.Fatalf("coverage=%v, want %v", got, tc.covered)
+			}
+		})
+	}
+}
+
+func TestOwnerSavedRecordConfirmsTestWithOlderSnapshot(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		seenTest    bool
+		unknownStop bool
+	}{
+		{name: "create before snapshot"},
+		{name: "running snapshot", seenTest: true},
+		{name: "unknown stop", seenTest: true, unknownStop: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run, lease, testID, createID, stopID := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
+			client := &testSessionClient{}
+			client.test = func(_ context.Context, gotLease, gotID uuid.UUID) (contract.TestRecord, error) {
+				if gotLease != lease || gotID != testID {
+					t.Error("record read used incorrect identifiers")
+				}
+				return contract.TestRecord{TestId: testID, StopCommandId: stopID, Stage: "finished", SaveStatus: "saved"}, nil
+			}
+			session := newDemoSession(context.Background(), client, uuid.New(), run)
+			defer session.close()
+			identity, err := commandIdentity("create", contract.CreateTestCommand{CommandId: createID, ExpectedRevision: 5, Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.leaseID, session.leaseConfirmed = lease, true
+			session.leaseUntil = time.Now().Add(time.Minute)
+			session.snapshot = &contract.Snapshot{BackendRunId: run, Revision: 5}
+			if tc.seenTest {
+				session.snapshot.Revision = 7
+				session.snapshot.ActiveTest = &contract.TestRecord{TestId: testID, StopCommandId: stopID, Stage: "running"}
+				session.rememberStopLocked(*session.snapshot.ActiveTest)
+			}
+			session.commands[createID] = contract.CommandStatus{CommandId: createID, TestId: &testID, Status: contract.CommandStatusStatusCompleted}
+			session.commandPayloads[createID] = identity
+			if tc.unknownStop {
+				session.commands[stopID] = contract.CommandStatus{CommandId: stopID, TestId: &testID, Status: contract.CommandStatusStatusUnknown}
+			}
+			owner := &Owner{session: session, status: contract.DesktopStatus{Status: contract.DesktopStatusStatusReady}}
+			if _, err := owner.Test(context.Background(), testID.String()); err != nil {
+				t.Fatal(err)
+			}
+			session.close()
+			err = session.shutdown(context.Background())
+			if errors.Is(err, ErrSessionShutdownUnconfirmed) != tc.unknownStop {
+				t.Fatalf("saved record and stop confirmation were conflated: %v", err)
+			}
+		})
+	}
+}
+
+func TestOwnerRetainsSavedProofAcrossFinishedSnapshot(t *testing.T) {
+	run, lease, testID, stopID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	entered, release := make(chan struct{}), make(chan struct{})
+	client := &testSessionClient{test: func(context.Context, uuid.UUID, uuid.UUID) (contract.TestRecord, error) {
+		close(entered)
+		<-release
+		return contract.TestRecord{TestId: testID, StopCommandId: stopID, Stage: "finished", SaveStatus: "saved"}, nil
+	}}
+	session := newDemoSession(context.Background(), client, uuid.New(), run)
+	defer session.close()
+	session.leaseID, session.leaseConfirmed = lease, true
+	session.leaseUntil = time.Now().Add(time.Minute)
+	session.snapshot = &contract.Snapshot{BackendRunId: run, ActiveTest: &contract.TestRecord{TestId: testID, StopCommandId: stopID, Stage: "running"}}
+	session.rememberStopLocked(*session.snapshot.ActiveTest)
+	owner := &Owner{session: session, status: contract.DesktopStatus{Status: contract.DesktopStatusStatusReady}}
+	done := make(chan error, 1)
+	go func() {
+		_, err := owner.Test(context.Background(), testID.String())
+		done <- err
+	}()
+	<-entered
+	session.mu.Lock()
+	session.snapshot.ActiveTest.Stage = "finished"
+	session.snapshot.ActiveTest.SaveStatus = "pending"
+	session.rememberStopLocked(*session.snapshot.ActiveTest)
+	session.mu.Unlock()
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	session.close()
+	if err := session.shutdown(context.Background()); err != nil {
+		t.Fatalf("saved record was lost after the same test finished: %v", err)
+	}
+}
+
+func TestOwnerHistoryReadDoesNotReplaceCurrentSavedProof(t *testing.T) {
+	run, lease, currentID, currentStop, historicalID, historicalStop := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	client := &testSessionClient{test: func(_ context.Context, _ uuid.UUID, id uuid.UUID) (contract.TestRecord, error) {
+		stopID := currentStop
+		if id == historicalID {
+			stopID = historicalStop
+		}
+		return contract.TestRecord{TestId: id, StopCommandId: stopID, Stage: "finished", SaveStatus: "saved"}, nil
+	}}
+	session := newDemoSession(context.Background(), client, uuid.New(), run)
+	defer session.close()
+	session.leaseID, session.leaseConfirmed = lease, true
+	session.leaseUntil = time.Now().Add(time.Minute)
+	session.snapshot = &contract.Snapshot{BackendRunId: run, Revision: 10, ActiveTest: &contract.TestRecord{TestId: currentID, StopCommandId: currentStop, Stage: "finished", SaveStatus: "pending"}}
+	historicalCommand := uuid.New()
+	session.commands[historicalCommand] = contract.CommandStatus{CommandId: historicalCommand, TestId: &historicalID, Status: contract.CommandStatusStatusCompleted}
+	identity, err := commandIdentity("create", contract.CreateTestCommand{CommandId: historicalCommand, ExpectedRevision: 1, Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.commandPayloads[historicalCommand] = identity
+	owner := &Owner{session: session, status: contract.DesktopStatus{Status: contract.DesktopStatusStatusReady}}
+	for _, id := range []uuid.UUID{currentID, historicalID} {
+		if _, err := owner.Test(context.Background(), id.String()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	session.close()
+	if err := session.shutdown(context.Background()); err != nil {
+		t.Fatalf("history read displaced current saved proof: %v", err)
+	}
+}
+
+func TestOwnerLateHistoryReadDoesNotPreventStoppingCurrentTest(t *testing.T) {
+	run, lease, oldID, oldStop, currentID, currentStop := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	entered, release := make(chan struct{}), make(chan struct{})
+	client := &testSessionClient{}
+	client.test = func(_ context.Context, _ uuid.UUID, id uuid.UUID) (contract.TestRecord, error) {
+		if id == oldID {
+			close(entered)
+			<-release
+			return contract.TestRecord{TestId: oldID, StopCommandId: oldStop, Stage: "finished", SaveStatus: "saved"}, nil
+		}
+		return contract.TestRecord{TestId: currentID, StopCommandId: currentStop, Stage: "finished", SaveStatus: "saved"}, nil
+	}
+	client.snapshot = func(context.Context, uuid.UUID) (contract.Snapshot, error) {
+		return contract.Snapshot{BackendRunId: run, Revision: 22, ActiveTest: &contract.TestRecord{TestId: currentID, StopCommandId: currentStop, Stage: "finished", SaveStatus: "pending"}}, nil
+	}
+	client.lookup = func(context.Context, uuid.UUID, uuid.UUID) (contract.CommandStatus, error) {
+		return contract.CommandStatus{CommandId: currentStop, TestId: &currentID, Status: contract.CommandStatusStatusCompleted}, nil
+	}
+	stopSends := 0
+	client.stop = func(_ context.Context, gotLease, gotID uuid.UUID, cmd contract.StopTestCommand) (contract.CommandStatus, error) {
+		stopSends++
+		if gotLease != lease || gotID != currentID || cmd.CommandId != currentStop {
+			t.Error("shutdown stopped the wrong test")
+		}
+		return contract.CommandStatus{CommandId: currentStop, TestId: &currentID, Status: contract.CommandStatusStatusAccepted}, nil
+	}
+	client.release = func(context.Context, uuid.UUID) error { return nil }
+	session := newDemoSession(context.Background(), client, uuid.New(), run)
+	defer session.close()
+	session.leaseID, session.leaseConfirmed = lease, true
+	session.leaseUntil = time.Now().Add(time.Minute)
+	session.snapshot = &contract.Snapshot{BackendRunId: run, Revision: 5, ActiveTest: &contract.TestRecord{TestId: oldID, StopCommandId: oldStop, Stage: "running"}}
+	session.rememberStopLocked(*session.snapshot.ActiveTest)
+	createID := uuid.New()
+	identity, err := commandIdentity("create", contract.CreateTestCommand{CommandId: createID, ExpectedRevision: 1, Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.commands[createID] = contract.CommandStatus{CommandId: createID, TestId: &oldID, Status: contract.CommandStatusStatusCompleted}
+	session.commandPayloads[createID] = identity
+	owner := &Owner{session: session, status: contract.DesktopStatus{Status: contract.DesktopStatusStatusReady}}
+	done := make(chan error, 1)
+	go func() {
+		_, err := owner.Test(context.Background(), oldID.String())
+		done <- err
+	}()
+	<-entered
+	session.mu.Lock()
+	session.snapshot = &contract.Snapshot{BackendRunId: run, Revision: 20, ActiveTest: &contract.TestRecord{TestId: currentID, StopCommandId: currentStop, Stage: "running"}}
+	session.rememberStopLocked(*session.snapshot.ActiveTest)
+	session.mu.Unlock()
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if session.savedTests[oldID] != oldStop {
+		t.Fatal("late saved record was not retained for the tracked historical create")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := session.shutdown(ctx); err != nil || stopSends != 1 {
+		t.Fatalf("current test was not stopped after late history read: err=%v sends=%d", err, stopSends)
+	}
+}
+
+func TestDemoSessionRetainsUncoveredCreateAndReservesStop(t *testing.T) {
+	run, lease, testID, createID, stopID := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	client := &testSessionClient{}
+	stopSends := 0
+	client.stop = func(_ context.Context, gotLease, gotTest uuid.UUID, cmd contract.StopTestCommand) (contract.CommandStatus, error) {
+		stopSends++
+		if gotLease != lease || gotTest != testID || cmd.CommandId != stopID {
+			t.Error("stop used incorrect identifiers")
+		}
+		return contract.CommandStatus{CommandId: stopID, TestId: &testID, Status: contract.CommandStatusStatusAccepted}, nil
+	}
+	session := newDemoSession(context.Background(), client, uuid.New(), run)
+	defer session.close()
+	identity, err := commandIdentity("create", contract.CreateTestCommand{CommandId: createID, ExpectedRevision: 5, Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.leaseID, session.leaseConfirmed = lease, true
+	session.leaseUntil = time.Now().Add(time.Minute)
+	session.lastUI, session.lastProbe = time.Now(), time.Now()
+	session.streamActive = true
+	session.streamDone = make(chan struct{})
+	session.stream = &testSessionStream{events: make(chan struct{}, 1), done: make(chan struct{})}
+	session.snapshot = &contract.Snapshot{BackendRunId: run, Revision: 5}
+	session.commands[createID] = contract.CommandStatus{CommandId: createID, TestId: &testID, Status: contract.CommandStatusStatusCompleted}
+	session.commandPayloads[createID] = identity
+	for range 63 {
+		id := uuid.New()
+		session.commands[id] = contract.CommandStatus{CommandId: id, Status: contract.CommandStatusStatusUnknown}
+		session.commandPayloads[id] = "start:pending"
+	}
+	sent := false
+	_, err = session.command(context.Background(), uuid.New(), "start:new", false, func(context.Context, uuid.UUID) (contract.CommandStatus, error) {
+		sent = true
+		return contract.CommandStatus{}, nil
+	})
+	if !errors.Is(err, errCommandNotSent) || sent || len(session.commands) != 64 || session.commandPayloads[createID] != identity {
+		t.Fatalf("uncovered create was evicted or ordinary command admitted: %v", err)
+	}
+	session.rememberStopLocked(contract.TestRecord{TestId: testID, StopCommandId: stopID, Stage: "preparing"})
+	owner := &Owner{session: session, status: contract.DesktopStatus{Status: contract.DesktopStatusStatusReady}}
+	status, err := owner.StopTest(context.Background(), testID.String(), contract.StopTestCommand{CommandId: stopID})
+	if err != nil || status.Status != contract.CommandStatusStatusAccepted || stopSends != 1 || len(session.commands) != 65 || session.commandPayloads[createID] != identity {
+		t.Fatalf("reserved stop was not admitted: status=%+v err=%v sends=%d", status, err, stopSends)
+	}
+}
+
+func TestDemoSessionShutdownRechecksCreateAfterPendingLookup(t *testing.T) {
+	run, lease, testID, commandID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	client := &testSessionClient{}
+	client.snapshot = func(context.Context, uuid.UUID) (contract.Snapshot, error) {
+		return contract.Snapshot{BackendRunId: run, Revision: 5}, nil
+	}
+	client.lookup = func(context.Context, uuid.UUID, uuid.UUID) (contract.CommandStatus, error) {
+		return contract.CommandStatus{CommandId: commandID, TestId: &testID, Status: contract.CommandStatusStatusCompleted}, nil
+	}
+	client.release = func(context.Context, uuid.UUID) error { return nil }
+	session := newDemoSession(context.Background(), client, uuid.New(), run)
+	defer session.close()
+	identity, err := commandIdentity("create", contract.CreateTestCommand{CommandId: commandID, ExpectedRevision: 5, Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.leaseID = lease
+	session.commands[commandID] = contract.CommandStatus{CommandId: commandID, Status: contract.CommandStatusStatusUnknown}
+	session.commandPayloads[commandID] = identity
+	if err := session.shutdown(context.Background()); !errors.Is(err, ErrSessionShutdownUnconfirmed) {
+		t.Fatalf("old snapshot was accepted after create lookup: %v", err)
+	}
+}
+
+func TestDemoSessionShutdownRequiresStopConfirmationForFinishedTest(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		status    contract.CommandStatusStatus
+		lookupErr error
+		cached    bool
+		wantErr   bool
+	}{
+		{name: "unknown", status: contract.CommandStatusStatusUnknown, wantErr: true},
+		{name: "accepted", status: contract.CommandStatusStatusAccepted, wantErr: true},
+		{name: "failed", status: contract.CommandStatusStatusFailed, wantErr: true},
+		{name: "rejected", status: contract.CommandStatusStatusRejected, wantErr: true},
+		{name: "cached failure", status: contract.CommandStatusStatusFailed, cached: true, wantErr: true},
+		{name: "lookup failed", lookupErr: errors.New("unavailable"), wantErr: true},
+		{name: "completed", status: contract.CommandStatusStatusCompleted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run, lease, testID, stopID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+			client := &testSessionClient{}
+			client.snapshot = func(context.Context, uuid.UUID) (contract.Snapshot, error) {
+				return contract.Snapshot{BackendRunId: run, ActiveTest: &contract.TestRecord{TestId: testID, StopCommandId: stopID, Stage: "finished", SaveStatus: "saved"}}, nil
+			}
+			client.lookup = func(context.Context, uuid.UUID, uuid.UUID) (contract.CommandStatus, error) {
+				return contract.CommandStatus{CommandId: stopID, Status: tc.status}, tc.lookupErr
+			}
+			client.release = func(context.Context, uuid.UUID) error { return nil }
+			session := newDemoSession(context.Background(), client, uuid.New(), run)
+			defer session.close()
+			session.leaseID = lease
+			initialStatus := contract.CommandStatusStatusUnknown
+			if tc.cached {
+				initialStatus = tc.status
+			}
+			session.commands[stopID] = contract.CommandStatus{CommandId: stopID, Status: initialStatus}
+			err := session.shutdown(context.Background())
+			if errors.Is(err, ErrSessionShutdownUnconfirmed) != tc.wantErr {
+				t.Fatalf("shutdown outcome: %v; want uncertainty=%v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestDemoSessionShutdownWithoutLeaseReportsRejectedStop(t *testing.T) {
+	for _, closed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("closed=%v", closed), func(t *testing.T) {
+			run, testID, stopID := uuid.New(), uuid.New(), uuid.New()
+			session := newDemoSession(context.Background(), &testSessionClient{}, uuid.New(), run)
+			defer session.close()
+			session.snapshot = &contract.Snapshot{BackendRunId: run, ActiveTest: &contract.TestRecord{TestId: testID, StopCommandId: stopID, Stage: "finished", SaveStatus: "saved"}}
+			session.commands[stopID] = contract.CommandStatus{CommandId: stopID, Status: contract.CommandStatusStatusRejected}
+			if closed {
+				session.close()
+			}
+			if err := session.shutdown(context.Background()); !errors.Is(err, ErrSessionShutdownUnconfirmed) {
+				t.Fatalf("rejected stop was reported as confirmed: %v", err)
+			}
+		})
+	}
+}
+
+func TestDemoSessionShutdownPreservesConcurrentStopConfirmation(t *testing.T) {
+	for _, lookupFails := range []bool{false, true} {
+		t.Run(fmt.Sprintf("lookupFails=%v", lookupFails), func(t *testing.T) {
+			run, lease, testID, stopID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+			entered, release := make(chan struct{}), make(chan struct{})
+			client := &testSessionClient{}
+			client.snapshot = func(context.Context, uuid.UUID) (contract.Snapshot, error) {
+				return contract.Snapshot{BackendRunId: run, ActiveTest: &contract.TestRecord{TestId: testID, StopCommandId: stopID, Stage: "finished", SaveStatus: "saved"}}, nil
+			}
+			client.lookup = func(context.Context, uuid.UUID, uuid.UUID) (contract.CommandStatus, error) {
+				close(entered)
+				<-release
+				if lookupFails {
+					return contract.CommandStatus{}, errors.New("unavailable")
+				}
+				return contract.CommandStatus{CommandId: stopID, Status: contract.CommandStatusStatusAccepted}, nil
+			}
+			client.release = func(context.Context, uuid.UUID) error { return nil }
+			session := newDemoSession(context.Background(), client, uuid.New(), run)
+			defer session.close()
+			session.leaseID = lease
+			session.commands[stopID] = contract.CommandStatus{CommandId: stopID, Status: contract.CommandStatusStatusAccepted}
+			done := make(chan error, 1)
+			go func() { done <- session.shutdown(context.Background()) }()
+			<-entered
+			session.mu.Lock()
+			session.commands[stopID] = contract.CommandStatus{CommandId: stopID, Status: contract.CommandStatusStatusCompleted}
+			session.mu.Unlock()
+			close(release)
+			if err := <-done; err != nil {
+				t.Fatalf("confirmed stop was reported as uncertain: %v", err)
+			}
+		})
+	}
+}
+
+func TestDemoSessionShutdownResolvesInFlightStopAfterRecordFinishes(t *testing.T) {
+	run, lease, testID, stopID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	client := &testSessionClient{}
+	client.snapshot = func(context.Context, uuid.UUID) (contract.Snapshot, error) {
+		return contract.Snapshot{BackendRunId: run, ActiveTest: &contract.TestRecord{TestId: testID, StopCommandId: stopID, Stage: "finished", SaveStatus: "saved"}}, nil
+	}
+	reads := 0
+	client.lookup = func(_ context.Context, _ uuid.UUID, gotID uuid.UUID) (contract.CommandStatus, error) {
+		reads++
+		if gotID != stopID {
+			t.Error("looked up the wrong stop")
+		}
+		return contract.CommandStatus{CommandId: stopID, TestId: &testID, Status: contract.CommandStatusStatusCompleted}, nil
+	}
+	client.release = func(context.Context, uuid.UUID) error { return nil }
+	session := newDemoSession(context.Background(), client, uuid.New(), run)
+	defer session.close()
+	session.leaseID = lease
+	identity, err := commandIdentity("stop:"+testID.String(), contract.StopTestCommand{CommandId: stopID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.commands[stopID] = contract.CommandStatus{CommandId: stopID, TestId: &testID, Status: contract.CommandStatusStatusUnknown}
+	session.commandPayloads[stopID] = identity
+	session.inFlight[stopID] = true
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := session.shutdown(ctx); err != nil || reads != 1 {
+		t.Fatalf("completed in-flight stop was not resolved by reading its status: err=%v reads=%d", err, reads)
+	}
+}
+
+func TestDemoSessionShutdownDoesNotResolveDifferentInFlightCommandAsStop(t *testing.T) {
+	run, lease, testID, stopID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	client := &testSessionClient{}
+	client.snapshot = func(context.Context, uuid.UUID) (contract.Snapshot, error) {
+		return contract.Snapshot{BackendRunId: run, ActiveTest: &contract.TestRecord{TestId: testID, StopCommandId: stopID, Stage: "finished", SaveStatus: "saved"}}, nil
+	}
+	reads := 0
+	client.lookup = func(context.Context, uuid.UUID, uuid.UUID) (contract.CommandStatus, error) {
+		reads++
+		return contract.CommandStatus{CommandId: stopID, Status: contract.CommandStatusStatusCompleted}, nil
+	}
+	client.release = func(context.Context, uuid.UUID) error { return nil }
+	session := newDemoSession(context.Background(), client, uuid.New(), run)
+	defer session.close()
+	session.leaseID = lease
+	session.commands[stopID] = contract.CommandStatus{CommandId: stopID, Status: contract.CommandStatusStatusUnknown}
+	session.commandPayloads[stopID] = "start:different"
+	session.inFlight[stopID] = true
+	if err := session.shutdown(context.Background()); !errors.Is(err, ErrSessionShutdownUnconfirmed) || reads != 0 {
+		t.Fatalf("different command was treated as stop: err=%v reads=%d", err, reads)
+	}
+}
+
+func TestDemoSessionShutdownResolvesStopBeforeRecordFinishes(t *testing.T) {
+	for _, inFlight := range []bool{false, true} {
+		t.Run(fmt.Sprintf("inFlight=%v", inFlight), func(t *testing.T) {
+			run, lease, testID, stopID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+			client := &testSessionClient{}
+			client.snapshot = func(context.Context, uuid.UUID) (contract.Snapshot, error) {
+				return contract.Snapshot{BackendRunId: run, ActiveTest: &contract.TestRecord{TestId: testID, StopCommandId: stopID, Stage: "running"}}, nil
+			}
+			client.lookup = func(context.Context, uuid.UUID, uuid.UUID) (contract.CommandStatus, error) {
+				if !inFlight {
+					return contract.CommandStatus{}, errors.New("unavailable")
+				}
+				return contract.CommandStatus{CommandId: stopID, Status: contract.CommandStatusStatusCompleted}, nil
+			}
+			client.test = func(context.Context, uuid.UUID, uuid.UUID) (contract.TestRecord, error) {
+				return contract.TestRecord{TestId: testID, Stage: "finished", SaveStatus: "saved"}, nil
+			}
+			client.release = func(context.Context, uuid.UUID) error { return nil }
+			session := newDemoSession(context.Background(), client, uuid.New(), run)
+			defer session.close()
+			session.leaseID = lease
+			status := contract.CommandStatusStatusCompleted
+			if inFlight {
+				status = contract.CommandStatusStatusAccepted
+				session.inFlight[stopID] = true
+			}
+			identity, err := commandIdentity("stop:"+testID.String(), contract.StopTestCommand{CommandId: stopID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.commands[stopID] = contract.CommandStatus{CommandId: stopID, Status: status}
+			session.commandPayloads[stopID] = identity
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if err := session.shutdown(ctx); err != nil {
+				t.Fatalf("confirmed stop and saved record were reported as uncertain: %v", err)
+			}
+		})
+	}
 }
 
 func TestDemoSessionShutdownSendsStopBeforeBlockedSnapshot(t *testing.T) {

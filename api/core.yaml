@@ -346,12 +346,15 @@ components:
     ConnectionState:
       type: object
       additionalProperties: false
-      required: [hostRunId, revision, status, linkValid, streamGeneration]
+      required: [hostRunId, revision, status, linkValid, leaseAcquireUnknown, streamGeneration]
       properties:
         hostRunId: { type: string, format: uuid }
         revision: { type: integer, format: int64, minimum: 0 }
         status: { type: string, enum: [disconnected, recovering, live] }
         linkValid: { type: boolean }
+        leaseAcquireUnknown:
+          type: boolean
+          description: Исход получения права UI неизвестен; повторное получение в этой сессии запрещено.
         streamGeneration: { type: integer, format: int64, minimum: 0 }
     DesktopStatus:
       type: object

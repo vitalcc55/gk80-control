@@ -1,16 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type {
   AuditPage,
   MeasurementPage,
   TestList,
   TestRecord,
 } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
-import {
-  Audit,
-  ListTests,
-  Measurements,
-  Test,
-} from '../generated/wails/github.com/vitalcc55/gk80-control/internal/desktop/service';
+import type { DemoService } from './demo-service';
 import { outcomeLabel, qualityLabel, saveLabel } from './display';
 
 export function History({
@@ -20,6 +15,7 @@ export function History({
   disabled,
   available,
   draftAvailable,
+  service,
 }: {
   onNew: () => void;
   onCopy: (parameters: TestRecord['parameters']) => void;
@@ -27,6 +23,7 @@ export function History({
   disabled: boolean;
   available: boolean;
   draftAvailable: boolean;
+  service: DemoService;
 }) {
   const [list, setList] = useState<TestList | null>(null);
   const [selected, setSelected] = useState<TestRecord | null>(null);
@@ -39,11 +36,24 @@ export function History({
   const measurementsGeneration = useRef(0);
   const auditGeneration = useRef(0);
   const listReady = useRef(false);
+  const currentService = useRef(service);
+  useLayoutEffect(() => {
+    currentService.current = service;
+  }, [service]);
+
+  useEffect(
+    () => () => {
+      selectedGeneration.current += 1;
+      measurementsGeneration.current += 1;
+      auditGeneration.current += 1;
+    },
+    [],
+  );
 
   const load = useCallback(async (after?: string) => {
     const generation = ++listGeneration.current;
     try {
-      const page = await ListTests({ limit: 100, after: after ?? null });
+      const page = await currentService.current.listTests({ limit: 100, after: after ?? null });
       if (generation !== listGeneration.current) return;
       listReady.current = true;
       setList(page);
@@ -59,13 +69,6 @@ export function History({
       listGeneration.current += 1;
     };
   }, [load, available]);
-  useEffect(
-    () => () => {
-      selectedGeneration.current += 1;
-    },
-    [],
-  );
-
   async function open(testId: string) {
     const generation = ++selectedGeneration.current;
     measurementsGeneration.current += 1;
@@ -75,11 +78,11 @@ export function History({
     setAudit(null);
     setError('');
     try {
-      const record = await Test(testId);
+      const record = await currentService.current.test(testId);
       if (generation !== selectedGeneration.current) return;
       const [measurementPage, auditPage] = await Promise.all([
-        Measurements(testId, 0, 100),
-        Audit(testId, 0, 100),
+        currentService.current.measurements(testId, 0, 100),
+        currentService.current.audit(testId, 0, 100),
       ]);
       if (generation !== selectedGeneration.current) return;
       setSelected(record);
@@ -95,7 +98,11 @@ export function History({
     const generation = selectedGeneration.current;
     const request = ++measurementsGeneration.current;
     try {
-      const page = await Measurements(selected.testId, measurements.nextAfter, 100);
+      const page = await currentService.current.measurements(
+        selected.testId,
+        measurements.nextAfter,
+        100,
+      );
       if (generation === selectedGeneration.current && request === measurementsGeneration.current)
         setMeasurements(page);
     } catch {
@@ -108,7 +115,7 @@ export function History({
     const generation = selectedGeneration.current;
     const request = ++auditGeneration.current;
     try {
-      const page = await Audit(selected.testId, audit.nextAfter, 100);
+      const page = await currentService.current.audit(selected.testId, audit.nextAfter, 100);
       if (generation === selectedGeneration.current && request === auditGeneration.current)
         setAudit(page);
     } catch {

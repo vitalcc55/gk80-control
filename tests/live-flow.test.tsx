@@ -1,10 +1,12 @@
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { StrictMode } from 'react';
+import { type ComponentProps, StrictMode } from 'react';
 import { beforeEach, expect, it, vi } from 'vitest';
 import type { DesktopBridge, SessionBridge } from '../src/desktop/bridge';
-import { DesktopApp } from '../src/desktop/DesktopApp';
-import { LiveApp } from '../src/desktop/LiveApp';
+import { DesktopApp as RealDesktopApp } from '../src/desktop/DesktopApp';
+import { History } from '../src/desktop/History';
+import { LiveApp as RealLiveApp } from '../src/desktop/LiveApp';
+import { desktopDemoService } from '../src/desktop/wails-bridge';
 import {
   CommandStatusStatus,
   ConnectionStateStatus,
@@ -15,9 +17,11 @@ import {
   MeasurementQuantity,
   MeasurementSource,
   MeasurementUnit,
+  type Readiness,
   ReadinessCheckSource,
   type SessionView,
   type Snapshot,
+  type TestList,
   TestParametersDirection,
   TestRecordDataQuality,
   TestRecordOutcome,
@@ -38,6 +42,17 @@ const api = vi.hoisted(() => ({
   measurements: vi.fn(),
   audit: vi.fn(),
 }));
+function DesktopApp(props: ComponentProps<typeof RealDesktopApp>) {
+  return <RealDesktopApp {...props} service={props.service ?? desktopDemoService} />;
+}
+
+function LiveApp(
+  props: Omit<ComponentProps<typeof RealLiveApp>, 'service'> & {
+    service?: ComponentProps<typeof RealLiveApp>['service'];
+  },
+) {
+  return <RealLiveApp {...props} service={props.service ?? desktopDemoService} />;
+}
 vi.mock('../src/components/MeasurementChart', () => ({
   MeasurementChart: () => <div role="img" aria-label="График показаний симулятора" />,
 }));
@@ -119,6 +134,7 @@ it('shows diagnostics already degraded when the live session opens', async () =>
         revision: 1,
         status: ConnectionStateStatus.Live,
         linkValid: true,
+        leaseAcquireUnknown: false,
         streamGeneration: 0,
       },
       snapshot: {
@@ -167,6 +183,7 @@ it('preserves the live form when diagnostics degrade', async () => {
         revision: 1,
         status: ConnectionStateStatus.Live,
         linkValid: true,
+        leaseAcquireUnknown: false,
         streamGeneration: 0,
       },
       snapshot: {
@@ -223,6 +240,7 @@ it('keeps stop available when diagnostics degrade during a live test', async () 
         revision: 1,
         status: ConnectionStateStatus.Live,
         linkValid: true,
+        leaseAcquireUnknown: false,
         streamGeneration: 0,
       },
       snapshot: {
@@ -255,6 +273,262 @@ it('keeps stop available when diagnostics degrade during a live test', async () 
   expect(api.start).not.toHaveBeenCalled();
 });
 
+it('finishes a pending history list and uses the replacement for later reads', async () => {
+  let finish: (value: TestList) => void = () => {};
+  const late = new Promise<TestList>((resolve) => {
+    finish = resolve;
+  });
+  const listTests = vi.fn().mockReturnValue(late);
+  const service = { ...desktopDemoService, listTests };
+  const nextListTests = vi.fn().mockResolvedValue({ items: [], nextAfter: null });
+  const nextService = { ...desktopDemoService, listTests: nextListTests };
+  const session: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 0,
+        lastEventSequence: 0,
+        activeTest: null,
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  const view = render(
+    <LiveApp session={session} service={service} hostRunId={host} backendRunId={backend} />,
+  );
+  await waitFor(() => expect(listTests).toHaveBeenCalledOnce());
+  view.rerender(
+    <LiveApp session={session} service={nextService} hostRunId={host} backendRunId={backend} />,
+  );
+  await act(async () => {
+    finish({ items: [record], nextAfter: null });
+    await late;
+  });
+  expect(await screen.findByRole('button', { name: /К-1/ })).toBeTruthy();
+  expect(nextListTests).not.toHaveBeenCalled();
+  await userEvent.setup().click(screen.getByRole('button', { name: 'К началу списка' }));
+  await waitFor(() => expect(nextListTests).toHaveBeenCalledOnce());
+  expect(api.list).not.toHaveBeenCalled();
+});
+
+it('keeps a requested history page when the same session replaces its service wrapper', async () => {
+  let finish: (value: TestList) => void = () => {};
+  const response = new Promise<TestList>((resolve) => {
+    finish = resolve;
+  });
+  const listTests = vi
+    .fn()
+    .mockResolvedValueOnce({ items: [record], nextAfter: testId })
+    .mockReturnValueOnce(response);
+  const nextListTests = vi.fn();
+  const service = { ...desktopDemoService, listTests };
+  const replacement = { ...desktopDemoService, listTests: nextListTests };
+  const callbacks = { onNew: vi.fn(), onCopy: vi.fn(), onDiscard: vi.fn() };
+  const view = render(
+    <History {...callbacks} service={service} available disabled={false} draftAvailable={false} />,
+  );
+  await userEvent.setup().click(await screen.findByRole('button', { name: 'Следующая страница' }));
+  view.rerender(
+    <History
+      {...callbacks}
+      service={replacement}
+      available
+      disabled={false}
+      draftAvailable={false}
+    />,
+  );
+  await act(async () => {
+    finish({
+      items: [{ ...record, parameters: { ...record.parameters, valve: 'К-2' } }],
+      nextAfter: null,
+    });
+    await response;
+  });
+  expect(await screen.findByRole('button', { name: /К-2/ })).toBeTruthy();
+  expect(listTests).toHaveBeenCalledWith({ limit: 100, after: testId });
+  expect(nextListTests).not.toHaveBeenCalled();
+});
+
+it('finishes opening history when the same session replaces its service wrapper', async () => {
+  let finish: (value: typeof record) => void = () => {};
+  const response = new Promise<typeof record>((resolve) => {
+    finish = resolve;
+  });
+  api.list.mockResolvedValue({ items: [record], nextAfter: null });
+  api.test.mockReturnValue(response);
+  const oldMeasurements = vi.fn().mockRejectedValue(new Error('old transport unavailable'));
+  const oldAudit = vi.fn().mockRejectedValue(new Error('old transport unavailable'));
+  const measurements = vi.fn().mockResolvedValue({ items: [], nextAfter: null });
+  const audit = vi.fn().mockResolvedValue({ items: [], nextAfter: null });
+  const service = { ...desktopDemoService, measurements: oldMeasurements, audit: oldAudit };
+  const replacement = { ...desktopDemoService, measurements, audit };
+  const callbacks = { onNew: vi.fn(), onCopy: vi.fn(), onDiscard: vi.fn() };
+  const view = render(
+    <History {...callbacks} service={service} available disabled={false} draftAvailable={false} />,
+  );
+  await userEvent.setup().click(await screen.findByRole('button', { name: /К-1/ }));
+  view.rerender(
+    <History
+      {...callbacks}
+      service={replacement}
+      available
+      disabled={false}
+      draftAvailable={false}
+    />,
+  );
+  await act(async () => {
+    finish(record);
+    await response;
+  });
+  expect(await screen.findByRole('heading', { name: 'Сохранённая запись' })).toBeTruthy();
+  expect(measurements).toHaveBeenCalledOnce();
+  expect(audit).toHaveBeenCalledOnce();
+  expect(oldMeasurements).not.toHaveBeenCalled();
+  expect(oldAudit).not.toHaveBeenCalled();
+});
+
+it('does not reuse a pending readiness response after the core identity changes', async () => {
+  let finish: (value: Readiness) => void = () => {};
+  const delayed = new Promise<Readiness>((resolve) => {
+    finish = resolve;
+  });
+  const readiness = vi
+    .fn()
+    .mockReturnValueOnce(delayed)
+    .mockResolvedValue({
+      testId,
+      revision: 1,
+      ready: false,
+      checks: [
+        {
+          code: 'demo',
+          label: 'Новая проверка',
+          source: ReadinessCheckSource.ReadinessCheckSourceSimulator,
+          ready: false,
+        },
+      ],
+    });
+  const service = { ...desktopDemoService, readiness };
+  const makeSession = (hostRunId: string, backendRunId: string): SessionBridge => ({
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId,
+        revision: 1,
+        lastEventSequence: 0,
+        activeTest: record,
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  });
+  const replacementHost = '77777777-7777-4777-8777-777777777777';
+  const replacementBackend = '88888888-8888-4888-8888-888888888888';
+  const first = makeSession(host, backend);
+  const second = makeSession(replacementHost, replacementBackend);
+  const view = render(
+    <LiveApp session={first} service={service} hostRunId={host} backendRunId={backend} />,
+  );
+  await waitFor(() => expect(readiness).toHaveBeenCalledTimes(1));
+  view.rerender(
+    <LiveApp
+      session={second}
+      service={service}
+      hostRunId={replacementHost}
+      backendRunId={replacementBackend}
+    />,
+  );
+  expect(await screen.findByText('Новая проверка')).toBeTruthy();
+  expect(readiness).toHaveBeenCalledTimes(2);
+  await act(async () => {
+    finish({
+      testId,
+      revision: 1,
+      ready: true,
+      checks: [
+        {
+          code: 'demo',
+          label: 'Старая проверка',
+          source: ReadinessCheckSource.ReadinessCheckSourceSimulator,
+          ready: true,
+        },
+      ],
+    });
+    await delayed;
+  });
+  expect(screen.queryByText('Старая проверка')).toBeNull();
+});
+
+it('preserves the unsaved form when the service wrapper changes', async () => {
+  const session: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 0,
+        lastEventSequence: 0,
+        activeTest: null,
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.list.mockResolvedValue({ items: [], nextAfter: null });
+  const service = { ...desktopDemoService };
+  const nextService = { ...desktopDemoService };
+  const view = render(
+    <LiveApp session={session} service={service} hostRunId={host} backendRunId={backend} />,
+  );
+  const user = userEvent.setup();
+  const create = await screen.findByRole('button', { name: 'Новое испытание' });
+  await waitFor(() => expect(create.hasAttribute('disabled')).toBe(false));
+  await user.click(create);
+  await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'Клапан');
+  view.rerender(
+    <LiveApp session={session} service={nextService} hostRunId={host} backendRunId={backend} />,
+  );
+  const input = await screen.findByLabelText('Обозначение или наименование клапана');
+  expect((input as HTMLInputElement).value).toBe('Клапан');
+});
+
 it('uses core confirmation and measurements for the operator path', async () => {
   let snapshot: Snapshot = {
     apiVersion: 'v1',
@@ -283,6 +557,7 @@ it('uses core confirmation and measurements for the operator path', async () => 
         revision: ++hostRevision,
         status: ConnectionStateStatus.Live,
         linkValid: true,
+        leaseAcquireUnknown: false,
         streamGeneration: 0,
       },
       snapshot,
@@ -427,6 +702,7 @@ it('does not send another creation after an unknown response and remount', async
         revision: 1,
         status: ConnectionStateStatus.Live,
         linkValid: true,
+        leaseAcquireUnknown: false,
         streamGeneration: 0,
       },
       snapshot,
@@ -455,7 +731,7 @@ it('does not send another creation after an unknown response and remount', async
   expect(screen.getByText(/Исход команды:/)).toBeTruthy();
 }, 10000);
 
-it('allows a new attempt only when the host confirms the first was not sent', async () => {
+it('keeps a confirmed not-sent result when the service wrapper changes', async () => {
   const snapshot: Snapshot = {
     apiVersion: 'v1',
     backendRunId: backend,
@@ -474,6 +750,7 @@ it('allows a new attempt only when the host confirms the first was not sent', as
         revision: 1,
         status: ConnectionStateStatus.Live,
         linkValid: true,
+        leaseAcquireUnknown: false,
         streamGeneration: 0,
       },
       snapshot,
@@ -491,7 +768,11 @@ it('allows a new attempt only when the host confirms the first was not sent', as
     commandId: id,
     status: CommandStatusStatus.CommandStatusStatusUnknown,
   }));
-  render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  const service = { ...desktopDemoService };
+  const replacement = { ...desktopDemoService };
+  const view = render(
+    <LiveApp session={bridge} service={service} hostRunId={host} backendRunId={backend} />,
+  );
   const user = userEvent.setup();
   const newTest = await screen.findByRole('button', { name: 'Новое испытание' });
   await waitFor(() => expect(newTest.hasAttribute('disabled')).toBe(false));
@@ -501,6 +782,9 @@ it('allows a new attempt only when the host confirms the first was not sent', as
   await user.type(screen.getByLabelText(/производителя, Па/), '10000');
   await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
   await screen.findByText(/Исход команды: unknown/);
+  view.rerender(
+    <LiveApp session={bridge} service={replacement} hostRunId={host} backendRunId={backend} />,
+  );
   await act(async () => {
     finish({ delivery: 'notSent', command: null });
     await reply;
@@ -536,6 +820,7 @@ it('allows stopping while another command is unresolved and reports a confirmed 
         revision: 1,
         status: ConnectionStateStatus.Live,
         linkValid: true,
+        leaseAcquireUnknown: false,
         streamGeneration: 0,
       },
       snapshot,
@@ -584,6 +869,7 @@ it('offers the reserved stop after remount even when heartbeat cannot be confirm
         revision: 2,
         status: ConnectionStateStatus.Recovering,
         linkValid: true,
+        leaseAcquireUnknown: false,
         streamGeneration: 0,
       },
       snapshot,
@@ -596,6 +882,7 @@ it('offers the reserved stop after remount even when heartbeat cannot be confirm
         revision: 2,
         status: ConnectionStateStatus.Recovering,
         linkValid: true,
+        leaseAcquireUnknown: false,
         streamGeneration: 0,
       },
       snapshot,
@@ -636,6 +923,7 @@ it('continues checking Stop after the interrupted result and keeps saving separa
         revision: ++revision,
         status: ConnectionStateStatus.Live,
         linkValid: true,
+        leaseAcquireUnknown: false,
         streamGeneration: 0,
       },
       snapshot,
@@ -701,6 +989,7 @@ it('does not let an older confirmed view hide a newer active test from fallback'
         revision: 2,
         status: ConnectionStateStatus.Recovering,
         linkValid: true,
+        leaseAcquireUnknown: false,
         streamGeneration: 0,
       },
       snapshot: newer,
@@ -717,6 +1006,7 @@ it('does not let an older confirmed view hide a newer active test from fallback'
         revision: 1,
         status: ConnectionStateStatus.Live,
         linkValid: true,
+        leaseAcquireUnknown: false,
         streamGeneration: 0,
       },
       snapshot: older,
@@ -761,6 +1051,7 @@ it('keeps an earlier unknown Stop observable when stopping a later test', async 
         revision: 5,
         status: ConnectionStateStatus.Live,
         linkValid: true,
+        leaseAcquireUnknown: false,
         streamGeneration: 0,
       },
       snapshot,
@@ -810,6 +1101,7 @@ it('keeps Stop available and reserves its identifier when the command list is fu
         revision: 1,
         status: ConnectionStateStatus.Live,
         linkValid: true,
+        leaseAcquireUnknown: false,
         streamGeneration: 0,
       },
       snapshot,
@@ -854,6 +1146,7 @@ it('keeps an unpersisted Stop observable across remount when session storage fai
         revision: 1,
         status: ConnectionStateStatus.Live,
         linkValid: true,
+        leaseAcquireUnknown: false,
         streamGeneration: 0,
       },
       snapshot,
@@ -924,6 +1217,7 @@ it('merges the previously unread command list before storing an emergency Stop',
         revision: 1,
         status: ConnectionStateStatus.Live,
         linkValid: true,
+        leaseAcquireUnknown: false,
         streamGeneration: 0,
       },
       snapshot,
@@ -986,6 +1280,7 @@ it('can retry reading an unavailable command list without sending a command', as
         revision: 1,
         status: ConnectionStateStatus.Live,
         linkValid: true,
+        leaseAcquireUnknown: false,
         streamGeneration: 0,
       },
       snapshot,

@@ -1,5 +1,3 @@
-import { Events } from '@wailsio/runtime';
-import '../generated/wails/events/index';
 import type {
   ConnectionNotice,
   ConnectionState,
@@ -7,20 +5,6 @@ import type {
   DesktopStatus,
   SessionView,
 } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
-import {
-  Status,
-  Verify,
-} from '../generated/wails/github.com/vitalcc55/gk80-control/internal/desktop/bootstrapservice';
-import {
-  AcknowledgeConnection,
-  AcknowledgeCoreEvent,
-  BeginSessionCheck,
-  EnableConnectionEvents,
-  KeepAlive,
-  ObserveSession,
-  SessionView as ReadSessionView,
-  WaitConnection,
-} from '../generated/wails/github.com/vitalcc55/gk80-control/internal/desktop/service';
 
 export interface DesktopBridge {
   status(): Promise<DesktopStatus>;
@@ -41,19 +25,6 @@ export interface SessionBridge {
   waitConnection?(after: number, afterSequence: number): Promise<ConnectionNotice>;
 }
 
-export const sessionBridge: SessionBridge = {
-  beginSessionCheck: BeginSessionCheck,
-  keepAlive: KeepAlive,
-  sessionView: ReadSessionView,
-  observeSession: ObserveSession,
-  subscribeConnection: (callback) => Events.On('core:connection', (event) => callback(event.data)),
-  enableConnectionEvents: EnableConnectionEvents,
-  acknowledgeConnection: AcknowledgeConnection,
-  subscribeCoreEvent: (callback) => Events.On('core:event', (event) => callback(event.data)),
-  acknowledgeCoreEvent: AcknowledgeCoreEvent,
-  waitConnection: WaitConnection,
-};
-
 type SessionResult = { view: SessionView; started: number } | null;
 type SessionListener = (result: SessionResult) => void;
 type SessionCheck = {
@@ -65,7 +36,10 @@ type SessionCheck = {
 };
 const pendingSessions = new WeakMap<SessionBridge, SessionCheck>();
 type LastSessionRead = {
-  listeners: Set<(view: SessionView, started: number) => void>;
+  listeners: Set<{
+    onView: (view: SessionView, started: number) => void;
+    onStaleUnknown?: (view: SessionView) => void;
+  }>;
   inFlight: number;
   expired: Set<number>;
   timer: ReturnType<typeof setTimeout> | undefined;
@@ -80,6 +54,7 @@ const lastSessionReads = new WeakMap<SessionBridge, LastSessionRead>();
 export function readLastSession(
   bridge: SessionBridge,
   listener: (view: SessionView, started: number) => void,
+  onStaleUnknown?: (view: SessionView) => void,
 ): () => void {
   if (!bridge.observeSession) return () => {};
   let pending = lastSessionReads.get(bridge);
@@ -116,9 +91,14 @@ export function readLastSession(
         .observeSession()
         .then(
           (view) => {
-            if (attempt <= current.completed) return;
+            if (attempt <= current.completed) {
+              if (view.connection.leaseAcquireUnknown) {
+                for (const callback of current.listeners) callback.onStaleUnknown?.(view);
+              }
+              return;
+            }
             current.completed = attempt;
-            for (const callback of current.listeners) callback(view, started);
+            for (const callback of current.listeners) callback.onView(view, started);
           },
           () => {
             current.completed = Math.max(current.completed, attempt);
@@ -137,7 +117,8 @@ export function readLastSession(
     };
   }
   const current = pending;
-  current.listeners.add(listener);
+  const subscriber = onStaleUnknown ? { onView: listener, onStaleUnknown } : { onView: listener };
+  current.listeners.add(subscriber);
   if (current.inFlight < 2 && current.inFlight === current.expired.size) current.start();
   else if (!current.timer)
     current.timer = setTimeout(() => {
@@ -145,7 +126,7 @@ export function readLastSession(
       current.start();
     }, 4000);
   return () => {
-    current.listeners.delete(listener);
+    current.listeners.delete(subscriber);
     if (!current.listeners.size) {
       clearTimeout(current.timer);
       current.timer = undefined;
@@ -169,6 +150,10 @@ type EventEnable = { listeners: Set<(ready: boolean) => void>; ready: boolean };
 const enabledEvents = new WeakMap<SessionBridge, EventEnable>();
 type Watcher = {
   listeners: Set<(notice: ConnectionNotice | null) => void>;
+  hostRunId: string;
+  backendRunId: string;
+  generation: number;
+  generationInFlight: number;
   revision: number;
   sequence: number;
   inFlight: number;
@@ -179,15 +164,27 @@ type Watcher = {
 };
 const connectionWatchers = new WeakMap<SessionBridge, Watcher>();
 
-export function markSnapshotSequence(bridge: SessionBridge, sequence: number): void {
+export function markSnapshotSequence(
+  bridge: SessionBridge,
+  hostRunId: string,
+  backendRunId: string,
+  sequence: number,
+): void {
   const watcher = connectionWatchers.get(bridge);
-  if (watcher && Number.isSafeInteger(sequence) && sequence > watcher.sequence)
+  if (
+    watcher?.hostRunId === hostRunId &&
+    watcher.backendRunId === backendRunId &&
+    Number.isSafeInteger(sequence) &&
+    sequence > watcher.sequence
+  )
     watcher.sequence = sequence;
 }
 
 // One bounded wait is shared across React remounts; a failed wait never confirms freshness.
 export function watchConnection(
   bridge: SessionBridge,
+  hostRunId: string,
+  backendRunId: string,
   listener: (notice: ConnectionNotice | null) => void,
 ): () => void {
   if (!bridge.waitConnection) return () => {};
@@ -195,6 +192,10 @@ export function watchConnection(
   if (!watcher) {
     watcher = {
       listeners: new Set(),
+      hostRunId,
+      backendRunId,
+      generation: 0,
+      generationInFlight: 0,
       revision: 0,
       sequence: 0,
       inFlight: 0,
@@ -217,36 +218,61 @@ export function watchConnection(
         if (current.inFlight === 0) connectionWatchers.delete(bridge);
         return;
       }
-      if (current.inFlight >= 2) return;
+      if (current.inFlight >= 3 || current.generationInFlight >= 2) {
+        for (const callback of current.listeners) callback(null);
+        return;
+      }
       current.inFlight += 1;
+      current.generationInFlight += 1;
       const attempt = ++current.nextAttempt;
+      const generation = current.generation;
       const watchdog = setTimeout(() => {
-        if (attempt > current.lastCompleted && current.listeners.size) {
+        if (
+          generation === current.generation &&
+          attempt > current.lastCompleted &&
+          current.listeners.size
+        ) {
           for (const callback of current.listeners) callback(null);
           schedule(0);
         }
       }, 4000);
       try {
         const notice = await bridge.waitConnection(current.revision, current.sequence);
-        if (attempt < current.lastCompleted) return;
+        if (generation !== current.generation) return;
+        if (attempt < current.lastCompleted) {
+          if (
+            notice.connection.hostRunId === current.hostRunId &&
+            notice.connection.leaseAcquireUnknown
+          ) {
+            const terminal = { ...notice, event: null, gap: false, snapshotBoundary: 0 };
+            for (const callback of current.listeners) callback(terminal);
+          }
+          return;
+        }
         current.lastCompleted = attempt;
+        if (notice.connection.hostRunId !== current.hostRunId) {
+          for (const callback of current.listeners) callback(null);
+          return;
+        }
         if (Number.isSafeInteger(notice.connection.revision) && notice.connection.revision >= 0)
           current.revision = Math.max(current.revision, notice.connection.revision);
         if (
           notice.event &&
+          notice.event.backendRunId === current.backendRunId &&
           Number.isSafeInteger(notice.event.sequence) &&
           notice.event.sequence > current.sequence
         )
           current.sequence = notice.event.sequence;
         for (const callback of current.listeners) callback(notice);
       } catch {
-        if (attempt > current.lastCompleted) {
+        if (generation === current.generation && attempt > current.lastCompleted) {
           current.lastCompleted = attempt;
           for (const callback of current.listeners) callback(null);
         }
       } finally {
         clearTimeout(watchdog);
         current.inFlight -= 1;
+        if (generation === current.generation) current.generationInFlight -= 1;
         if (current.listeners.size) schedule(500);
         else if (current.inFlight === 0) connectionWatchers.delete(bridge);
       }
@@ -254,6 +280,18 @@ export function watchConnection(
     current.start = () => {
       void run();
     };
+  }
+  const changedIdentity = watcher.hostRunId !== hostRunId || watcher.backendRunId !== backendRunId;
+  if (changedIdentity) {
+    watcher.hostRunId = hostRunId;
+    watcher.backendRunId = backendRunId;
+    watcher.generation += 1;
+    watcher.generationInFlight = 0;
+    watcher.revision = 0;
+    watcher.sequence = 0;
+    watcher.lastCompleted = watcher.nextAttempt;
+    clearTimeout(watcher.timer);
+    watcher.timer = undefined;
   }
   watcher.listeners.add(listener);
   const current = watcher;
@@ -263,7 +301,7 @@ export function watchConnection(
         current.timer = undefined;
         current.start();
       },
-      current.inFlight ? 4000 : 0,
+      changedIdentity ? 0 : current.inFlight ? 4000 : 0,
     );
   return () => {
     current.listeners.delete(listener);
@@ -309,7 +347,6 @@ export function observeConnectionEvents(
     current.listeners.delete(listener);
   };
 }
-
 // Bound unresolved Wails calls, including when an earlier response never reaches the page.
 export function readSession(bridge: SessionBridge, listener: SessionListener): () => void {
   let state = pendingSessions.get(bridge);
@@ -362,9 +399,3 @@ export function readSession(bridge: SessionBridge, listener: SessionListener): (
     current.listeners.delete(listener);
   };
 }
-
-export const desktopBridge: DesktopBridge = {
-  status: Status,
-  verify: Verify,
-  subscribe: (callback) => Events.On('desktop:status', (event) => callback(event.data)),
-};

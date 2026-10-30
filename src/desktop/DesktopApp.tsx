@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DesktopStatus } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
 import type { DesktopBridge, SessionBridge } from './bridge';
+import type { DemoService } from './demo-service';
 import { LiveApp } from './LiveApp';
 import { SessionStatus } from './SessionStatus';
 
@@ -34,9 +35,11 @@ const labels = {
 export function DesktopApp({
   bridge,
   session,
+  service,
 }: {
   bridge: DesktopBridge;
   session?: SessionBridge;
+  service?: DemoService;
 }) {
   const current = useRef<ViewState>({ status: null, bridgeError: false });
   const [view, setView] = useState<ViewState>(current.current);
@@ -117,10 +120,11 @@ export function DesktopApp({
     : status
       ? labels[status.status]
       : 'Запуск ядра';
-  if (!bridgeError && status?.status === 'ready' && status.handshake && session) {
+  if (!bridgeError && status?.status === 'ready' && status.handshake && session && service) {
     return (
       <LiveApp
         session={session}
+        service={service}
         hostRunId={status.hostRunId}
         backendRunId={status.handshake.backendRunId}
         diagnosticsDegraded={status.diagnosticsDegraded}

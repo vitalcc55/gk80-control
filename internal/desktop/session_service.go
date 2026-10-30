@@ -118,6 +118,9 @@ func (o *Owner) Test(ctx context.Context, value string) (contract.TestRecord, er
 	record, err := session.client.Test(ctx, lease, id)
 	if err == nil {
 		session.mu.Lock()
+		if record.TestId == id {
+			session.rememberSavedLocked(record)
+		}
 		finishedInSnapshot := session.snapshot != nil && session.snapshot.ActiveTest != nil && session.snapshot.ActiveTest.TestId == record.TestId && session.snapshot.ActiveTest.Stage == "finished"
 		differentActive := session.snapshot != nil && session.snapshot.ActiveTest != nil && session.snapshot.ActiveTest.TestId != record.TestId && session.snapshot.ActiveTest.Stage != "finished"
 		if !finishedInSnapshot && !differentActive && (session.activeGeneration == generation || session.activeTestID == record.TestId) {
