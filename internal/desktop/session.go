@@ -116,19 +116,17 @@ func newDemoSession(parent context.Context, client sessionClient, hostID, backen
 
 // keepAlive is triggered by the mounted UI, not by a host timer or WebSocket.
 func (s *demoSession) keepAlive(ctx context.Context) error {
+	return s.keepAliveUntil(ctx, time.Time{})
+}
+
+func (s *demoSession) keepAliveUntil(ctx context.Context, admissionDeadline time.Time) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	now := time.Now()
 	s.mu.Lock()
-	if s.closed || s.closing {
+	if s.closed || s.closing || ctx.Err() != nil || (!admissionDeadline.IsZero() && !time.Now().Before(admissionDeadline)) {
 		s.mu.Unlock()
 		return errSessionUnavailable
-	}
-	s.pauseLiveLocked(now)
-	s.lastUI = now
-	if !s.recoverySince.IsZero() && now.Sub(s.recoverySince) >= sessionRecoveryLimit {
-		s.streamBroken = true
 	}
 	if s.unknownAcquire || (s.streamBroken && (s.cleanupUnknown || s.streamActive || s.leaseID == uuid.Nil)) {
 		s.mu.Unlock()
@@ -140,17 +138,29 @@ func (s *demoSession) keepAlive(ctx context.Context) error {
 	}
 	defer s.leaseGate.Unlock()
 	s.mu.Lock()
-	if s.closed || s.closing || s.unknownAcquire || (s.streamBroken && (s.cleanupUnknown || s.streamActive || s.leaseID == uuid.Nil)) {
+	started := time.Now()
+	if s.closed || s.closing || ctx.Err() != nil || (!admissionDeadline.IsZero() && !started.Before(admissionDeadline)) || s.unknownAcquire || (s.streamBroken && (s.cleanupUnknown || s.streamActive || s.leaseID == uuid.Nil)) {
+		s.mu.Unlock()
+		return errSessionUnavailable
+	}
+	s.pauseLiveLocked(started)
+	s.lastUI = started
+	if !s.recoverySince.IsZero() && started.Sub(s.recoverySince) >= sessionRecoveryLimit {
+		s.streamBroken = true
+	}
+	if s.streamBroken && (s.cleanupUnknown || s.streamActive || s.leaseID == uuid.Nil) {
 		s.mu.Unlock()
 		return errSessionUnavailable
 	}
 	lease := s.leaseID
 	broken := s.streamBroken
+	requestCtx, cancel := context.WithDeadline(ctx, started.Add(sessionRequestLimit))
 	s.mu.Unlock()
-	requestCtx, cancel := context.WithTimeout(ctx, sessionRequestLimit)
 	stop := context.AfterFunc(s.ctx, cancel)
 	defer func() { stop(); cancel() }()
-	started := time.Now()
+	if err := requestCtx.Err(); err != nil {
+		return err
+	}
 	var granted contract.UiLease
 	var err error
 	if broken {

@@ -3,6 +3,7 @@ package desktop
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -73,6 +74,58 @@ type bindingTestCore struct {
 	Core
 	calls int
 	input CreateCommandInput
+}
+
+type blockedSessionCore struct {
+	Core
+	entered chan struct{}
+	resume  chan struct{}
+}
+
+func (c *blockedSessionCore) KeepAliveUntil(context.Context, time.Time) error {
+	close(c.entered)
+	<-c.resume
+	return nil
+}
+
+func TestServiceBoundsConcurrentSessionCalls(t *testing.T) {
+	core := &blockedSessionCore{entered: make(chan struct{}), resume: make(chan struct{})}
+	service := NewService(core)
+	ticket, err := service.BeginSessionCheck()
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := service.BeginSessionCheck()
+	if err != nil || other != ticket {
+		t.Fatalf("overlapping checks replaced an unused ticket: %q %v", other, err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- service.KeepAlive(context.Background(), ticket) }()
+	<-core.entered
+	if _, err := service.SessionView(context.Background()); !errors.Is(err, errSessionBusy) {
+		t.Fatalf("concurrent call was not rejected: %v", err)
+	}
+	close(core.resume)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if err := service.KeepAlive(context.Background(), ticket); !errors.Is(err, errSessionUnavailable) {
+		t.Fatalf("used heartbeat ticket was admitted again: %v", err)
+	}
+}
+
+func TestServiceRejectsExpiredHeartbeatBeforeAdmission(t *testing.T) {
+	service := NewService(&blockedSessionCore{entered: make(chan struct{}), resume: make(chan struct{})})
+	ticket, err := service.BeginSessionCheck()
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.ticketMu.Lock()
+	service.ticketUntil = time.Now().Add(-time.Second)
+	service.ticketMu.Unlock()
+	if err := service.KeepAlive(context.Background(), ticket); !errors.Is(err, errSessionUnavailable) {
+		t.Fatalf("expired heartbeat was admitted: %v", err)
+	}
 }
 
 func (c *bindingTestCore) CreateTestInput(_ context.Context, input CreateCommandInput) (contract.CommandStatus, error) {

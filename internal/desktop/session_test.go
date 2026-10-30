@@ -3,6 +3,7 @@ package desktop
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -338,6 +339,44 @@ func TestDemoSessionDoesNotRepeatUnknownInitialLease(t *testing.T) {
 	defer client.mu.Unlock()
 	if client.acquires != 1 || session.connectionState().Status == contract.Live {
 		t.Fatalf("unknown acquisition was retried: %d", client.acquires)
+	}
+}
+
+func TestDemoSessionRejectsAdmissionExpiredWhileLocked(t *testing.T) {
+	client := &testSessionClient{}
+	session := newDemoSession(context.Background(), client, uuid.New(), uuid.New())
+	defer session.close()
+	session.mu.Lock()
+	done := make(chan error, 1)
+	deadline := time.Now().Add(25 * time.Millisecond)
+	go func() { done <- session.keepAliveUntil(context.Background(), deadline) }()
+	<-time.After(time.Until(deadline) + 10*time.Millisecond)
+	session.mu.Unlock()
+	if err := <-done; !errors.Is(err, errSessionUnavailable) {
+		t.Fatalf("expired admission: %v", err)
+	}
+	if !session.lastUI.IsZero() || client.acquires != 0 {
+		t.Fatal("expired admission changed UI freshness or requested a lease")
+	}
+}
+
+func TestDemoSessionDoesNotCutOffAdmittedLeaseAtAdmissionDeadline(t *testing.T) {
+	run := uuid.New()
+	stream := &testSessionStream{run: run, events: make(chan struct{}, 1), done: make(chan struct{})}
+	client := &testSessionClient{lease: uuid.New(), run: run, stream: stream}
+	client.acquire = func(ctx context.Context, id uuid.UUID, _ *uuid.UUID) (contract.UiLease, error) {
+		select {
+		case <-time.After(100 * time.Millisecond):
+			return contract.UiLease{ClientId: id, LeaseId: client.lease, ExpiresAt: time.Now().Add(30 * time.Second)}, nil
+		case <-ctx.Done():
+			return contract.UiLease{}, ctx.Err()
+		}
+	}
+	session := newDemoSession(context.Background(), client, uuid.New(), run)
+	stream.clientID = session.clientID
+	defer session.close()
+	if err := session.keepAliveUntil(context.Background(), time.Now().Add(50*time.Millisecond)); err != nil {
+		t.Fatalf("admitted lease was cut short: %v", err)
 	}
 }
 

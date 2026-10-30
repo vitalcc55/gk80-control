@@ -3,7 +3,10 @@ package desktop
 
 import (
 	"context"
+	"sync"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/vitalcc55/gk80-control/internal/contract"
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
@@ -13,7 +16,7 @@ type Core interface {
 	Handshake(context.Context) (contract.Handshake, error)
 	ConnectionState(context.Context) (contract.ConnectionState, error)
 	SessionView(context.Context) (contract.SessionView, error)
-	KeepAlive(context.Context) error
+	KeepAliveUntil(context.Context, time.Time) error
 	Snapshot(context.Context) (contract.Snapshot, error)
 	ListTests(context.Context, contract.ListTestsParams) (contract.TestList, error)
 	CreateTestInput(context.Context, CreateCommandInput) (contract.CommandStatus, error)
@@ -29,7 +32,11 @@ type Core interface {
 
 // Service forwards domain operations to the authenticated core client.
 type Service struct {
-	core Core
+	core        Core
+	sessionGate sync.Mutex
+	ticketMu    sync.Mutex
+	ticket      uuid.UUID
+	ticketUntil time.Time
 }
 
 func NewService(core Core) *Service { return &Service{core: core} }
@@ -48,11 +55,47 @@ func (s *Service) ConnectionState(ctx context.Context) (contract.ConnectionState
 }
 
 func (s *Service) SessionView(ctx context.Context) (contract.SessionView, error) {
+	if !s.sessionGate.TryLock() {
+		return contract.SessionView{}, errSessionBusy
+	}
+	defer s.sessionGate.Unlock()
 	return s.core.SessionView(ctx)
 }
 
-func (s *Service) KeepAlive(ctx context.Context) error {
-	return s.core.KeepAlive(ctx)
+func (s *Service) BeginSessionCheck() (string, error) {
+	s.ticketMu.Lock()
+	defer s.ticketMu.Unlock()
+	if s.ticket != uuid.Nil && time.Now().Before(s.ticketUntil) {
+		return s.ticket.String(), nil
+	}
+	id, err := uuid.NewRandom()
+	if err != nil {
+		return "", errSessionUnavailable
+	}
+	s.ticket, s.ticketUntil = id, time.Now().Add(4*time.Second)
+	return id.String(), nil
+}
+
+func (s *Service) KeepAlive(ctx context.Context, token string) error {
+	id, err := uuid.Parse(token)
+	if err != nil {
+		return errSessionUnavailable
+	}
+	s.ticketMu.Lock()
+	deadline := s.ticketUntil
+	valid := id == s.ticket && id != uuid.Nil && time.Now().Before(deadline)
+	if valid {
+		s.ticket = uuid.Nil
+	}
+	s.ticketMu.Unlock()
+	if !valid {
+		return errSessionUnavailable
+	}
+	if !s.sessionGate.TryLock() {
+		return errSessionBusy
+	}
+	defer s.sessionGate.Unlock()
+	return s.core.KeepAliveUntil(ctx, deadline)
 }
 
 func (s *Service) Snapshot(ctx context.Context) (contract.Snapshot, error) {

@@ -43,7 +43,7 @@ it('does not let an old verification reply restore a core that exited', async ()
       <DesktopApp bridge={bridge} />
     </StrictMode>,
   );
-  expect(await screen.findByText('Связь с ядром подтверждена')).toBeTruthy();
+  expect(await screen.findByText('При запуске ядро ответило')).toBeTruthy();
   await userEvent.setup().click(screen.getByRole('button', { name: 'Проверить связь' }));
   expect(
     screen.getByRole('button', { name: 'Проверяем…' }).getAttribute('disabled'),
@@ -95,7 +95,7 @@ it('ignores a delayed RPC failure after a newer event', async () => {
     rejectStatus();
     await initial.catch(() => {});
   });
-  expect(screen.getByText('Связь с ядром подтверждена')).toBeTruthy();
+  expect(screen.getByText('При запуске ядро ответило')).toBeTruthy();
   expect(screen.queryByText('Не удалось получить состояние приложения')).toBeNull();
 });
 
@@ -115,7 +115,7 @@ it('keeps a bridge error on stale events and permits an explicit retry', async (
     },
   };
   render(<DesktopApp bridge={bridge} />);
-  await screen.findByText('Связь с ядром подтверждена');
+  await screen.findByText('При запуске ядро ответило');
   const user = userEvent.setup();
   await user.click(screen.getByRole('button', { name: 'Проверить связь' }));
   expect(await screen.findByText('Не удалось получить состояние приложения')).toBeTruthy();
@@ -127,7 +127,7 @@ it('keeps a bridge error on stale events and permits an explicit retry', async (
   expect(screen.queryByText(/Ядро ответило/)).toBeNull();
   expect(screen.getByText('Журнал диагностики недоступен или неполон.')).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'Повторить связь' }));
-  expect(await screen.findByText('Связь с ядром подтверждена')).toBeTruthy();
+  expect(await screen.findByText('При запуске ядро ответило')).toBeTruthy();
 });
 
 it('never presents ready without a confirmed demo handshake', async () => {
@@ -139,7 +139,7 @@ it('never presents ready without a confirmed demo handshake', async () => {
   };
   render(<DesktopApp bridge={bridge} />);
   expect(await screen.findByText('Не удалось получить состояние приложения')).toBeTruthy();
-  expect(screen.queryByText('Связь с ядром подтверждена')).toBeNull();
+  expect(screen.queryByText('При запуске ядро ответило')).toBeNull();
 });
 
 it('does not hide a failed check behind a diagnostics-only update', async () => {
@@ -158,7 +158,7 @@ it('does not hide a failed check behind a diagnostics-only update', async () => 
     },
   };
   render(<DesktopApp bridge={bridge} />);
-  await screen.findByText('Связь с ядром подтверждена');
+  await screen.findByText('При запуске ядро ответило');
   await userEvent.setup().click(screen.getByRole('button', { name: 'Проверить связь' }));
   act(() => notify({ ...ready, revision: 2, diagnosticsDegraded: true }));
   await act(async () => {
@@ -210,5 +210,5 @@ it('rejects a nil backend run identifier', async () => {
   };
   render(<DesktopApp bridge={bridge} />);
   expect(await screen.findByText('Не удалось получить состояние приложения')).toBeTruthy();
-  expect(screen.queryByText('Связь с ядром подтверждена')).toBeNull();
+  expect(screen.queryByText('При запуске ядро ответило')).toBeNull();
 });

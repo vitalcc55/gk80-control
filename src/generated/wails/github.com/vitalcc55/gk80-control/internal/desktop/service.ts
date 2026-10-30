@@ -22,6 +22,10 @@ export function Audit(testID: string, after: number, limit: number): $Cancellabl
     return $Call.ByID(945109110, testID, after, limit);
 }
 
+export function BeginSessionCheck(): $CancellablePromise<string> {
+    return $Call.ByID(1332201172);
+}
+
 export function Command(commandID: string): $CancellablePromise<contract$0.CommandStatus> {
     return $Call.ByID(3690784748, commandID);
 }
@@ -42,8 +46,8 @@ export function Handshake(): $CancellablePromise<contract$0.Handshake> {
     return $Call.ByID(684282720);
 }
 
-export function KeepAlive(): $CancellablePromise<void> {
-    return $Call.ByID(691884807);
+export function KeepAlive(token: string): $CancellablePromise<void> {
+    return $Call.ByID(691884807, token);
 }
 
 export function ListTests(params: contract$0.ListTestsParams): $CancellablePromise<contract$0.TestList> {

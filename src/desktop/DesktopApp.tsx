@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DesktopStatus } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
-import type { DesktopBridge } from './bridge';
+import type { DesktopBridge, SessionBridge } from './bridge';
+import { SessionStatus } from './SessionStatus';
 
 interface ViewState {
   status: DesktopStatus | null;
@@ -21,7 +22,7 @@ function confirmed(status: DesktopStatus): boolean {
 
 const labels = {
   starting: 'Запуск ядра',
-  ready: 'Связь с ядром подтверждена',
+  ready: 'При запуске ядро ответило',
   profileInUse: 'Профиль уже открыт',
   unavailable: 'Ядро недоступно',
   exited: 'Связь с ядром потеряна',
@@ -29,7 +30,13 @@ const labels = {
   '': 'Состояние неизвестно',
 } as const;
 
-export function DesktopApp({ bridge }: { bridge: DesktopBridge }) {
+export function DesktopApp({
+  bridge,
+  session,
+}: {
+  bridge: DesktopBridge;
+  session?: SessionBridge;
+}) {
   const current = useRef<ViewState>({ status: null, bridgeError: false });
   const [view, setView] = useState<ViewState>(current.current);
   const [pending, setPending] = useState(false);
@@ -122,7 +129,16 @@ export function DesktopApp({ bridge }: { bridge: DesktopBridge }) {
           {label}
         </p>
         {!bridgeError && status?.status === 'ready' && status.handshake ? (
-          <p>Ядро ответило. Версия интерфейса: {status.handshake.apiVersion}.</p>
+          <>
+            <p>Ядро ответило. Версия интерфейса: {status.handshake.apiVersion}.</p>
+            {session && (
+              <SessionStatus
+                bridge={session}
+                hostRunId={status.hostRunId}
+                backendRunId={status.handshake.backendRunId}
+              />
+            )}
+          </>
         ) : null}
         {status?.status === 'profileInUse' ? (
           <p>Закройте другое окно ГК80 и запустите приложение снова.</p>

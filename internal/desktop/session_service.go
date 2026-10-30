@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/vitalcc55/gk80-control/internal/contract"
@@ -29,11 +30,15 @@ func (o *Owner) Handshake(context.Context) (contract.Handshake, error) {
 }
 
 func (o *Owner) KeepAlive(ctx context.Context) error {
+	return o.KeepAliveUntil(ctx, time.Time{})
+}
+
+func (o *Owner) KeepAliveUntil(ctx context.Context, deadline time.Time) error {
 	session, err := o.currentSession()
 	if err != nil {
 		return err
 	}
-	return session.keepAlive(ctx)
+	return session.keepAliveUntil(ctx, deadline)
 }
 
 func (o *Owner) ConnectionState(context.Context) (contract.ConnectionState, error) {
