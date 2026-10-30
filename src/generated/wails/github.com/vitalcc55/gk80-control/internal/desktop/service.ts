@@ -58,6 +58,10 @@ export function Readiness(testID: string): $CancellablePromise<contract$0.Readin
     return $Call.ByID(1515748629, testID);
 }
 
+export function SessionView(): $CancellablePromise<contract$0.SessionView> {
+    return $Call.ByID(655958084);
+}
+
 export function Snapshot(): $CancellablePromise<contract$0.Snapshot> {
     return $Call.ByID(845326551);
 }

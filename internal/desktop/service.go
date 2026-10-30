@@ -12,6 +12,7 @@ import (
 type Core interface {
 	Handshake(context.Context) (contract.Handshake, error)
 	ConnectionState(context.Context) (contract.ConnectionState, error)
+	SessionView(context.Context) (contract.SessionView, error)
 	KeepAlive(context.Context) error
 	Snapshot(context.Context) (contract.Snapshot, error)
 	ListTests(context.Context, contract.ListTestsParams) (contract.TestList, error)
@@ -44,6 +45,10 @@ func (s *Service) Handshake(ctx context.Context) (contract.Handshake, error) {
 
 func (s *Service) ConnectionState(ctx context.Context) (contract.ConnectionState, error) {
 	return s.core.ConnectionState(ctx)
+}
+
+func (s *Service) SessionView(ctx context.Context) (contract.SessionView, error) {
+	return s.core.SessionView(ctx)
 }
 
 func (s *Service) KeepAlive(ctx context.Context) error {

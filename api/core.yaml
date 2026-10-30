@@ -658,6 +658,24 @@ components:
       properties:
         type: { type: string, enum: [ready] }
         backendRunId: { type: string, format: uuid }
+    SessionView:
+      type: object
+      additionalProperties: false
+      required: [connection, snapshot, validForMs]
+      properties:
+        connection: { $ref: "#/components/schemas/ConnectionState" }
+        snapshot:
+          oneOf:
+            - $ref: "#/components/schemas/Snapshot"
+            - type: "null"
+        validForMs:
+          type: integer
+          format: int64
+          minimum: 0
+          description: >-
+            Upper bound on freshness, not a guarantee. The client counts from the
+            monotonic start of the request, including response delay; zero is expired.
+            Changes, errors or disconnection can invalidate the view earlier.
     Event:
       type: object
       additionalProperties: false

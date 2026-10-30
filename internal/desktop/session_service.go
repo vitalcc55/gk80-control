@@ -44,6 +44,28 @@ func (o *Owner) ConnectionState(context.Context) (contract.ConnectionState, erro
 	return session.connectionState(), nil
 }
 
+func (o *Owner) SessionView(context.Context) (contract.SessionView, error) {
+	session, err := o.currentSession()
+	if err != nil {
+		return contract.SessionView{}, err
+	}
+	view, err := session.sessionView()
+	if err != nil {
+		return contract.SessionView{}, err
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.session != session || o.status.Status != contract.DesktopStatusStatusReady || o.process == nil {
+		return contract.SessionView{}, errSessionUnavailable
+	}
+	select {
+	case <-o.process.Done():
+		return contract.SessionView{}, errSessionUnavailable
+	default:
+		return view, nil
+	}
+}
+
 func (o *Owner) Snapshot(context.Context) (contract.Snapshot, error) {
 	session, err := o.currentSession()
 	if err != nil {

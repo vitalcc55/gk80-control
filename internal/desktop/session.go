@@ -236,8 +236,11 @@ func (s *demoSession) keepAlive(ctx context.Context) error {
 func (s *demoSession) connectionState() contract.ConnectionState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.connectionStateLocked(time.Now())
+}
+
+func (s *demoSession) connectionStateLocked(now time.Time) contract.ConnectionState {
 	status := contract.Disconnected
-	now := time.Now()
 	if !s.closed && !s.closing && !s.unknownAcquire && !s.streamBroken && s.leaseConfirmed && !s.lastUI.IsZero() && now.Sub(s.lastUI) < uiHeartbeatFreshness && now.Before(s.leaseUntil) {
 		status = contract.Recovering
 		streamOpen := s.streamActive && s.streamDone != nil
@@ -262,6 +265,34 @@ func (s *demoSession) connectionState() contract.ConnectionState {
 		s.revision++
 	}
 	return contract.ConnectionState{HostRunId: s.hostID, Revision: s.revision, Status: status}
+}
+
+// sessionView takes a single ordered snapshot of connection freshness and data.
+func (s *demoSession) sessionView() (contract.SessionView, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	result := contract.SessionView{Connection: s.connectionStateLocked(now)}
+	if s.snapshot != nil && !s.closed {
+		copy, err := copySessionSnapshot(s.snapshot)
+		if err != nil {
+			return contract.SessionView{}, err
+		}
+		result.Snapshot = &copy
+	}
+	if result.Connection.Status == contract.Live {
+		until := s.lastUI.Add(uiHeartbeatFreshness)
+		if s.leaseUntil.Before(until) {
+			until = s.leaseUntil
+		}
+		if probeUntil := s.lastProbe.Add(streamProbeFreshness); probeUntil.Before(until) {
+			until = probeUntil
+		}
+		if remaining := until.Sub(now).Milliseconds(); remaining > 0 {
+			result.ValidForMs = remaining
+		}
+	}
+	return result, nil
 }
 
 func (s *demoSession) canObserve(lease uuid.UUID) bool {
@@ -541,7 +572,11 @@ func (s *demoSession) snapshotCopy() (contract.Snapshot, error) {
 	if s.snapshot == nil || s.closed {
 		return contract.Snapshot{}, errSessionUnavailable
 	}
-	data, err := json.Marshal(s.snapshot)
+	return copySessionSnapshot(s.snapshot)
+}
+
+func copySessionSnapshot(snapshot *contract.Snapshot) (contract.Snapshot, error) {
+	data, err := json.Marshal(snapshot)
 	if err != nil {
 		return contract.Snapshot{}, errSessionUnavailable
 	}

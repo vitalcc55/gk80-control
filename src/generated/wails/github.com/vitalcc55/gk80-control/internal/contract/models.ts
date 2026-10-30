@@ -327,6 +327,19 @@ export enum ReadinessCheckSource {
 };
 
 /**
+ * SessionView defines model for SessionView.
+ */
+export interface SessionView {
+    "connection": ConnectionState;
+    "snapshot": Snapshot | null;
+
+    /**
+     * ValidForMs Upper bound on freshness, not a guarantee. The client counts from the monotonic start of the request, including response delay; zero is expired. Changes, errors or disconnection can invalidate the view earlier.
+     */
+    "validForMs": number;
+}
+
+/**
  * Snapshot defines model for Snapshot.
  */
 export interface Snapshot {

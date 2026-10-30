@@ -515,6 +515,15 @@ type ReadinessCheck struct {
 // ReadinessCheckSource defines model for ReadinessCheck.Source.
 type ReadinessCheckSource string
 
+// SessionView defines model for SessionView.
+type SessionView struct {
+	Connection ConnectionState `json:"connection"`
+	Snapshot   *Snapshot       `json:"snapshot"`
+
+	// ValidForMs Upper bound on freshness, not a guarantee. The client counts from the monotonic start of the request, including response delay; zero is expired. Changes, errors or disconnection can invalidate the view earlier.
+	ValidForMs int64 `json:"validForMs"`
+}
+
 // Snapshot defines model for Snapshot.
 type Snapshot struct {
 	ActiveTest        *TestRecord        `json:"activeTest"`

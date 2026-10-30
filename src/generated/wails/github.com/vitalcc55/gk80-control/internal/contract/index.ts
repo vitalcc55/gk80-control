@@ -33,6 +33,7 @@ export type {
     PendingAction,
     Readiness,
     ReadinessCheck,
+    SessionView,
     Snapshot,
     TestList,
     TestParameters,

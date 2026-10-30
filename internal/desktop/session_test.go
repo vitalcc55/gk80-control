@@ -217,6 +217,113 @@ func TestDemoSessionUpdatesMeasurementsWithSameRevision(t *testing.T) {
 	}
 }
 
+func TestSessionViewPairsFreshnessAndSnapshot(t *testing.T) {
+	run := uuid.New()
+	stream := &testSessionStream{run: run, events: make(chan struct{}, 1), done: make(chan struct{})}
+	client := &testSessionClient{lease: uuid.New(), run: run, stream: stream}
+	session := newDemoSession(context.Background(), client, uuid.New(), run)
+	stream.clientID = session.clientID
+	defer session.close()
+	if err := session.keepAlive(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitSession(t, func() bool { return session.connectionState().Status == contract.Live })
+	first, err := session.sessionView()
+	if err != nil || first.Connection.Status != contract.Live || first.Snapshot == nil || first.ValidForMs <= 0 {
+		t.Fatalf("live view: %+v, %v", first, err)
+	}
+	stream.mu.Lock()
+	stream.sequence = 2
+	stream.mu.Unlock()
+	stream.events <- struct{}{}
+	var second contract.SessionView
+	waitSession(t, func() bool {
+		second, err = session.sessionView()
+		return err == nil && second.Connection.Status == contract.Live && second.Snapshot != nil && second.Snapshot.Measurements[0].Sequence == 2
+	})
+	if second.Snapshot.Revision != first.Snapshot.Revision || second.Connection.Revision <= first.Connection.Revision || first.Snapshot.Measurements[0].Sequence != 1 {
+		t.Fatalf("view did not preserve ordered immutable measurements: first=%+v second=%+v", first, second)
+	}
+	session.mu.Lock()
+	session.lastUI = time.Now().Add(-uiHeartbeatFreshness)
+	session.mu.Unlock()
+	stale, err := session.sessionView()
+	if err != nil || stale.Connection.Status == contract.Live || stale.ValidForMs != 0 || stale.Snapshot == nil {
+		t.Fatalf("stale view: %+v, %v", stale, err)
+	}
+}
+
+type blockedPendingStream struct {
+	*testSessionStream
+	entered chan struct{}
+	resume  chan struct{}
+	once    sync.Once
+}
+
+func (s *blockedPendingStream) Pending() bool {
+	s.once.Do(func() {
+		close(s.entered)
+		<-s.resume
+	})
+	return false
+}
+
+func TestOwnerSessionViewRejectsCoreExitDuringRead(t *testing.T) {
+	core := &fakeCore{done: make(chan struct{})}
+	owner := &Owner{process: core, status: contract.DesktopStatus{Status: contract.DesktopStatusStatusReady}}
+	session := newDemoSession(context.Background(), &testSessionClient{}, uuid.New(), uuid.New())
+	defer session.close()
+	stream := &blockedPendingStream{testSessionStream: &testSessionStream{done: make(chan struct{})}, entered: make(chan struct{}), resume: make(chan struct{})}
+	now := time.Now()
+	session.leaseConfirmed = true
+	session.leaseID = uuid.New()
+	session.leaseUntil = now.Add(time.Minute)
+	session.lastUI, session.lastProbe = now, now
+	session.streamActive, session.streamDone, session.stream = true, stream.done, stream
+	session.snapshot = &contract.Snapshot{Measurements: []contract.Measurement{}}
+	owner.session = session
+	result := make(chan error, 1)
+	go func() {
+		_, err := owner.SessionView(context.Background())
+		result <- err
+	}()
+	<-stream.entered
+	close(core.done)
+	close(stream.resume)
+	if err := <-result; err == nil {
+		t.Fatal("view reported success after the core exited")
+	}
+}
+
+func TestSessionViewUsesEarliestFreshnessDeadline(t *testing.T) {
+	for _, earliest := range []string{"ui", "lease", "probe"} {
+		t.Run(earliest, func(t *testing.T) {
+			now := time.Now()
+			stream := &testSessionStream{done: make(chan struct{})}
+			session := newDemoSession(context.Background(), &testSessionClient{}, uuid.New(), uuid.New())
+			defer session.close()
+			session.leaseConfirmed = true
+			session.leaseUntil = now.Add(5 * time.Second)
+			session.lastUI = now.Add(-uiHeartbeatFreshness + 5*time.Second)
+			session.lastProbe = now.Add(-streamProbeFreshness + 5*time.Second)
+			session.streamActive, session.streamDone, session.stream = true, stream.done, stream
+			session.snapshot = &contract.Snapshot{Measurements: []contract.Measurement{}}
+			switch earliest {
+			case "ui":
+				session.lastUI = now.Add(-uiHeartbeatFreshness + time.Second)
+			case "lease":
+				session.leaseUntil = now.Add(time.Second)
+			case "probe":
+				session.lastProbe = now.Add(-streamProbeFreshness + time.Second)
+			}
+			view, err := session.sessionView()
+			if err != nil || view.Connection.Status != contract.Live || view.ValidForMs <= 0 || view.ValidForMs > 1000 {
+				t.Fatalf("earliest %s: %+v, %v", earliest, view, err)
+			}
+		})
+	}
+}
+
 func TestDemoSessionDoesNotRepeatUnknownInitialLease(t *testing.T) {
 	client := &testSessionClient{unknown: true}
 	session := newDemoSession(context.Background(), client, uuid.New(), uuid.New())
