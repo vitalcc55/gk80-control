@@ -227,10 +227,12 @@ export function LiveApp({
   session,
   hostRunId,
   backendRunId,
+  diagnosticsDegraded = false,
 }: {
   session: SessionBridge;
   hostRunId: string;
   backendRunId: string;
+  diagnosticsDegraded?: boolean;
 }) {
   const [connection, setConnection] = useState<{ view: SessionView; expiresAt: number } | null>(
     null,
@@ -698,6 +700,9 @@ export function LiveApp({
             onGap={onGap}
             snapshotAccepted={fresh}
           />
+          <p role="status" aria-live="polite" className="live-diagnostics-warning">
+            {diagnosticsDegraded ? 'Журнал диагностики недоступен или неполон.' : ''}
+          </p>
           <section className="demo-messages" aria-label="Сообщения команд">
             <div className="demo-message-primary">
               <div

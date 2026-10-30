@@ -2,11 +2,14 @@ import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { StrictMode } from 'react';
 import { beforeEach, expect, it, vi } from 'vitest';
-import type { SessionBridge } from '../src/desktop/bridge';
+import type { DesktopBridge, SessionBridge } from '../src/desktop/bridge';
+import { DesktopApp } from '../src/desktop/DesktopApp';
 import { LiveApp } from '../src/desktop/LiveApp';
 import {
   CommandStatusStatus,
   ConnectionStateStatus,
+  type DesktopStatus,
+  DesktopStatusStatus,
   MeasurementChannel,
   MeasurementQuality,
   MeasurementQuantity,
@@ -91,6 +94,165 @@ const record = {
 beforeEach(() => {
   sessionStorage.clear();
   vi.resetAllMocks();
+});
+
+it('shows diagnostics already degraded when the live session opens', async () => {
+  const ready: DesktopStatus = {
+    hostRunId: host,
+    revision: 1,
+    connectionRevision: 1,
+    status: DesktopStatusStatus.DesktopStatusStatusReady,
+    handshake: { apiVersion: 'v1', backendRunId: backend, demo: true },
+    diagnosticsDegraded: true,
+  };
+  const desktop: DesktopBridge = {
+    status: async () => ready,
+    verify: async () => ready,
+    subscribe: () => () => {},
+  };
+  const session: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 0,
+        lastEventSequence: 0,
+        activeTest: null,
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.list.mockResolvedValue({ items: [], nextAfter: null });
+  render(<DesktopApp bridge={desktop} session={session} />);
+  expect(await screen.findByText('Журнал диагностики недоступен или неполон.')).toBeTruthy();
+  expect(await screen.findByRole('button', { name: 'Новое испытание' })).toBeTruthy();
+});
+
+it('preserves the live form when diagnostics degrade', async () => {
+  const ready: DesktopStatus = {
+    hostRunId: host,
+    revision: 1,
+    connectionRevision: 1,
+    status: DesktopStatusStatus.DesktopStatusStatusReady,
+    handshake: { apiVersion: 'v1', backendRunId: backend, demo: true },
+    diagnosticsDegraded: false,
+  };
+  let notify: (status: DesktopStatus) => void = () => {};
+  const desktop: DesktopBridge = {
+    status: async () => ready,
+    verify: async () => ready,
+    subscribe: (callback) => {
+      notify = callback;
+      return () => {};
+    },
+  };
+  const session: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 0,
+        lastEventSequence: 0,
+        activeTest: null,
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.list.mockResolvedValue({ items: [], nextAfter: null });
+  render(<DesktopApp bridge={desktop} session={session} />);
+  const user = userEvent.setup();
+  const create = await screen.findByRole('button', { name: 'Новое испытание' });
+  await waitFor(() => expect(create.hasAttribute('disabled')).toBe(false));
+  await user.click(create);
+  const input = screen.getByLabelText('Обозначение или наименование клапана');
+  await user.type(input, 'Клапан');
+  act(() => notify({ ...ready, revision: 2, diagnosticsDegraded: true }));
+  expect(await screen.findByText('Журнал диагностики недоступен или неполон.')).toBeTruthy();
+  expect(screen.getByLabelText('Обозначение или наименование клапана')).toBe(input);
+  expect((input as HTMLInputElement).value).toBe('Клапан');
+});
+
+it('keeps stop available when diagnostics degrade during a live test', async () => {
+  const ready: DesktopStatus = {
+    hostRunId: host,
+    revision: 1,
+    connectionRevision: 1,
+    status: DesktopStatusStatus.DesktopStatusStatusReady,
+    handshake: { apiVersion: 'v1', backendRunId: backend, demo: true },
+    diagnosticsDegraded: false,
+  };
+  let notify: (status: DesktopStatus) => void = () => {};
+  const desktop: DesktopBridge = {
+    status: async () => ready,
+    verify: async () => ready,
+    subscribe: (callback) => {
+      notify = callback;
+      return () => {};
+    },
+  };
+  const session: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 2,
+        lastEventSequence: 2,
+        activeTest: { ...record, stage: TestRecordStage.Running },
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.stop.mockResolvedValue({
+    commandId: stopId,
+    status: CommandStatusStatus.CommandStatusStatusAccepted,
+    testId,
+  });
+  render(<DesktopApp bridge={desktop} session={session} />);
+  const stop = await screen.findByRole('button', { name: 'Остановить испытание' });
+  act(() => notify({ ...ready, revision: 2, diagnosticsDegraded: true }));
+  expect(await screen.findByText('Журнал диагностики недоступен или неполон.')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Остановить испытание' })).toBe(stop);
+  await userEvent.setup().click(stop);
+  expect(api.stop).toHaveBeenCalledOnce();
+  expect(api.stop).toHaveBeenCalledWith(testId, { commandId: stopId });
+  expect(api.create).not.toHaveBeenCalled();
+  expect(api.start).not.toHaveBeenCalled();
 });
 
 it('uses core confirmation and measurements for the operator path', async () => {

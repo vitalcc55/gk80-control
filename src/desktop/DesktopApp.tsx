@@ -123,6 +123,7 @@ export function DesktopApp({
         session={session}
         hostRunId={status.hostRunId}
         backendRunId={status.handshake.backendRunId}
+        diagnosticsDegraded={status.diagnosticsDegraded}
       />
     );
   }

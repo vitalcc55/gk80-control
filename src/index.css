@@ -263,6 +263,10 @@ h2 {
 .session-status-help > span {
   grid-area: 1 / 1;
 }
+.live-diagnostics-warning {
+  min-height: 1.5em;
+  color: var(--warning);
+}
 .demo-messages {
   height: 6em;
   display: grid;
