@@ -52,6 +52,20 @@ func (w *memoryWriter) contents() string {
 	return w.String()
 }
 
+func TestConnectionStateEventKeepsOnlyKnownStatuses(t *testing.T) {
+	w := &memoryWriter{}
+	logger := newLogger(RoleDesktop, uuid.New(), w, io.Discard, Config{})
+	logger.Application(ComponentTransport).Info(string(ConnectionStateChanged), "previous_status", "disconnected", "connection_status", "connected", "secret", "do-not-log")
+	closeLogger(t, logger)
+	var item map[string]any
+	if err := json.Unmarshal([]byte(w.contents()), &item); err != nil {
+		t.Fatal(err)
+	}
+	if item["event"] != string(ConnectionStateChanged) || item["previous_status"] != "disconnected" || item["connection_status"] != "connected" || strings.Contains(w.contents(), "do-not-log") {
+		t.Fatalf("unexpected connection diagnostic: %+v", item)
+	}
+}
+
 type blockedWriter struct {
 	started chan struct{}
 	release chan struct{}

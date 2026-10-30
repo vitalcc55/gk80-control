@@ -9,6 +9,8 @@ import {
   DesktopStatusStatus,
 } from '../src/generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
 
+vi.mock('../src/components/MeasurementChart', () => ({ MeasurementChart: () => null }));
+
 function status(revision: number, state: DesktopStatusStatus): DesktopStatus {
   return {
     hostRunId: '8d43fc4c-7bf7-408f-a8e8-19d0dfd725c4',

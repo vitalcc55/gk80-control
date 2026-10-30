@@ -188,6 +188,101 @@ func waitSession(t *testing.T, condition func() bool) {
 	}
 }
 
+type waitingProbeStream struct {
+	*testSessionStream
+	muProbe         sync.Mutex
+	count           int
+	entered         chan struct{}
+	release         chan struct{}
+	snapshotEntered chan struct{}
+	snapshotRelease chan struct{}
+}
+
+func (s *waitingProbeStream) Snapshot(ctx context.Context) (contract.Snapshot, error) {
+	if s.snapshotEntered != nil {
+		select {
+		case <-s.snapshotEntered:
+		default:
+			close(s.snapshotEntered)
+		}
+		select {
+		case <-s.snapshotRelease:
+		case <-ctx.Done():
+			return contract.Snapshot{}, ctx.Err()
+		}
+	}
+	return s.testSessionStream.Snapshot(ctx)
+}
+
+func (s *waitingProbeStream) Probe(ctx context.Context) error {
+	s.muProbe.Lock()
+	s.count++
+	count := s.count
+	s.muProbe.Unlock()
+	if count == 1 {
+		return nil
+	}
+	if count == 2 {
+		close(s.entered)
+	}
+	select {
+	case <-s.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func TestSessionKeepsLiveDuringProbeButProcessesEvents(t *testing.T) {
+	run := uuid.New()
+	stream := &waitingProbeStream{testSessionStream: &testSessionStream{run: run, sequence: 1, events: make(chan struct{}, 1), done: make(chan struct{})}, entered: make(chan struct{}), release: make(chan struct{}), snapshotEntered: make(chan struct{}), snapshotRelease: make(chan struct{})}
+	client := &testSessionClient{lease: uuid.New(), run: run, stream: stream.testSessionStream}
+	client.open = func(context.Context, uuid.UUID, uuid.UUID) (sessionStream, contract.Snapshot, error) {
+		return stream, contract.Snapshot{ApiVersion: "v1", BackendRunId: run, Revision: 1, Measurements: []contract.Measurement{{Sequence: 1}}}, nil
+	}
+	session := newDemoSession(context.Background(), client, uuid.New(), run)
+	stream.clientID = session.clientID
+	defer session.close()
+	if err := session.keepAlive(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitSession(t, func() bool { return session.connectionState().Status == contract.Live })
+	before := session.connectionState()
+	if err := session.keepAlive(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if after := session.connectionState(); after.Status != contract.Live || after.Revision != before.Revision {
+		t.Fatalf("routine heartbeat invalidated live: before=%+v after=%+v", before, after)
+	}
+	select {
+	case <-stream.entered:
+	case <-time.After(4 * time.Second):
+		t.Fatal("next probe not started")
+	}
+	if state := session.connectionState(); state.Status != contract.Live {
+		t.Fatalf("routine probe invalidated live: %+v", state)
+	}
+	stream.mu.Lock()
+	stream.sequence = 2
+	stream.mu.Unlock()
+	stream.events <- struct{}{}
+	select {
+	case <-stream.snapshotEntered:
+	case <-time.After(time.Second):
+		t.Fatal("event was not consumed during probe")
+	}
+	if state := session.connectionState(); state.Status == contract.Live {
+		t.Fatalf("event not invalidated: %+v", state)
+	}
+	close(stream.snapshotRelease)
+	waitSession(t, func() bool {
+		session.mu.Lock()
+		defer session.mu.Unlock()
+		return session.snapshot != nil && session.snapshot.Measurements[0].Sequence == 2
+	})
+	close(stream.release)
+}
+
 func TestDemoSessionUpdatesMeasurementsWithSameRevision(t *testing.T) {
 	run := uuid.New()
 	stream := &testSessionStream{run: run, events: make(chan struct{}, 1), done: make(chan struct{})}
@@ -251,6 +346,27 @@ func TestSessionViewPairsFreshnessAndSnapshot(t *testing.T) {
 	stale, err := session.sessionView()
 	if err != nil || stale.Connection.Status == contract.Live || stale.ValidForMs != 0 || stale.Snapshot == nil {
 		t.Fatalf("stale view: %+v, %v", stale, err)
+	}
+}
+
+func TestSessionViewOrdersSaveChangesAtSameCoreRevision(t *testing.T) {
+	session := newDemoSession(context.Background(), &testSessionClient{}, uuid.New(), uuid.New())
+	defer session.close()
+	session.mu.Lock()
+	session.snapshot = &contract.Snapshot{Revision: 7, LastEventSequence: 8, ActiveTest: &contract.TestRecord{SaveStatus: "pending"}, Measurements: []contract.Measurement{}}
+	session.changedLocked()
+	session.mu.Unlock()
+	first, err := session.sessionView()
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.mu.Lock()
+	session.snapshot.ActiveTest.SaveStatus = "unknown"
+	session.changedLocked()
+	session.mu.Unlock()
+	second, err := session.sessionView()
+	if err != nil || first.Snapshot == nil || second.Snapshot == nil || first.Snapshot.ActiveTest == nil || second.Snapshot.ActiveTest == nil || first.Snapshot.Revision != second.Snapshot.Revision || first.Snapshot.LastEventSequence != second.Snapshot.LastEventSequence || first.Snapshot.ActiveTest.SaveStatus != "pending" || second.Snapshot.ActiveTest.SaveStatus != "unknown" || second.Connection.Revision <= first.Connection.Revision {
+		t.Fatalf("save snapshots not ordered: first=%+v second=%+v err=%v", first, second, err)
 	}
 }
 
@@ -325,6 +441,27 @@ func TestSessionViewUsesEarliestFreshnessDeadline(t *testing.T) {
 	}
 }
 
+func TestSessionViewSeparatesLinkFromPendingSnapshot(t *testing.T) {
+	now := time.Now()
+	stream := &testSessionStream{done: make(chan struct{}), events: make(chan struct{}, 1)}
+	session := newDemoSession(context.Background(), &testSessionClient{}, uuid.New(), uuid.New())
+	defer session.close()
+	session.leaseID, session.leaseConfirmed, session.leaseUntil = uuid.New(), true, now.Add(time.Minute)
+	session.lastUI, session.lastProbe = now, now
+	session.streamActive, session.streamDone, session.stream = true, stream.done, stream
+	session.snapshot = &contract.Snapshot{Measurements: []contract.Measurement{}}
+	session.snapshotPending = true
+	view, err := session.sessionView()
+	if err != nil || !view.Connection.LinkValid || view.LinkValidForMs <= 0 || view.Connection.Status != contract.Recovering || view.ValidForMs != 0 {
+		t.Fatalf("pending snapshot hid healthy link: %+v, %v", view, err)
+	}
+	close(stream.done)
+	after, err := session.sessionView()
+	if err != nil || after.Connection.LinkValid || after.Connection.Status != contract.Recovering || after.LinkValidForMs != 0 || after.Connection.Revision <= view.Connection.Revision {
+		t.Fatalf("lost link was not published while recovering: %+v, %v", after, err)
+	}
+}
+
 func TestDemoSessionDoesNotRepeatUnknownInitialLease(t *testing.T) {
 	client := &testSessionClient{unknown: true}
 	session := newDemoSession(context.Background(), client, uuid.New(), uuid.New())
@@ -339,6 +476,24 @@ func TestDemoSessionDoesNotRepeatUnknownInitialLease(t *testing.T) {
 	defer client.mu.Unlock()
 	if client.acquires != 1 || session.connectionState().Status == contract.Live {
 		t.Fatalf("unknown acquisition was retried: %d", client.acquires)
+	}
+}
+
+func TestUnadmittedCommandReportsOnlyThatAttemptWasNotSent(t *testing.T) {
+	session := newDemoSession(context.Background(), &testSessionClient{}, uuid.New(), uuid.New())
+	defer session.close()
+	id := uuid.New()
+	sent := false
+	result, err := session.command(context.Background(), id, "create", false, func(context.Context, uuid.UUID) (contract.CommandStatus, error) {
+		sent = true
+		return contract.CommandStatus{}, nil
+	})
+	if sent || !errors.Is(err, errCommandNotSent) {
+		t.Fatalf("unadmitted command: sent=%v err=%v", sent, err)
+	}
+	delivery, err := dispatch(result, err)
+	if err != nil || delivery.Delivery != contract.NotSent || delivery.Command != nil {
+		t.Fatalf("delivery: %+v %v", delivery, err)
 	}
 }
 
@@ -1208,10 +1363,10 @@ func TestOwnerSessionRunsAndReopensCore(t *testing.T) {
 		t.Fatal(err)
 	}
 	created, err := service.CreateTest(context.Background(), createInput)
-	if err != nil || created.TestId == nil || created.Status != contract.CommandStatusStatusCompleted {
+	if err != nil || created.Command == nil || created.Command.TestId == nil || created.Command.Status != contract.CommandStatusStatusCompleted {
 		t.Fatalf("create: %+v %v", created, err)
 	}
-	id := created.TestId.String()
+	id := created.Command.TestId.String()
 	ready, err := owner.Readiness(context.Background(), id)
 	if err != nil || !ready.Ready {
 		t.Fatalf("readiness: %+v %v", ready, err)
@@ -1230,7 +1385,7 @@ func TestOwnerSessionRunsAndReopensCore(t *testing.T) {
 		t.Fatal(err)
 	}
 	started, err := service.StartTest(context.Background(), id, startInput)
-	if err != nil || started.Status != contract.CommandStatusStatusAccepted {
+	if err != nil || started.Command == nil || started.Command.Status != contract.CommandStatusStatusAccepted {
 		t.Fatalf("start: %+v %v", started, err)
 	}
 	waitSession(t, func() bool {
@@ -1248,7 +1403,7 @@ func TestOwnerSessionRunsAndReopensCore(t *testing.T) {
 		t.Fatal(err)
 	}
 	confirmed, err := service.ConfirmAction(context.Background(), id, snapshot.PendingAction.ActionId.String(), confirmInput)
-	if err != nil || confirmed.Status != contract.CommandStatusStatusCompleted {
+	if err != nil || confirmed.Command == nil || confirmed.Command.Status != contract.CommandStatusStatusCompleted {
 		session, _ := owner.currentSession()
 		session.mu.Lock()
 		remaining, uiAge, probeAge, active, broken := time.Until(session.leaseUntil), time.Since(session.lastUI), time.Since(session.lastProbe), session.streamActive, session.streamBroken

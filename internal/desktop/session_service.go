@@ -294,7 +294,7 @@ func (o *Owner) CreateTestInput(ctx context.Context, command CreateCommandInput)
 	}
 	session, err := o.currentSession()
 	if err != nil {
-		return contract.CommandStatus{}, err
+		return contract.CommandStatus{}, errors.Join(err, errCommandNotSent)
 	}
 	var invalidNew error
 	if !command.lossless {
@@ -332,7 +332,7 @@ func (o *Owner) StartTestInput(ctx context.Context, value string, command StartC
 	}
 	session, err := o.currentSession()
 	if err != nil {
-		return contract.CommandStatus{}, err
+		return contract.CommandStatus{}, errors.Join(err, errCommandNotSent)
 	}
 	identity := "start:" + id.String() + ":" + string(command.identity)
 	return session.command(ctx, command.CommandId, identity, false, func(ctx context.Context, lease uuid.UUID) (contract.CommandStatus, error) {
@@ -375,7 +375,7 @@ func (o *Owner) ConfirmActionInput(ctx context.Context, value, actionValue strin
 	}
 	session, err := o.currentSession()
 	if err != nil {
-		return contract.CommandStatus{}, err
+		return contract.CommandStatus{}, errors.Join(err, errCommandNotSent)
 	}
 	identity := "confirm:" + id.String() + ":" + action.String() + ":" + string(command.identity)
 	return session.command(ctx, command.CommandId, identity, false, func(ctx context.Context, lease uuid.UUID) (contract.CommandStatus, error) {

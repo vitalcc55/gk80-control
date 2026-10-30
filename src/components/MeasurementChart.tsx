@@ -11,6 +11,7 @@ interface MeasurementChartProps {
   rangeSeconds?: number | undefined;
   /** Подготовленная граница допуска для текущего этапа, если она применима. */
   tolerance?: number | undefined;
+  live?: boolean;
 }
 
 const formatValue = (value: number | null): string =>
@@ -39,6 +40,7 @@ export function MeasurementChart({
   target,
   tolerance,
   rangeSeconds,
+  live = false,
 }: MeasurementChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -80,13 +82,16 @@ export function MeasurementChart({
     const pressureScale =
       target > 0 &&
       (target <= 1e-16 ||
+        target >= 1e150 ||
         (pressureRange.hasMeasurement && pressureRange.max - pressureRange.min < 1e-16))
         ? target
         : undefined;
     const restoredValues = (splits: number[], scale: number) => {
       const actual = splits.map((value) => value * scale);
       return formatAxisValues(actual).map((label, index) =>
-        index > 0 && actual[index] === actual[index - 1] ? null : label,
+        !Number.isFinite(actual[index]) || (index > 0 && actual[index] === actual[index - 1])
+          ? null
+          : label,
       );
     };
     const timeValues = (_plot: uPlot, splits: number[]) => {
@@ -251,7 +256,11 @@ export function MeasurementChart({
         ref={containerRef}
         className="chart-container"
         role="img"
-        aria-label="График подготовленных показаний давления и перепада по времени; разрывы обозначают отсутствие данных"
+        aria-label={
+          live
+            ? 'График показаний симулятора по времени; разрывы обозначают отсутствие данных'
+            : 'График подготовленных показаний давления и перепада по времени; разрывы обозначают отсутствие данных'
+        }
       />
       <div className="chart-legend">
         <span>
@@ -269,7 +278,9 @@ export function MeasurementChart({
         <summary>Таблица показаний</summary>
         <div className="chart-data-scroll">
           <table className="chart-data-table">
-            <caption className="visually-hidden">Подготовленные показания по времени</caption>
+            <caption className="visually-hidden">
+              {live ? 'Показания симулятора по времени' : 'Подготовленные показания по времени'}
+            </caption>
             <thead>
               <tr>
                 <th scope="col">Время, с</th>

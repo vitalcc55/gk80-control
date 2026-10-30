@@ -241,6 +241,43 @@ h2 {
 .main-content:focus {
   outline: none;
 }
+.session-status-title {
+  display: grid;
+}
+.session-status-title::before {
+  content: "При последней проверке связь с ядром подтверждена";
+  grid-area: 1 / 1;
+  visibility: hidden;
+}
+.session-status-title > span {
+  grid-area: 1 / 1;
+}
+.session-status-help {
+  display: grid;
+}
+.session-status-help::before {
+  content: "Если связь не восстанавливается, закройте приложение и запустите его снова.";
+  grid-area: 1 / 1;
+  visibility: hidden;
+}
+.session-status-help > span {
+  grid-area: 1 / 1;
+}
+.demo-messages {
+  height: 6em;
+  display: grid;
+  grid-template-rows: 4em 2em;
+  overflow-wrap: anywhere;
+}
+.demo-message-primary {
+  display: grid;
+  grid-template-rows: 2em 2em;
+}
+.demo-stop-message,
+.demo-command-message,
+.demo-message-list {
+  overflow: auto;
+}
 .page-heading {
   display: flex;
   justify-content: space-between;
@@ -395,6 +432,9 @@ h2 {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+.live-measurements {
+  grid-template-columns: minmax(0, 1.12fr) minmax(0, 0.85fr) minmax(0, 1fr);
+}
 .reading p {
   margin-top: 8px;
   font-size: var(--font-caption);
@@ -405,6 +445,10 @@ h2 {
 }
 .reading-unavailable strong {
   color: var(--danger);
+}
+.live-measurements .reading strong {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .stage.current strong {
   color: var(--ink);

@@ -26,22 +26,23 @@ const (
 type Event string
 
 const (
-	ProcessStarted      Event = "process.started"
-	ProcessStopped      Event = "process.stopped"
-	CoreStopped         Event = "core.stopped"
-	CoreCleanupFailed   Event = "core.cleanup_failed"
-	ConnectionFailed    Event = "connection.failed"
-	ConnectionConfirmed Event = "connection.confirmed"
-	DiagnosticDegraded  Event = "diagnostics.degraded"
-	StorageReady        Event = "storage.ready"
-	CommandSent         Event = "command.sent"
-	CommandAccepted     Event = "command.accepted"
-	CommandRejected     Event = "command.rejected"
-	CommandCompleted    Event = "command.completed"
-	CommandFailed       Event = "command.failed"
-	CommandObserved     Event = "command.observed"
-	frameworkMessage    Event = "framework.message"
-	libraryMessage      Event = "library.message"
+	ProcessStarted         Event = "process.started"
+	ProcessStopped         Event = "process.stopped"
+	CoreStopped            Event = "core.stopped"
+	CoreCleanupFailed      Event = "core.cleanup_failed"
+	ConnectionFailed       Event = "connection.failed"
+	ConnectionConfirmed    Event = "connection.confirmed"
+	ConnectionStateChanged Event = "connection.state_changed"
+	DiagnosticDegraded     Event = "diagnostics.degraded"
+	StorageReady           Event = "storage.ready"
+	CommandSent            Event = "command.sent"
+	CommandAccepted        Event = "command.accepted"
+	CommandRejected        Event = "command.rejected"
+	CommandCompleted       Event = "command.completed"
+	CommandFailed          Event = "command.failed"
+	CommandObserved        Event = "command.observed"
+	frameworkMessage       Event = "framework.message"
+	libraryMessage         Event = "library.message"
 )
 
 type eventSpec struct {
@@ -50,22 +51,23 @@ type eventSpec struct {
 }
 
 var eventCatalog = map[Event]eventSpec{
-	ProcessStarted:      {slog.LevelInfo, "Process started"},
-	ProcessStopped:      {slog.LevelInfo, "Process stopped"},
-	CoreStopped:         {slog.LevelInfo, "Core stopped"},
-	CoreCleanupFailed:   {slog.LevelError, "Core cleanup not confirmed"},
-	ConnectionFailed:    {slog.LevelError, "Core connection failed"},
-	ConnectionConfirmed: {slog.LevelInfo, "Core identity confirmed"},
-	DiagnosticDegraded:  {slog.LevelWarn, "Diagnostic writer degraded"},
-	StorageReady:        {slog.LevelInfo, "SQLite settings confirmed"},
-	CommandSent:         {slog.LevelInfo, "Command sent to core"},
-	CommandAccepted:     {slog.LevelInfo, "Command accepted"},
-	CommandRejected:     {slog.LevelInfo, "Command rejected"},
-	CommandCompleted:    {slog.LevelInfo, "Command completed"},
-	CommandFailed:       {slog.LevelError, "Command failed"},
-	CommandObserved:     {slog.LevelInfo, "Command result observed"},
-	frameworkMessage:    {slog.LevelInfo, "Framework diagnostic"},
-	libraryMessage:      {slog.LevelInfo, "Library diagnostic"},
+	ProcessStarted:         {slog.LevelInfo, "Process started"},
+	ProcessStopped:         {slog.LevelInfo, "Process stopped"},
+	CoreStopped:            {slog.LevelInfo, "Core stopped"},
+	CoreCleanupFailed:      {slog.LevelError, "Core cleanup not confirmed"},
+	ConnectionFailed:       {slog.LevelError, "Core connection failed"},
+	ConnectionConfirmed:    {slog.LevelInfo, "Core identity confirmed"},
+	ConnectionStateChanged: {slog.LevelInfo, "Connection state changed"},
+	DiagnosticDegraded:     {slog.LevelWarn, "Diagnostic writer degraded"},
+	StorageReady:           {slog.LevelInfo, "SQLite settings confirmed"},
+	CommandSent:            {slog.LevelInfo, "Command sent to core"},
+	CommandAccepted:        {slog.LevelInfo, "Command accepted"},
+	CommandRejected:        {slog.LevelInfo, "Command rejected"},
+	CommandCompleted:       {slog.LevelInfo, "Command completed"},
+	CommandFailed:          {slog.LevelError, "Command failed"},
+	CommandObserved:        {slog.LevelInfo, "Command result observed"},
+	frameworkMessage:       {slog.LevelInfo, "Framework diagnostic"},
+	libraryMessage:         {slog.LevelInfo, "Library diagnostic"},
 }
 
 // Component identifies the trusted source of a diagnostic record.
@@ -199,6 +201,7 @@ type fields struct {
 	command, test, action, backendRun       uuid.UUID
 	errorCode                               string
 	commandStatus                           string
+	previousConnection, connection          string
 	sqliteVersion, journalMode, synchronous string
 	exitCode                                *int64
 	grouped                                 bool
@@ -244,6 +247,14 @@ func (f *fields) add(attr slog.Attr) {
 			switch value {
 			case "accepted", "completed", "rejected", "failed", "unknown":
 				f.commandStatus = value
+			}
+		case "previous_status", "connection_status":
+			if value == "disconnected" || value == "connected" {
+				if attr.Key == "previous_status" {
+					f.previousConnection = value
+				} else {
+					f.connection = value
+				}
 			}
 		case "sqlite_version":
 			if len(value) > 0 && len(value) <= 32 {
@@ -296,6 +307,12 @@ func (l *Logger) emit(event Event, spec eventSpec, component Component, values f
 	}
 	if values.commandStatus != "" {
 		record.AddAttrs(slog.String("command_status", values.commandStatus))
+	}
+	if values.previousConnection != "" {
+		record.AddAttrs(slog.String("previous_status", values.previousConnection))
+	}
+	if values.connection != "" {
+		record.AddAttrs(slog.String("connection_status", values.connection))
 	}
 	if values.sqliteVersion != "" {
 		record.AddAttrs(slog.String("sqlite_version", values.sqliteVersion))

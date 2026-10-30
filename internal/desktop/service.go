@@ -3,6 +3,7 @@ package desktop
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -16,6 +17,10 @@ type Core interface {
 	Handshake(context.Context) (contract.Handshake, error)
 	ConnectionState(context.Context) (contract.ConnectionState, error)
 	SessionView(context.Context) (contract.SessionView, error)
+	EnableConnectionEvents(context.Context) error
+	AcknowledgeConnection(context.Context, string, int64) error
+	AcknowledgeCoreEvent(context.Context, string, int64) error
+	WaitConnection(context.Context, int64, int64) (contract.ConnectionNotice, error)
 	KeepAliveUntil(context.Context, time.Time) error
 	Snapshot(context.Context) (contract.Snapshot, error)
 	ListTests(context.Context, contract.ListTestsParams) (contract.TestList, error)
@@ -32,11 +37,13 @@ type Core interface {
 
 // Service forwards domain operations to the authenticated core client.
 type Service struct {
-	core        Core
-	sessionGate sync.Mutex
-	ticketMu    sync.Mutex
-	ticket      uuid.UUID
-	ticketUntil time.Time
+	core            Core
+	sessionGate     sync.Mutex
+	observationGate sync.Mutex
+	watchGate       sync.Mutex
+	ticketMu        sync.Mutex
+	ticket          uuid.UUID
+	ticketUntil     time.Time
 }
 
 func NewService(core Core) *Service { return &Service{core: core} }
@@ -60,6 +67,35 @@ func (s *Service) SessionView(ctx context.Context) (contract.SessionView, error)
 	}
 	defer s.sessionGate.Unlock()
 	return s.core.SessionView(ctx)
+}
+
+// ObserveSession reads the last host view without extending UI liveness.
+func (s *Service) ObserveSession(ctx context.Context) (contract.SessionView, error) {
+	if !s.observationGate.TryLock() {
+		return contract.SessionView{}, errSessionBusy
+	}
+	defer s.observationGate.Unlock()
+	return s.core.SessionView(ctx)
+}
+
+func (s *Service) EnableConnectionEvents(ctx context.Context) error {
+	return s.core.EnableConnectionEvents(ctx)
+}
+
+func (s *Service) AcknowledgeConnection(ctx context.Context, host string, revision int64) error {
+	return s.core.AcknowledgeConnection(ctx, host, revision)
+}
+
+func (s *Service) AcknowledgeCoreEvent(ctx context.Context, backend string, sequence int64) error {
+	return s.core.AcknowledgeCoreEvent(ctx, backend, sequence)
+}
+
+func (s *Service) WaitConnection(ctx context.Context, after, afterSequence int64) (contract.ConnectionNotice, error) {
+	if !s.watchGate.TryLock() {
+		return contract.ConnectionNotice{}, errSessionBusy
+	}
+	defer s.watchGate.Unlock()
+	return s.core.WaitConnection(ctx, after, afterSequence)
 }
 
 func (s *Service) BeginSessionCheck() (string, error) {
@@ -106,8 +142,18 @@ func (s *Service) ListTests(ctx context.Context, params contract.ListTestsParams
 	return s.core.ListTests(ctx, params)
 }
 
-func (s *Service) CreateTest(ctx context.Context, command CreateCommandInput) (contract.CommandStatus, error) {
-	return s.core.CreateTestInput(ctx, command)
+func dispatch(result contract.CommandStatus, err error) (contract.CommandDispatch, error) {
+	if errors.Is(err, errCommandNotSent) {
+		return contract.CommandDispatch{Delivery: contract.NotSent}, nil
+	}
+	if err != nil {
+		return contract.CommandDispatch{}, err
+	}
+	return contract.CommandDispatch{Delivery: contract.Response, Command: &result}, nil
+}
+
+func (s *Service) CreateTest(ctx context.Context, command CreateCommandInput) (contract.CommandDispatch, error) {
+	return dispatch(s.core.CreateTestInput(ctx, command))
 }
 
 func (s *Service) Test(ctx context.Context, testID string) (contract.TestRecord, error) {
@@ -118,16 +164,16 @@ func (s *Service) Readiness(ctx context.Context, testID string) (contract.Readin
 	return s.core.Readiness(ctx, testID)
 }
 
-func (s *Service) StartTest(ctx context.Context, testID string, command StartCommandInput) (contract.CommandStatus, error) {
-	return s.core.StartTestInput(ctx, testID, command)
+func (s *Service) StartTest(ctx context.Context, testID string, command StartCommandInput) (contract.CommandDispatch, error) {
+	return dispatch(s.core.StartTestInput(ctx, testID, command))
 }
 
 func (s *Service) StopTest(ctx context.Context, testID string, command StopCommandInput) (contract.CommandStatus, error) {
 	return s.core.StopTestInput(ctx, testID, command)
 }
 
-func (s *Service) ConfirmAction(ctx context.Context, testID, actionID string, command ConfirmCommandInput) (contract.CommandStatus, error) {
-	return s.core.ConfirmActionInput(ctx, testID, actionID, command)
+func (s *Service) ConfirmAction(ctx context.Context, testID, actionID string, command ConfirmCommandInput) (contract.CommandDispatch, error) {
+	return dispatch(s.core.ConfirmActionInput(ctx, testID, actionID, command))
 }
 
 func (s *Service) Measurements(ctx context.Context, testID string, after int64, limit int) (contract.MeasurementPage, error) {

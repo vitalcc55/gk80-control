@@ -18,6 +18,14 @@ import * as contract$0 from "../contract/models.js";
 // @ts-ignore: Unused imports
 import * as $models from "./models.js";
 
+export function AcknowledgeConnection(host: string, revision: number): $CancellablePromise<void> {
+    return $Call.ByID(557835069, host, revision);
+}
+
+export function AcknowledgeCoreEvent(backend: string, sequence: number): $CancellablePromise<void> {
+    return $Call.ByID(93014070, backend, sequence);
+}
+
 export function Audit(testID: string, after: number, limit: number): $CancellablePromise<contract$0.AuditPage> {
     return $Call.ByID(945109110, testID, after, limit);
 }
@@ -30,7 +38,7 @@ export function Command(commandID: string): $CancellablePromise<contract$0.Comma
     return $Call.ByID(3690784748, commandID);
 }
 
-export function ConfirmAction(testID: string, actionID: string, command: $models.ConfirmCommandInput): $CancellablePromise<contract$0.CommandStatus> {
+export function ConfirmAction(testID: string, actionID: string, command: $models.ConfirmCommandInput): $CancellablePromise<contract$0.CommandDispatch> {
     return $Call.ByID(4199905595, testID, actionID, command);
 }
 
@@ -38,8 +46,12 @@ export function ConnectionState(): $CancellablePromise<contract$0.ConnectionStat
     return $Call.ByID(1232443464);
 }
 
-export function CreateTest(command: $models.CreateCommandInput): $CancellablePromise<contract$0.CommandStatus> {
+export function CreateTest(command: $models.CreateCommandInput): $CancellablePromise<contract$0.CommandDispatch> {
     return $Call.ByID(4135591651, command);
+}
+
+export function EnableConnectionEvents(): $CancellablePromise<void> {
+    return $Call.ByID(1050674577);
 }
 
 export function Handshake(): $CancellablePromise<contract$0.Handshake> {
@@ -58,6 +70,13 @@ export function Measurements(testID: string, after: number, limit: number): $Can
     return $Call.ByID(1262557858, testID, after, limit);
 }
 
+/**
+ * ObserveSession reads the last host view without extending UI liveness.
+ */
+export function ObserveSession(): $CancellablePromise<contract$0.SessionView> {
+    return $Call.ByID(2763817291);
+}
+
 export function Readiness(testID: string): $CancellablePromise<contract$0.Readiness> {
     return $Call.ByID(1515748629, testID);
 }
@@ -70,7 +89,7 @@ export function Snapshot(): $CancellablePromise<contract$0.Snapshot> {
     return $Call.ByID(845326551);
 }
 
-export function StartTest(testID: string, command: $models.StartCommandInput): $CancellablePromise<contract$0.CommandStatus> {
+export function StartTest(testID: string, command: $models.StartCommandInput): $CancellablePromise<contract$0.CommandDispatch> {
     return $Call.ByID(4013822117, testID, command);
 }
 
@@ -80,4 +99,8 @@ export function StopTest(testID: string, command: $models.StopCommandInput): $Ca
 
 export function Test(testID: string): $CancellablePromise<contract$0.TestRecord> {
     return $Call.ByID(2042616667, testID);
+}
+
+export function WaitConnection(after: number, afterSequence: number): $CancellablePromise<contract$0.ConnectionNotice> {
+    return $Call.ByID(1823344242, after, afterSequence);
 }

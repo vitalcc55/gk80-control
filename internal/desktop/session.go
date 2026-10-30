@@ -25,6 +25,7 @@ const (
 
 var errSessionUnavailable = errors.New("demo session is not confirmed")
 var errSessionBusy = errors.New("demo session operation is in progress")
+var errCommandNotSent = errors.New("this command attempt was not sent")
 
 type sessionStream interface {
 	Next(context.Context) (contract.Event, error)
@@ -93,6 +94,7 @@ type demoSession struct {
 	activeGeneration uint64
 	unknownAcquire   bool
 	streamActive     bool
+	streamGeneration int64
 	streamDone       <-chan struct{}
 	stream           sessionStream
 	streamStopped    chan struct{}
@@ -102,10 +104,22 @@ type demoSession struct {
 	closing          bool
 	revision         int64
 	lastStatus       contract.ConnectionStateStatus
+	lastLinkValid    bool
+	lastGeneration   int64
+	onChange         func()
+	onEvent          func(contract.Event)
+	onState          func(bool, bool)
 	ctx              context.Context
 	cancel           context.CancelFunc
 	actionsCtx       context.Context
 	cancelActions    context.CancelFunc
+}
+
+func (s *demoSession) changedLocked() {
+	s.revision++
+	if s.onChange != nil {
+		s.onChange()
+	}
 }
 
 func newDemoSession(parent context.Context, client sessionClient, hostID, backendID uuid.UUID) *demoSession {
@@ -144,6 +158,9 @@ func (s *demoSession) keepAliveUntil(ctx context.Context, admissionDeadline time
 		return errSessionUnavailable
 	}
 	s.pauseLiveLocked(started)
+	previousLease := s.leaseID
+	previousUntil := s.leaseUntil
+	continuous := s.leaseConfirmed && previousLease != uuid.Nil && started.Before(previousUntil) && !s.lastUI.IsZero() && started.Before(s.lastUI.Add(uiHeartbeatFreshness))
 	s.lastUI = started
 	if !s.recoverySince.IsZero() && started.Sub(s.recoverySince) >= sessionRecoveryLimit {
 		s.streamBroken = true
@@ -175,7 +192,7 @@ func (s *demoSession) keepAliveUntil(ctx context.Context, admissionDeadline time
 			s.streamBroken = false
 			s.recoverySince = time.Time{}
 			s.liveDuration = 0
-			s.revision++
+			s.changedLocked()
 		}
 		return errSessionUnavailable
 	}
@@ -201,7 +218,8 @@ func (s *demoSession) keepAliveUntil(ctx context.Context, admissionDeadline time
 		s.lastProbe = time.Time{}
 		s.leaseConfirmed = false
 		s.invalidateActionsLocked()
-		s.revision++
+		s.changedLocked()
+		_ = s.connectionStateLocked(time.Now())
 		return err
 	}
 	if granted.LeaseId == uuid.Nil || granted.ClientId != s.clientID || (lease != uuid.Nil && granted.LeaseId != lease) {
@@ -211,7 +229,8 @@ func (s *demoSession) keepAliveUntil(ctx context.Context, admissionDeadline time
 		s.lastProbe = time.Time{}
 		s.leaseConfirmed = false
 		s.invalidateActionsLocked()
-		s.revision++
+		s.changedLocked()
+		_ = s.connectionStateLocked(time.Now())
 		return errSessionUnavailable
 	}
 	s.leaseID = granted.LeaseId
@@ -220,11 +239,15 @@ func (s *demoSession) keepAliveUntil(ctx context.Context, admissionDeadline time
 	if granted.ExpiresAt.Before(s.leaseUntil) {
 		s.leaseUntil = granted.ExpiresAt
 	}
-	s.revision++
+	if !continuous || previousLease != granted.LeaseId || s.leaseUntil.Before(previousUntil) {
+		s.changedLocked()
+	}
 	if err := requestCtx.Err(); err != nil {
 		s.leaseConfirmed = false
 		s.lastProbe = time.Time{}
 		s.invalidateActionsLocked()
+		s.changedLocked()
+		_ = s.connectionStateLocked(time.Now())
 		return err
 	}
 	if time.Since(s.lastUI) >= uiHeartbeatFreshness || !time.Now().Before(s.leaseUntil) {
@@ -251,6 +274,7 @@ func (s *demoSession) connectionState() contract.ConnectionState {
 
 func (s *demoSession) connectionStateLocked(now time.Time) contract.ConnectionState {
 	status := contract.Disconnected
+	linkValid := false
 	if !s.closed && !s.closing && !s.unknownAcquire && !s.streamBroken && s.leaseConfirmed && !s.lastUI.IsZero() && now.Sub(s.lastUI) < uiHeartbeatFreshness && now.Before(s.leaseUntil) {
 		status = contract.Recovering
 		streamOpen := s.streamActive && s.streamDone != nil
@@ -261,20 +285,27 @@ func (s *demoSession) connectionStateLocked(now time.Time) contract.ConnectionSt
 			default:
 			}
 		}
-		if streamOpen && s.stream != nil && !s.stream.Pending() && !s.snapshotPending && s.snapshot != nil && !s.lastProbe.IsZero() && now.Sub(s.lastProbe) < streamProbeFreshness {
+		linkValid = streamOpen && s.stream != nil && !s.lastProbe.IsZero() && now.Sub(s.lastProbe) < streamProbeFreshness
+		if linkValid && !s.stream.Pending() && !s.snapshotPending && s.snapshot != nil {
 			status = contract.Live
 		}
 	}
-	if status != s.lastStatus {
+	if status != s.lastStatus || linkValid != s.lastLinkValid || s.lastGeneration != s.streamGeneration {
+		previousLink := s.lastLinkValid
 		if status != contract.Live {
 			s.pauseLiveLocked(now)
 		} else {
 			s.startLiveLocked(now)
 		}
 		s.lastStatus = status
-		s.revision++
+		s.lastLinkValid = linkValid
+		s.lastGeneration = s.streamGeneration
+		s.changedLocked()
+		if s.onState != nil && previousLink != linkValid {
+			s.onState(previousLink, linkValid)
+		}
 	}
-	return contract.ConnectionState{HostRunId: s.hostID, Revision: s.revision, Status: status}
+	return contract.ConnectionState{HostRunId: s.hostID, Revision: s.revision, Status: status, LinkValid: linkValid, StreamGeneration: s.streamGeneration}
 }
 
 // sessionView takes a single ordered snapshot of connection freshness and data.
@@ -290,7 +321,7 @@ func (s *demoSession) sessionView() (contract.SessionView, error) {
 		}
 		result.Snapshot = &copy
 	}
-	if result.Connection.Status == contract.Live {
+	if result.Connection.LinkValid {
 		until := s.lastUI.Add(uiHeartbeatFreshness)
 		if s.leaseUntil.Before(until) {
 			until = s.leaseUntil
@@ -299,7 +330,10 @@ func (s *demoSession) sessionView() (contract.SessionView, error) {
 			until = probeUntil
 		}
 		if remaining := until.Sub(now).Milliseconds(); remaining > 0 {
-			result.ValidForMs = remaining
+			result.LinkValidForMs = remaining
+			if result.Connection.Status == contract.Live {
+				result.ValidForMs = remaining
+			}
 		}
 	}
 	return result, nil
@@ -320,7 +354,7 @@ func (s *demoSession) runStream(lease uuid.UUID) {
 		s.stream = nil
 		s.snapshotPending = true
 		s.lastProbe = time.Time{}
-		s.revision++
+		s.changedLocked()
 		close(s.streamStopped)
 		s.mu.Unlock()
 	}()
@@ -341,6 +375,14 @@ func (s *demoSession) runStream(lease uuid.UUID) {
 		}
 		cancel()
 		if stream != nil {
+			s.mu.Lock()
+			s.streamGeneration++
+			s.pauseLiveLocked(time.Now())
+			s.snapshotPending = true
+			s.lastProbe = time.Time{}
+			s.changedLocked()
+			_ = s.connectionStateLocked(time.Now())
+			s.mu.Unlock()
 			closeCtx, closeCancel := context.WithTimeout(context.Background(), 4*time.Second)
 			closeErr := stream.Close(closeCtx)
 			closeCancel()
@@ -361,7 +403,7 @@ func (s *demoSession) runStream(lease uuid.UUID) {
 		s.streamDone = nil
 		s.stream = nil
 		s.lastProbe = time.Time{}
-		s.revision++
+		s.changedLocked()
 		s.mu.Unlock()
 		if stable {
 			attempt = -1
@@ -385,12 +427,12 @@ func (s *demoSession) runStream(lease uuid.UUID) {
 	if s.canObserve(lease) {
 		s.mu.Lock()
 		s.streamBroken = true
-		s.revision++
+		s.changedLocked()
 		s.mu.Unlock()
 	}
 }
 
-func (s *demoSession) consumeStream(ctx context.Context, lease uuid.UUID, stream sessionStream, snapshot contract.Snapshot) error {
+func (s *demoSession) consumeStream(ctx context.Context, lease uuid.UUID, stream sessionStream, snapshot contract.Snapshot) (result error) {
 	syncCtx, syncCancel := context.WithTimeout(ctx, sessionSyncLimit)
 	err := s.acceptSnapshot(syncCtx, lease, snapshot)
 	if err == nil {
@@ -400,52 +442,93 @@ func (s *demoSession) consumeStream(ctx context.Context, lease uuid.UUID, stream
 	if err != nil {
 		return err
 	}
-	nextProbe := time.Time{}
-	for s.canObserve(lease) {
-		if !time.Now().Before(nextProbe) {
-			s.mu.Lock()
-			s.pauseLiveLocked(time.Now())
-			s.snapshotPending = true
-			s.revision++
-			s.mu.Unlock()
-			syncCtx, syncCancel := context.WithTimeout(ctx, sessionSyncLimit)
+	workerCtx, cancelWorker := context.WithCancel(ctx)
+	workerDone := make(chan struct{})
+	probeError := make(chan error, 1)
+	go func() {
+		defer close(workerDone)
+		for workerCtx.Err() == nil {
 			probeAt := time.Now()
-			if err := stream.Probe(syncCtx); err != nil {
-				syncCancel()
-				return err
-			}
-			s.reconcilePending(syncCtx, lease)
-			err := s.drainStream(syncCtx, lease, stream)
-			syncCancel()
+			probeCtx, cancel := context.WithTimeout(workerCtx, sessionSyncLimit)
+			err := stream.Probe(probeCtx)
+			cancel()
 			if err != nil {
-				return err
+				if workerCtx.Err() == nil {
+					s.mu.Lock()
+					if s.stream == stream && s.leaseID == lease {
+						s.lastProbe = time.Time{}
+						s.snapshotPending = true
+						s.changedLocked()
+						_ = s.connectionStateLocked(time.Now())
+					}
+					s.mu.Unlock()
+					probeError <- err
+					cancelWorker()
+				}
+				return
 			}
 			s.mu.Lock()
-			if s.closed || s.leaseID != lease {
-				s.mu.Unlock()
-				return errSessionUnavailable
+			valid := !s.closed && !s.closing && s.stream == stream && s.leaseID == lease && workerCtx.Err() == nil
+			select {
+			case <-stream.Done():
+				valid = false
+			default:
 			}
-			s.lastProbe = probeAt
-			s.startLiveLocked(time.Now())
-			s.revision++
+			if valid {
+				s.lastProbe = probeAt
+				s.startLiveLocked(time.Now())
+				_ = s.connectionStateLocked(time.Now())
+			}
 			s.mu.Unlock()
-			nextProbe = probeAt.Add(streamProbeInterval)
+			if !valid {
+				return
+			}
+			wait := time.Until(probeAt.Add(streamProbeInterval))
+			if wait < 0 {
+				wait = 0
+			}
+			timer := time.NewTimer(wait)
+			select {
+			case <-workerCtx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
 		}
-		nextCtx, cancel := context.WithDeadline(ctx, nextProbe)
-		_, err := stream.Next(nextCtx)
+	}()
+	defer func() {
+		cancelWorker()
+		select {
+		case <-workerDone:
+		case <-time.After(4 * time.Second):
+			result = transport.ErrStreamCloseUnconfirmed
+		}
+	}()
+	for s.canObserve(lease) {
+		nextCtx, cancel := context.WithTimeout(workerCtx, time.Second)
+		event, err := stream.Next(nextCtx)
 		cancel()
 		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			s.connectionState()
 			continue
 		}
 		if err != nil {
+			select {
+			case failure := <-probeError:
+				return failure
+			default:
+			}
 			return err
 		}
 		s.mu.Lock()
 		s.pauseLiveLocked(time.Now())
 		s.snapshotPending = true
-		s.revision++
+		if s.onEvent != nil {
+			s.onEvent(event)
+		}
+		s.changedLocked()
 		s.mu.Unlock()
-		syncCtx, syncCancel := context.WithTimeout(ctx, sessionSyncLimit)
+		syncCtx, syncCancel := context.WithTimeout(workerCtx, sessionSyncLimit)
 		snapshot, err := readSessionSnapshot(syncCtx, stream)
 		if err != nil {
 			syncCancel()
@@ -468,10 +551,10 @@ func (s *demoSession) drainStream(ctx context.Context, lease uuid.UUID, stream s
 	s.mu.Lock()
 	s.pauseLiveLocked(time.Now())
 	s.snapshotPending = true
-	s.revision++
+	s.changedLocked()
 	s.mu.Unlock()
 	for {
-		_, present, err := stream.Poll(ctx)
+		event, present, err := stream.Poll(ctx)
 		if err != nil {
 			return err
 		}
@@ -479,10 +562,16 @@ func (s *demoSession) drainStream(ctx context.Context, lease uuid.UUID, stream s
 			s.mu.Lock()
 			s.snapshotPending = false
 			s.startLiveLocked(time.Now())
-			s.revision++
+			s.changedLocked()
 			s.mu.Unlock()
 			return nil
 		}
+		s.mu.Lock()
+		if s.onEvent != nil {
+			s.onEvent(event)
+		}
+		s.changedLocked()
+		s.mu.Unlock()
 		snapshot, err := readSessionSnapshot(ctx, stream)
 		if err != nil {
 			return err
@@ -524,7 +613,7 @@ func (s *demoSession) acceptSnapshot(ctx context.Context, lease uuid.UUID, snaps
 		s.activeTestID, s.activeStopID = uuid.Nil, uuid.Nil
 		s.activeGeneration++
 	}
-	s.revision++
+	s.changedLocked()
 	s.mu.Unlock()
 	return nil
 }
@@ -745,7 +834,7 @@ func (s *demoSession) command(ctx context.Context, id uuid.UUID, identity string
 	}
 	if !valid || len(s.commands) >= limit {
 		s.mu.Unlock()
-		return contract.CommandStatus{}, errSessionUnavailable
+		return contract.CommandStatus{}, errors.Join(errSessionUnavailable, errCommandNotSent)
 	}
 	lease := s.leaseID
 	status := contract.CommandStatus{CommandId: id, Status: contract.CommandStatusStatusUnknown}
@@ -806,7 +895,7 @@ func (s *demoSession) command(ctx context.Context, id uuid.UUID, identity string
 				delete(s.inFlight, id)
 			}
 			s.mu.Unlock()
-			return contract.CommandStatus{}, invalidNew[0]
+			return contract.CommandStatus{}, errors.Join(invalidNew[0], errCommandNotSent)
 		}
 		s.mu.Lock()
 		admitted := s.commandPayloads[id] == identity && s.leaseID == lease && s.commandAllowedLocked(false) && requestCtx.Err() == nil
@@ -827,6 +916,9 @@ func (s *demoSession) command(ctx context.Context, id uuid.UUID, identity string
 		}
 		s.mu.Unlock()
 		if !admitted {
+			if !previouslyPresent {
+				return contract.CommandStatus{}, errors.Join(errSessionUnavailable, errCommandNotSent)
+			}
 			return contract.CommandStatus{}, errSessionUnavailable
 		}
 	}
@@ -874,7 +966,8 @@ func (s *demoSession) close() {
 	if !s.closed {
 		s.closed = true
 		s.lastProbe = time.Time{}
-		s.revision++
+		s.changedLocked()
+		_ = s.connectionStateLocked(time.Now())
 		s.cancel()
 		s.cancelActions()
 	}
@@ -890,7 +983,8 @@ func (s *demoSession) shutdown(ctx context.Context) error {
 	}
 	s.closing = true
 	s.cancelActions()
-	s.revision++
+	s.changedLocked()
+	_ = s.connectionStateLocked(time.Now())
 	lease := s.leaseID
 	unknownAcquire := s.unknownAcquire
 	var active *contract.TestRecord

@@ -35,6 +35,30 @@ export interface AuditPage {
 }
 
 /**
+ * CommandDispatch defines model for CommandDispatch.
+ */
+export interface CommandDispatch {
+    "command": CommandStatus | null;
+    "delivery": CommandDispatchDelivery;
+}
+
+/**
+ * CommandDispatchDelivery defines model for CommandDispatch.Delivery.
+ */
+export enum CommandDispatchDelivery {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    /**
+     * Defines values for CommandDispatchDelivery.
+     */
+    NotSent = "notSent",
+    Response = "response",
+};
+
+/**
  * CommandStatus defines model for CommandStatus.
  */
 export interface CommandStatus {
@@ -64,12 +88,24 @@ export enum CommandStatusStatus {
 };
 
 /**
+ * ConnectionNotice defines model for ConnectionNotice.
+ */
+export interface ConnectionNotice {
+    "connection": ConnectionState;
+    "event": Event | null;
+    "gap": boolean;
+    "snapshotBoundary": number;
+}
+
+/**
  * ConnectionState defines model for ConnectionState.
  */
 export interface ConnectionState {
     "hostRunId": types$0.UUID;
+    "linkValid": boolean;
     "revision": number;
     "status": ConnectionStateStatus;
+    "streamGeneration": number;
 }
 
 /**
@@ -331,6 +367,7 @@ export enum ReadinessCheckSource {
  */
 export interface SessionView {
     "connection": ConnectionState;
+    "linkValidForMs": number;
     "snapshot": Snapshot | null;
 
     /**

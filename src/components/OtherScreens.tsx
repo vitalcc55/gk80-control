@@ -7,7 +7,13 @@ import {
   useRef,
   useState,
 } from 'react';
+import { exactPositiveDecimal, trimDemoValve } from '../desktop/demo-input';
+import { outcomeLabel, qualityLabel, saveLabel } from '../desktop/display';
 import { formatNumber } from '../fixtureAdapter';
+import type {
+  Readiness,
+  TestRecord,
+} from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
 import type { TestParameters } from '../model';
 import { PressureNotation } from './PressureNotation';
 import './OtherScreens.css';
@@ -203,6 +209,29 @@ function positiveNumber(value: string): number | null {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
+function liveFieldError(
+  name: 'valve' | 'area' | 'pmax' | 'measurementSeconds',
+  value: string,
+): string | undefined {
+  if (name === 'valve') {
+    const trimmed = trimDemoValve(value);
+    if (!trimmed) return 'Укажите обозначение или наименование клапана.';
+    return Array.from(trimmed).length > 200 || /\p{Surrogate}/u.test(value)
+      ? 'Укажите не более 200 корректных символов.'
+      : undefined;
+  }
+  const result = exactPositiveDecimal(value, name === 'measurementSeconds');
+  if (result.error === 'precision') return 'Число нельзя передать без потери точности.';
+  if (result.error === 'range') return 'Введите длительность не более 3600 с.';
+  if (result.error === 'invalid')
+    return name === 'area'
+      ? 'Введите площадь больше нуля, м².'
+      : name === 'pmax'
+        ? 'Введите максимальное давление больше нуля, Па.'
+        : 'Введите длительность больше нуля, с.';
+  return undefined;
+}
+
 function draftNumber(value: number): string {
   return new Intl.NumberFormat('en-US', {
     useGrouping: false,
@@ -230,6 +259,9 @@ interface ParametersScreenProps {
   setDraft: Dispatch<SetStateAction<Draft>>;
   onBack: () => void;
   onContinue: (parameters: TestParameters) => void;
+  live?: boolean;
+  pending?: boolean;
+  unavailable?: boolean;
 }
 
 export function ParametersScreen({
@@ -238,6 +270,9 @@ export function ParametersScreen({
   setDraft,
   onBack,
   onContinue,
+  live = false,
+  pending = false,
+  unavailable = false,
 }: ParametersScreenProps) {
   const [errors, setErrors] = useState<Errors>({});
   const [focusRequest, setFocusRequest] = useState<{ field: keyof Errors } | null>(null);
@@ -251,17 +286,38 @@ export function ParametersScreen({
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const area = positiveNumber(draft.area);
-    const pmax = positiveNumber(draft.pmax);
-    const measurementSeconds = positiveNumber(draft.measurementSeconds);
+    const areaResult = live ? exactPositiveDecimal(draft.area) : undefined;
+    const pressureResult = live ? exactPositiveDecimal(draft.pmax) : undefined;
+    const durationResult = live ? exactPositiveDecimal(draft.measurementSeconds, true) : undefined;
+    const area = live ? (areaResult?.value ?? null) : positiveNumber(draft.area);
+    const pmax = live ? (pressureResult?.value ?? null) : positiveNumber(draft.pmax);
+    const measurementSeconds = live
+      ? (durationResult?.value ?? null)
+      : positiveNumber(draft.measurementSeconds);
     const openSeconds = positiveNumber(draft.openSeconds);
     const closeSeconds = positiveNumber(draft.closeSeconds);
     const nextErrors: Errors = {};
-    if (!draft.valve.trim()) nextErrors.valve = 'Укажите обозначение или наименование клапана.';
+    const valve = live ? trimDemoValve(draft.valve) : draft.valve.trim();
+    if (!valve) nextErrors.valve = 'Укажите обозначение или наименование клапана.';
     if (area === null) nextErrors.area = 'Введите площадь больше нуля, м².';
     if (pmax === null) nextErrors.pmax = 'Введите максимальное давление больше нуля, Па.';
     if (measurementSeconds === null)
       nextErrors.measurementSeconds = 'Введите длительность больше нуля, с.';
+    if (areaResult?.error === 'precision')
+      nextErrors.area = 'Число нельзя передать без потери точности.';
+    if (pressureResult?.error === 'precision')
+      nextErrors.pmax = 'Число нельзя передать без потери точности.';
+    if (durationResult?.error === 'precision')
+      nextErrors.measurementSeconds = 'Число нельзя передать без потери точности.';
+    if (durationResult?.error === 'range')
+      nextErrors.measurementSeconds = 'Введите длительность не более 3600 с.';
+    if (live) {
+      for (const field of ['valve', 'area', 'pmax', 'measurementSeconds'] as const) {
+        const error = liveFieldError(field, draft[field]);
+        if (error) nextErrors[field] = error;
+        else delete nextErrors[field];
+      }
+    }
     if (draft.actuator && openSeconds === null)
       nextErrors.openSeconds = 'Введите длительность команды больше нуля, с.';
     if (draft.actuator && closeSeconds === null)
@@ -277,13 +333,14 @@ export function ParametersScreen({
       area === null ||
       pmax === null ||
       measurementSeconds === null ||
-      !draft.valve.trim() ||
+      nextErrors.valve !== undefined ||
+      (live && (draft.direction !== 'pressure' || draft.actuator)) ||
       (draft.actuator && (openSeconds === null || closeSeconds === null))
     )
       return;
     onContinue({
       ...initial,
-      valve: draft.valve.trim(),
+      valve,
       area,
       pmax,
       measurementSeconds,
@@ -308,7 +365,23 @@ export function ParametersScreen({
 
   function updateInput(name: keyof Errors, value: string) {
     setDraft({ ...draft, [name]: value });
-    if (name === 'valve' ? value.trim() !== '' : positiveNumber(value) !== null) {
+    if (
+      live &&
+      (name === 'valve' || name === 'area' || name === 'pmax' || name === 'measurementSeconds')
+    ) {
+      setErrors((current) =>
+        current[name] ? { ...current, [name]: liveFieldError(name, value) } : current,
+      );
+      return;
+    }
+    const valid =
+      name === 'valve'
+        ? value.trim() !== '' &&
+          (!live || (Array.from(value.trim()).length <= 200 && !/\p{Surrogate}/u.test(value)))
+        : live && (name === 'area' || name === 'pmax' || name === 'measurementSeconds')
+          ? exactPositiveDecimal(value, name === 'measurementSeconds').value !== undefined
+          : positiveNumber(value) !== null;
+    if (valid) {
       setErrors((current) => ({ ...current, [name]: undefined }));
     }
   }
@@ -389,7 +462,9 @@ export function ParametersScreen({
                 )}
               </label>
               <label className="form-field">
-                <span id="measurementSeconds-label">Период усреднения утечки, с</span>
+                <span id="measurementSeconds-label">
+                  {live ? 'Интервал демонстрационного измерения, с' : 'Период усреднения утечки, с'}
+                </span>
                 <input
                   className="work-input"
                   aria-labelledby="measurementSeconds-label"
@@ -421,6 +496,7 @@ export function ParametersScreen({
                       type="radio"
                       name="direction"
                       checked={draft.direction === 'vacuum'}
+                      disabled={live}
                       onChange={() => setDraft({ ...draft, direction: 'vacuum' })}
                     />{' '}
                     Разрежение
@@ -454,12 +530,18 @@ export function ParametersScreen({
                     type="radio"
                     name="actuator"
                     checked={draft.actuator}
+                    disabled={live}
                     onChange={() => setDraft({ ...draft, actuator: true })}
                   />{' '}
                   Есть
                 </label>
               </div>
             </fieldset>
+            {live && (
+              <p className="field-help">
+                В этом демонстрационном проходе доступны нагнетание и клапан без привода.
+              </p>
+            )}
             {draft.actuator && (
               <div className="form-grid actuator-grid">
                 <label className="form-field">
@@ -519,8 +601,13 @@ export function ParametersScreen({
           <button className="work-button work-button-secondary" type="button" onClick={onBack}>
             <ArrowLeft aria-hidden="true" size={16} /> К испытаниям
           </button>
-          <button className="work-button work-button-primary" type="submit">
-            Проверить готовность <ArrowRight aria-hidden="true" size={16} />
+          <button
+            className="work-button work-button-primary"
+            type="submit"
+            disabled={pending || unavailable}
+          >
+            {pending ? 'Создание испытания…' : 'Проверить готовность'}{' '}
+            <ArrowRight aria-hidden="true" size={16} />
           </button>
         </div>
       </form>
@@ -531,9 +618,11 @@ export function ParametersScreen({
 export function ActiveParametersScreen({
   parameters,
   onReturn,
+  live = false,
 }: {
   parameters: TestParameters;
   onReturn: () => void;
+  live?: boolean;
 }) {
   return (
     <section className="workpage workpage-narrow" aria-labelledby="active-parameters-title">
@@ -566,7 +655,7 @@ export function ActiveParametersScreen({
             <dd>{formatNumber(parameters.pmax)} Па</dd>
           </div>
           <div>
-            <dt>Период усреднения утечки</dt>
+            <dt>{live ? 'Интервал демонстрационного измерения' : 'Период усреднения утечки'}</dt>
             <dd>{formatNumber(parameters.measurementSeconds)} с</dd>
           </div>
           <div>
@@ -612,7 +701,10 @@ interface ReadinessScreenProps {
   parameters: TestParameters;
   autoCheckFailed: boolean;
   onBack: () => void;
-  onStart: () => void;
+  onStart: (confirmations: { valveClosed: boolean; connectionConfirmed: boolean }) => void;
+  readiness?: Readiness;
+  pending?: boolean;
+  stale?: boolean;
 }
 
 export function ReadinessScreen({
@@ -620,10 +712,18 @@ export function ReadinessScreen({
   autoCheckFailed,
   onBack,
   onStart,
+  readiness,
+  pending = false,
+  stale = false,
 }: ReadinessScreenProps) {
   const [valveConfirmed, setValveConfirmed] = useState(false);
   const [connectionConfirmed, setConnectionConfirmed] = useState(false);
-  const canStart = valveConfirmed && connectionConfirmed && !autoCheckFailed;
+  const canStart =
+    valveConfirmed &&
+    connectionConfirmed &&
+    !autoCheckFailed &&
+    (readiness?.ready ?? true) &&
+    !pending;
   return (
     <section className="workpage workpage-narrow" aria-labelledby="readiness-title">
       <div className="workpage-heading">
@@ -652,23 +752,36 @@ export function ReadinessScreen({
       <div className="work-surface readiness-surface">
         <div className="section-heading">
           <h2>Автоматические проверки</h2>
-          <p>Подготовленный пример состояния</p>
+          <p>{readiness ? 'Проверки демонстрационного ядра' : 'Подготовленный пример состояния'}</p>
         </div>
         <ul className="checks-list">
-          <li>
-            <span>Связь и актуальность показаний</span>
-            <strong className={autoCheckFailed ? 'error-text' : undefined}>
-              {autoCheckFailed ? 'Нет связи · пример' : 'Готово'}
-            </strong>
-          </li>
-          <li>
-            <span>Аварийный вход и конфигурация</span>
-            <strong>Готово</strong>
-          </li>
-          <li>
-            <span>Необходимое оборудование</span>
-            <strong>Готово</strong>
-          </li>
+          {readiness ? (
+            readiness.checks?.map((check) => (
+              <li key={check.code}>
+                <span>{check.label}</span>
+                <strong className={check.ready ? undefined : 'error-text'}>
+                  {stale ? 'Не подтверждено' : check.ready ? 'Готово' : 'Не готово'}
+                </strong>
+              </li>
+            ))
+          ) : (
+            <>
+              <li>
+                <span>Связь и актуальность показаний</span>
+                <strong className={autoCheckFailed ? 'error-text' : undefined}>
+                  {autoCheckFailed ? 'Нет связи · пример' : 'Готово'}
+                </strong>
+              </li>
+              <li>
+                <span>Аварийный вход и конфигурация</span>
+                <strong>Готово</strong>
+              </li>
+              <li>
+                <span>Необходимое оборудование</span>
+                <strong>Готово</strong>
+              </li>
+            </>
+          )}
         </ul>
         <div className="section-heading checks-heading">
           <h2>Подтверждения оператора</h2>
@@ -708,18 +821,23 @@ export function ReadinessScreen({
         <div className="action-with-help">
           {!canStart && (
             <span>
-              {autoCheckFailed
-                ? 'Автоматическая проверка не пройдена.'
-                : 'Отметьте оба подтверждения оператора.'}
+              {stale
+                ? 'Связь или готовность не подтверждены.'
+                : pending
+                  ? 'Ожидаем ответ ядра.'
+                  : autoCheckFailed
+                    ? 'Автоматическая проверка не пройдена.'
+                    : 'Отметьте оба подтверждения оператора.'}
             </span>
           )}
           <button
             className="work-button work-button-primary"
             type="button"
             disabled={!canStart}
-            onClick={onStart}
+            onClick={() => onStart({ valveClosed: valveConfirmed, connectionConfirmed })}
           >
-            Перейти к проведению <ArrowRight aria-hidden="true" size={16} />
+            {pending ? 'Ожидание ядра…' : 'Перейти к проведению'}{' '}
+            <ArrowRight aria-hidden="true" size={16} />
           </button>
         </div>
       </div>
@@ -735,6 +853,7 @@ interface ResultScreenProps {
   draftAvailable: boolean;
   onList: () => void;
   onNew: () => void;
+  record?: TestRecord;
 }
 
 export function ResultScreen({
@@ -745,6 +864,7 @@ export function ResultScreen({
   draftAvailable,
   onList,
   onNew,
+  record,
 }: ResultScreenProps) {
   return (
     <section className="workpage" aria-labelledby="result-title">
@@ -759,16 +879,32 @@ export function ResultScreen({
       <div className="result-overview">
         <div>
           <span>Ход испытания</span>
-          <strong>{interrupted ? 'Прерван в примере' : 'Завершён в примере'}</strong>
+          <strong>
+            {record
+              ? outcomeLabel(record.outcome)
+              : interrupted
+                ? 'Прерван в примере'
+                : 'Завершён в примере'}
+          </strong>
         </div>
         <div>
           <span>Данные</span>
-          <strong>{interrupted ? 'Пример: частичные данные' : 'Пример: данные доступны'}</strong>
+          <strong>
+            {record
+              ? qualityLabel(record.dataQuality)
+              : interrupted
+                ? 'Пример: частичные данные'
+                : 'Пример: данные доступны'}
+          </strong>
         </div>
         <div>
           <span>Сохранение</span>
           <strong className={saveError ? 'error-text' : ''}>
-            {saveError ? 'Ошибка сохранения · пример' : 'Пример: сохранено'}
+            {record
+              ? saveLabel(record.saveStatus)
+              : saveError
+                ? 'Ошибка сохранения · пример'
+                : 'Пример: сохранено'}
           </strong>
           {saveError && <p>Запись результата не подтверждена.</p>}
         </div>
@@ -804,7 +940,9 @@ export function ResultScreen({
               <dd>{parameters.actuator ? 'Есть' : 'Нет'}</dd>
             </div>
             <div>
-              <dt>Период усреднения утечки</dt>
+              <dt>
+                {record ? 'Интервал демонстрационного измерения' : 'Период усреднения утечки'}
+              </dt>
               <dd>{formatNumber(parameters.measurementSeconds)} с</dd>
             </div>
           </dl>
@@ -812,7 +950,11 @@ export function ResultScreen({
         <div className="work-surface result-section">
           <div className="section-heading">
             <h2>Результаты расчёта</h2>
-            <p>В макете не рассчитываются</p>
+            <p>
+              {record
+                ? 'В демонстрационном проходе не рассчитываются'
+                : 'В макете не рассчитываются'}
+            </p>
           </div>
           <dl className="result-details">
             <div>

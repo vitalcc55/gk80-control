@@ -104,6 +104,8 @@ func run() (resultErr error) {
 	owner = desktop.NewOwner(hostID, filepath.Join(filepath.Dir(executable), "gk80-core.exe"), profileDir, profileID, appVersion, logger.Application(diagnostics.ComponentTransport), logger.Degraded(), logErr != nil, func(status contract.DesktopStatus) {
 		app.Event.Emit("desktop:status", status)
 	})
+	owner.SetConnectionEmitter(func(state contract.ConnectionState) { app.Event.Emit("core:connection", state) })
+	owner.SetCoreEventEmitter(func(event contract.Event) { app.Event.Emit("core:event", event) })
 	defer func() {
 		panicValue := recover()
 		if closeErr := owner.Close(); closeErr != nil {

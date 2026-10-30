@@ -346,11 +346,13 @@ components:
     ConnectionState:
       type: object
       additionalProperties: false
-      required: [hostRunId, revision, status]
+      required: [hostRunId, revision, status, linkValid, streamGeneration]
       properties:
         hostRunId: { type: string, format: uuid }
         revision: { type: integer, format: int64, minimum: 0 }
         status: { type: string, enum: [disconnected, recovering, live] }
+        linkValid: { type: boolean }
+        streamGeneration: { type: integer, format: int64, minimum: 0 }
     DesktopStatus:
       type: object
       additionalProperties: false
@@ -661,9 +663,10 @@ components:
     SessionView:
       type: object
       additionalProperties: false
-      required: [connection, snapshot, validForMs]
+      required: [connection, snapshot, validForMs, linkValidForMs]
       properties:
         connection: { $ref: "#/components/schemas/ConnectionState" }
+        linkValidForMs: { type: integer, format: int64, minimum: 0 }
         snapshot:
           oneOf:
             - $ref: "#/components/schemas/Snapshot"
@@ -676,6 +679,32 @@ components:
             Upper bound on freshness, not a guarantee. The client counts from the
             monotonic start of the request, including response delay; zero is expired.
             Changes, errors or disconnection can invalidate the view earlier.
+    CommandDispatch:
+      type: object
+      additionalProperties: false
+      required: [delivery, command]
+      properties:
+        delivery: { type: string, enum: [notSent, response] }
+        command:
+          oneOf:
+            - $ref: "#/components/schemas/CommandStatus"
+            - type: "null"
+      allOf:
+        - if: { properties: { delivery: { const: notSent } } }
+          then: { properties: { command: { type: "null" } } }
+          else: { properties: { command: { $ref: "#/components/schemas/CommandStatus" } } }
+    ConnectionNotice:
+      type: object
+      additionalProperties: false
+      required: [connection, event, gap, snapshotBoundary]
+      properties:
+        connection: { $ref: "#/components/schemas/ConnectionState" }
+        event:
+          oneOf:
+            - $ref: "#/components/schemas/Event"
+            - type: "null"
+        gap: { type: boolean }
+        snapshotBoundary: { type: integer, format: int64, minimum: 0 }
     Event:
       type: object
       additionalProperties: false

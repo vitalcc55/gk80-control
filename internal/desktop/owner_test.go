@@ -62,6 +62,116 @@ func newTestOwner(starter startCore) *Owner {
 	return newOwner(uuid.New(), starter, slog.New(slog.NewTextHandler(io.Discard, nil)), false, func(contract.DesktopStatus) {})
 }
 
+func TestConnectionNotificationsWaitForDeliveryAcknowledgement(t *testing.T) {
+	owner := newTestOwner(nil)
+	session := newDemoSession(owner.ctx, &testSessionClient{}, uuid.New(), uuid.New())
+	defer session.close()
+	defer owner.cancel()
+	session.onChange = owner.signalConnection
+	owner.session = session
+	events := make(chan contract.ConnectionState, 4)
+	owner.SetConnectionEmitter(func(state contract.ConnectionState) { events <- state })
+	go owner.connectionLoop()
+	if err := owner.EnableConnectionEvents(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	first := <-events
+	session.mu.Lock()
+	for range 20 {
+		session.changedLocked()
+	}
+	session.mu.Unlock()
+	select {
+	case event := <-events:
+		t.Fatalf("unacknowledged notification was overwritten: %+v", event)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := owner.AcknowledgeConnection(context.Background(), first.HostRunId.String(), first.Revision+1); err == nil {
+		t.Fatal("wrong revision acknowledged")
+	}
+	if err := owner.AcknowledgeConnection(context.Background(), first.HostRunId.String(), first.Revision); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case next := <-events:
+		if next.Revision <= first.Revision {
+			t.Fatalf("change was lost: %+v", next)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pending change was not sent after acknowledgement")
+	}
+}
+
+func TestWaitConnectionObservesChangesWithoutEventAcknowledgement(t *testing.T) {
+	owner := newTestOwner(nil)
+	defer owner.cancel()
+	session := newDemoSession(owner.ctx, &testSessionClient{}, uuid.New(), uuid.New())
+	defer session.close()
+	session.onChange = owner.signalConnection
+	owner.session = session
+	owner.process = &fakeCore{done: make(chan struct{})}
+	owner.status.Status = contract.DesktopStatusStatusReady
+	first := session.connectionState()
+	done := make(chan contract.ConnectionNotice, 1)
+	errs := make(chan error, 1)
+	go func() {
+		state, err := owner.WaitConnection(context.Background(), first.Revision, 0)
+		done <- state
+		errs <- err
+	}()
+	session.mu.Lock()
+	session.changedLocked()
+	session.mu.Unlock()
+	select {
+	case state := <-done:
+		if err := <-errs; err != nil || state.Connection.Revision <= first.Revision {
+			t.Fatalf("missed connection change: %+v %v", state, err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("connection change was not observed")
+	}
+}
+
+func TestCoreEventDeliveryIsBoundedAndReportsGap(t *testing.T) {
+	owner := newTestOwner(nil)
+	defer owner.cancel()
+	events := make(chan contract.Event, 3)
+	owner.SetCoreEventEmitter(func(event contract.Event) { events <- event })
+	go owner.eventLoop()
+	if err := owner.EnableConnectionEvents(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	backend := uuid.New()
+	owner.observeCoreEvent(contract.Event{BackendRunId: backend, Sequence: 1, Type: contract.EventTypeStateChanged})
+	first := <-events
+	owner.observeCoreEvent(contract.Event{BackendRunId: backend, Sequence: 2, Type: contract.EventTypeStateChanged})
+	owner.observeCoreEvent(contract.Event{BackendRunId: backend, Sequence: 3, Type: contract.EventTypeStateChanged})
+	select {
+	case event := <-events:
+		t.Fatalf("unacknowledged event overwritten: %+v", event)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := owner.AcknowledgeCoreEvent(context.Background(), backend.String(), first.Sequence); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case next := <-events:
+		if next.Sequence != 3 {
+			t.Fatalf("unexpected newest event: %+v", next)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("event not sent after acknowledgement")
+	}
+	notice := owner.connectionNotice(contract.SessionView{}, 1)
+	if !notice.Gap || notice.Event == nil || notice.Event.Sequence != 3 {
+		t.Fatalf("gap not exposed: %+v", notice)
+	}
+	covered := owner.connectionNotice(contract.SessionView{Snapshot: &contract.Snapshot{LastEventSequence: 4}}, 3)
+	if !covered.Gap || covered.SnapshotBoundary != 4 {
+		t.Fatalf("snapshot-covered event loss not exposed: %+v", covered)
+	}
+}
+
 func TestOwnerReportsDegradedAndCoreExit(t *testing.T) {
 	identity := contract.Handshake{ApiVersion: "v1", BackendRunId: uuid.New(), Demo: true}
 	core := &fakeCore{done: make(chan struct{}), degraded: make(chan struct{}), closed: make(chan struct{}), handshake: func(context.Context) (contract.Handshake, error) { return identity, nil }}

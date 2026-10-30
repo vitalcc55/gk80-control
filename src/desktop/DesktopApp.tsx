@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DesktopStatus } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
 import type { DesktopBridge, SessionBridge } from './bridge';
+import { LiveApp } from './LiveApp';
 import { SessionStatus } from './SessionStatus';
 
 interface ViewState {
@@ -116,6 +117,15 @@ export function DesktopApp({
     : status
       ? labels[status.status]
       : 'Запуск ядра';
+  if (!bridgeError && status?.status === 'ready' && status.handshake && session) {
+    return (
+      <LiveApp
+        session={session}
+        hostRunId={status.hostRunId}
+        backendRunId={status.handshake.backendRunId}
+      />
+    );
+  }
   return (
     <main className="desktop-shell">
       <header className="desktop-header">
@@ -149,7 +159,9 @@ export function DesktopApp({
         <p role="status" aria-live="polite" className="desktop-warning">
           {status?.diagnosticsDegraded ? 'Журнал диагностики недоступен или неполон.' : ''}
         </p>
-        <p className="desktop-note">Испытания и сохранение ещё не подключены.</p>
+        <p className="desktop-note">
+          Испытания и сохранённые записи доступны после подключения ядра.
+        </p>
         <button
           type="button"
           disabled={pending || (!bridgeError && status?.status !== 'ready')}

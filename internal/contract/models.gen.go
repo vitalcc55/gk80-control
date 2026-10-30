@@ -9,6 +9,24 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+// Defines values for CommandDispatchDelivery.
+const (
+	NotSent  CommandDispatchDelivery = "notSent"
+	Response CommandDispatchDelivery = "response"
+)
+
+// Valid indicates whether the value is a known member of the CommandDispatchDelivery enum.
+func (e CommandDispatchDelivery) Valid() bool {
+	switch e {
+	case NotSent:
+		return true
+	case Response:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for CommandStatusStatus.
 const (
 	CommandStatusStatusAccepted  CommandStatusStatus = "accepted"
@@ -379,6 +397,15 @@ type CommandAccepted struct {
 	TestId    *openapi_types.UUID `json:"testId,omitempty"`
 }
 
+// CommandDispatch defines model for CommandDispatch.
+type CommandDispatch struct {
+	Command  *CommandStatus          `json:"command"`
+	Delivery CommandDispatchDelivery `json:"delivery"`
+}
+
+// CommandDispatchDelivery defines model for CommandDispatch.Delivery.
+type CommandDispatchDelivery string
+
 // CommandStatus defines model for CommandStatus.
 type CommandStatus struct {
 	CommandId openapi_types.UUID  `json:"commandId"`
@@ -396,11 +423,21 @@ type ConfirmActionCommand struct {
 	ExpectedRevision int64              `json:"expectedRevision"`
 }
 
+// ConnectionNotice defines model for ConnectionNotice.
+type ConnectionNotice struct {
+	Connection       ConnectionState `json:"connection"`
+	Event            *Event          `json:"event"`
+	Gap              bool            `json:"gap"`
+	SnapshotBoundary int64           `json:"snapshotBoundary"`
+}
+
 // ConnectionState defines model for ConnectionState.
 type ConnectionState struct {
-	HostRunId openapi_types.UUID    `json:"hostRunId"`
-	Revision  int64                 `json:"revision"`
-	Status    ConnectionStateStatus `json:"status"`
+	HostRunId        openapi_types.UUID    `json:"hostRunId"`
+	LinkValid        bool                  `json:"linkValid"`
+	Revision         int64                 `json:"revision"`
+	Status           ConnectionStateStatus `json:"status"`
+	StreamGeneration int64                 `json:"streamGeneration"`
 }
 
 // ConnectionStateStatus defines model for ConnectionState.Status.
@@ -517,8 +554,9 @@ type ReadinessCheckSource string
 
 // SessionView defines model for SessionView.
 type SessionView struct {
-	Connection ConnectionState `json:"connection"`
-	Snapshot   *Snapshot       `json:"snapshot"`
+	Connection     ConnectionState `json:"connection"`
+	LinkValidForMs int64           `json:"linkValidForMs"`
+	Snapshot       *Snapshot       `json:"snapshot"`
 
 	// ValidForMs Upper bound on freshness, not a guarantee. The client counts from the monotonic start of the request, including response delay; zero is expired. Changes, errors or disconnection can invalidate the view earlier.
 	ValidForMs int64 `json:"validForMs"`

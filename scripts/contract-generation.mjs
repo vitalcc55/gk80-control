@@ -32,7 +32,7 @@ const wails = process.platform === 'win32' ? 'wails3.exe' : 'wails3';
 if (run(wails, ['version']).trim() !== 'v3.0.0') throw new Error('Wails CLI 3.0.0 is required');
 run(go, ['tool', 'oapi-codegen', '-config', 'api/oapi-codegen.yaml', '-o', goModel, 'api/core.yaml']);
 const generationLog = run(wails, ['generate', 'bindings', '-ts', '-i', '-time-type', 'string', '-d', wailsOutput, './internal/desktop']);
-if (!/2 Services, 18 Methods,/.test(generationLog) || !/3 Events/.test(generationLog) || /\bWARN(?:ING)?\b/i.test(generationLog)) {
+if (!/2 Services, 23 Methods,/.test(generationLog) || !/3 Events/.test(generationLog) || /\bWARN(?:ING)?\b/i.test(generationLog)) {
   throw new Error(`Unexpected Wails generation result: ${generationLog}`);
 }
 
