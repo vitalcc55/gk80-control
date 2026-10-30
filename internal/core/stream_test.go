@@ -81,7 +81,7 @@ func TestStreamOverflowClosesBlockedWrite(t *testing.T) {
 	}
 	leases := newUILeases(engine, time.Minute)
 	defer leases.close()
-	owner, err := leases.acquire(uuid.New(), uuid.Nil)
+	owner, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestStreamRejectsUnexpectedDataWithoutWaitingForHandshake(t *testing.T) {
 	}
 	leases := newUILeases(engine, time.Minute)
 	defer leases.close()
-	owner, err := leases.acquire(uuid.New(), uuid.Nil)
+	owner, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestRevokedOwnerCannotReplaceCurrentSubscription(t *testing.T) {
 	}
 	leases := newUILeases(engine, time.Minute)
 	defer leases.close()
-	old, err := leases.acquire(uuid.New(), uuid.Nil)
+	old, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +222,7 @@ func TestRevokedOwnerCannotReplaceCurrentSubscription(t *testing.T) {
 	if err := leases.release(old.id); err != nil {
 		t.Fatal(err)
 	}
-	current, err := leases.acquire(uuid.New(), uuid.Nil)
+	current, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}

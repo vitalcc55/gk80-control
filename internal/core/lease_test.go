@@ -24,21 +24,21 @@ func TestLeaseOwnershipRecoveryAndRelease(t *testing.T) {
 	leases := newUILeases(engine, time.Second)
 	defer leases.close()
 	client := uuid.New()
-	first, err := leases.acquire(client, uuid.Nil)
+	first, err := leases.acquire(context.Background(), client, uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := leases.acquire(client, uuid.Nil); !errors.Is(err, errLeaseBusy) {
+	if _, err := leases.acquire(context.Background(), client, uuid.Nil); !errors.Is(err, errLeaseBusy) {
 		t.Fatalf("client id alone restored lease: %v", err)
 	}
-	if _, err := leases.acquire(uuid.New(), first.id); !errors.Is(err, errLeaseBusy) {
+	if _, err := leases.acquire(context.Background(), uuid.New(), first.id); !errors.Is(err, errLeaseBusy) {
 		t.Fatalf("other client: %v", err)
 	}
-	recovered, err := leases.acquire(client, first.id)
+	recovered, err := leases.acquire(context.Background(), client, first.id)
 	if err != nil || recovered != first {
 		t.Fatalf("recovery: %v", err)
 	}
-	if _, err := leases.renew(uuid.New()); !errors.Is(err, errLeaseInvalid) {
+	if _, err := leases.renew(context.Background(), uuid.New()); !errors.Is(err, errLeaseInvalid) {
 		t.Fatalf("wrong lease: %v", err)
 	}
 	if err := leases.release(first.id); err != nil {
@@ -49,10 +49,10 @@ func TestLeaseOwnershipRecoveryAndRelease(t *testing.T) {
 	default:
 		t.Fatal("release did not revoke lease")
 	}
-	if _, err := leases.renew(first.id); !errors.Is(err, errLeaseInvalid) {
+	if _, err := leases.renew(context.Background(), first.id); !errors.Is(err, errLeaseInvalid) {
 		t.Fatalf("released lease: %v", err)
 	}
-	if _, err := leases.acquire(uuid.New(), uuid.Nil); err != nil {
+	if _, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil); err != nil {
 		t.Fatalf("next owner: %v", err)
 	}
 }
@@ -69,11 +69,11 @@ func TestLeaseExpiryAndStaleTimerAfterRenewal(t *testing.T) {
 	}
 	leases := newUILeases(engine, time.Minute)
 	defer leases.close()
-	lease, err := leases.acquire(uuid.New(), uuid.Nil)
+	lease, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := leases.renew(lease.id); err != nil {
+	if _, err := leases.renew(context.Background(), lease.id); err != nil {
 		t.Fatal(err)
 	}
 	leases.mu.Lock()
@@ -93,7 +93,7 @@ func TestLeaseExpiryAndStaleTimerAfterRenewal(t *testing.T) {
 	default:
 		t.Fatal("expired lease was not revoked")
 	}
-	if _, err := leases.renew(lease.id); !errors.Is(err, errLeaseInvalid) {
+	if _, err := leases.renew(context.Background(), lease.id); !errors.Is(err, errLeaseInvalid) {
 		t.Fatalf("expired lease: %v", err)
 	}
 }
@@ -110,7 +110,7 @@ func TestLeaseTimerRevokesWithoutAnotherRequest(t *testing.T) {
 	}
 	leases := newUILeases(engine, 20*time.Millisecond)
 	defer leases.close()
-	lease, err := leases.acquire(uuid.New(), uuid.Nil)
+	lease, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestControllerRejectsExpiredLeaseBeforeTimer(t *testing.T) {
 	}
 	leases := newUILeases(engine, time.Minute)
 	defer leases.close()
-	lease, err := leases.acquire(uuid.New(), uuid.Nil)
+	lease, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestSnapshotRejectsLeaseRevokedWhileReading(t *testing.T) {
 	}
 	leases := newUILeases(engine, time.Minute)
 	defer leases.close()
-	lease, err := leases.acquire(uuid.New(), uuid.Nil)
+	lease, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}

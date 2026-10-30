@@ -183,7 +183,7 @@ func (h *coreHTTP) lease(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusBadRequest, "invalid_request", "Invalid request")
 			return
 		}
-		lease, err := h.leases.acquire(request.ClientId, id)
+		lease, err := h.leases.acquire(r.Context(), request.ClientId, id)
 		if err != nil {
 			h.leaseError(w, err)
 			return
@@ -194,7 +194,7 @@ func (h *coreHTTP) lease(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusForbidden, "lease_invalid", "UI lease required")
 			return
 		}
-		lease, err := h.leases.renew(id)
+		lease, err := h.leases.renew(r.Context(), id)
 		if err != nil {
 			h.leaseError(w, err)
 			return
@@ -241,6 +241,10 @@ func (h *coreHTTP) writeLease(w http.ResponseWriter, lease *uiLease) {
 }
 
 func (h *coreHTTP) leaseError(w http.ResponseWriter, err error) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		writeAPIError(w, http.StatusServiceUnavailable, "state_unavailable", "State is not yet confirmed")
+		return
+	}
 	if errors.Is(err, errLeaseBusy) || errors.Is(err, demo.ErrBusy) {
 		writeAPIError(w, http.StatusConflict, "lease_busy", "UI lease is occupied")
 		return

@@ -54,7 +54,7 @@ func TestRevokedOwnerCannotRegisterCreateAfterDelayedBody(t *testing.T) {
 	}
 	leases := newUILeases(engine, time.Minute)
 	defer leases.close()
-	lease, err := leases.acquire(uuid.New(), uuid.Nil)
+	lease, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestRevokedOwnerCannotRegisterCreateAfterDelayedBody(t *testing.T) {
 	if err := leases.release(lease.id); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := leases.acquire(uuid.New(), uuid.Nil); err != nil {
+	if _, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil); err != nil {
 		t.Fatal(err)
 	}
 	close(delayed.release)
@@ -117,7 +117,7 @@ func TestLostCommitIsLoggedWhenStatusIsObserved(t *testing.T) {
 	}
 	leases := newUILeases(engine, time.Minute)
 	defer leases.close()
-	lease, err := leases.acquire(uuid.New(), uuid.Nil)
+	lease, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +222,7 @@ func TestStoredReplayWinsOverConcurrentConflictingLookup(t *testing.T) {
 	}
 	leases := newUILeases(engine, time.Minute)
 	defer leases.close()
-	lease, err := leases.acquire(uuid.New(), uuid.Nil)
+	lease, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +304,7 @@ func TestConcurrentReplayLogsOneExecution(t *testing.T) {
 	}
 	leases := newUILeases(engine, time.Minute)
 	defer leases.close()
-	lease, err := leases.acquire(uuid.New(), uuid.Nil)
+	lease, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +406,7 @@ func testCommandStatusAcrossCreate(t *testing.T, sameID bool) {
 	}
 	leases := newUILeases(engine, time.Minute)
 	defer leases.close()
-	lease, err := leases.acquire(uuid.New(), uuid.Nil)
+	lease, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -485,7 +485,7 @@ func testCanceledCreateLookup(t *testing.T, blockAt int32) {
 	}
 	leases := newUILeases(engine, time.Minute)
 	defer leases.close()
-	lease, err := leases.acquire(uuid.New(), uuid.Nil)
+	lease, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -582,7 +582,7 @@ func TestCreateLookupStorageFailureStopsActiveRun(t *testing.T) {
 	}
 	leases := newUILeases(engine, time.Minute)
 	defer leases.close()
-	lease, err := leases.acquire(uuid.New(), uuid.Nil)
+	lease, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -668,7 +668,7 @@ func TestUnknownCreateThenConfirmedSnapshot(t *testing.T) {
 	}
 	leases := newUILeases(engine, time.Minute)
 	defer leases.close()
-	lease, err := leases.acquire(uuid.New(), uuid.Nil)
+	lease, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -744,7 +744,7 @@ func TestSnapshotPreservesKnownStopWhenRecoveryFails(t *testing.T) {
 	}
 	leases := newUILeases(engine, time.Minute)
 	defer leases.close()
-	lease, err := leases.acquire(uuid.New(), uuid.Nil)
+	lease, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -819,7 +819,7 @@ func TestReadinessRecoversConfirmedCreation(t *testing.T) {
 	}
 	leases := newUILeases(engine, time.Minute)
 	defer leases.close()
-	lease, err := leases.acquire(uuid.New(), uuid.Nil)
+	lease, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}

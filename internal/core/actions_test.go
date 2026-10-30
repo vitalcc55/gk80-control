@@ -53,7 +53,7 @@ func TestLeaseExpiryAndShutdownStopSimulatorOnce(t *testing.T) {
 	}
 	leases := newUILeases(engine, time.Minute)
 	defer leases.close()
-	lease, err := leases.acquire(uuid.New(), uuid.Nil)
+	lease, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestLeaseExpiryAndShutdownStopSimulatorOnce(t *testing.T) {
 	leases.mu.Lock()
 	leases.duration = 50 * time.Millisecond
 	leases.mu.Unlock()
-	if _, err := leases.renew(lease.id); err != nil {
+	if _, err := leases.renew(context.Background(), lease.id); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -142,7 +142,7 @@ func TestReadinessRejectsConcurrentStart(t *testing.T) {
 	}
 	leases := newUILeases(engine, time.Minute)
 	defer leases.close()
-	lease, err := leases.acquire(uuid.New(), uuid.Nil)
+	lease, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +234,7 @@ func TestStartReadsHistoricalInvalidRejectionWithoutWritingNewOne(t *testing.T) 
 	}
 	leases := newUILeases(engine, time.Minute)
 	defer leases.close()
-	lease, err := leases.acquire(uuid.New(), uuid.Nil)
+	lease, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +301,7 @@ func TestStartUnknownResponseThenConfirmedSnapshot(t *testing.T) {
 	}
 	leases := newUILeases(engine, time.Minute)
 	defer leases.close()
-	lease, err := leases.acquire(uuid.New(), uuid.Nil)
+	lease, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -404,7 +404,7 @@ func TestRevokedConfirmDoesNotStartSimulatorAfterCommit(t *testing.T) {
 	}
 	leases := newUILeases(engine, time.Minute)
 	defer leases.close()
-	lease, err := leases.acquire(uuid.New(), uuid.Nil)
+	lease, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -472,7 +472,7 @@ func TestActiveStopBypassesSaturatedWorkers(t *testing.T) {
 	}
 	leases := newUILeases(engine, time.Minute)
 	defer leases.close()
-	lease, err := leases.acquire(uuid.New(), uuid.Nil)
+	lease, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -545,7 +545,7 @@ func TestStopLookupStorageFailureInterruptsActiveRun(t *testing.T) {
 	}
 	leases := newUILeases(engine, time.Minute)
 	defer leases.close()
-	lease, err := leases.acquire(uuid.New(), uuid.Nil)
+	lease, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}

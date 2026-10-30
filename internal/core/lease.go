@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"time"
@@ -33,12 +34,18 @@ func newUILeases(engine *demo.Engine, duration time.Duration) *uiLeases {
 	return &uiLeases{engine: engine, duration: duration}
 }
 
-func (l *uiLeases) acquire(clientID, proof uuid.UUID) (*uiLease, error) {
+func (l *uiLeases) acquire(ctx context.Context, clientID, proof uuid.UUID) (*uiLease, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if clientID == uuid.Nil {
 		return nil, errLeaseInvalid
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	l.expireLocked()
 	if l.closed {
 		return nil, errLeaseInvalid
@@ -56,13 +63,8 @@ func (l *uiLeases) acquire(clientID, proof uuid.UUID) (*uiLease, error) {
 	if err != nil {
 		return nil, err
 	}
-	controller, err := l.engine.GrantControl()
+	controller, deadline, err := l.engine.GrantTimedControl(ctx, l.duration)
 	if err != nil {
-		return nil, err
-	}
-	deadline, err := controller.Renew(l.duration)
-	if err != nil {
-		controller.Revoke("ui_lost")
 		return nil, err
 	}
 	lease := &uiLease{id: id, clientID: clientID, controller: controller, done: controller.Done(), expiresAt: deadline}
@@ -74,15 +76,24 @@ func (l *uiLeases) acquire(clientID, proof uuid.UUID) (*uiLease, error) {
 	return lease, nil
 }
 
-func (l *uiLeases) renew(id uuid.UUID) (*uiLease, error) {
+func (l *uiLeases) renew(ctx context.Context, id uuid.UUID) (*uiLease, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	l.expireLocked()
 	if l.closed || l.current == nil || id != l.current.id {
 		return nil, errLeaseInvalid
 	}
-	deadline, err := l.current.controller.Renew(l.duration)
+	deadline, err := l.current.controller.RenewContext(ctx, l.duration)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
 		l.revokeLocked("ui_lost")
 		return nil, errLeaseInvalid
 	}

@@ -64,7 +64,7 @@ func TestHistoryFlushesBeforeWorkerFinishes(t *testing.T) {
 	}
 	leases := newUILeases(engine, time.Minute)
 	defer leases.close()
-	owner, err := leases.acquire(uuid.New(), uuid.Nil)
+	owner, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestHistoryWorkerTracksResponseDelivery(t *testing.T) {
 	}
 	leases := newUILeases(engine, time.Minute)
 	defer leases.close()
-	owner, err := leases.acquire(uuid.New(), uuid.Nil)
+	owner, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestHistoryRevocationAndBlockedReadRemainBounded(t *testing.T) {
 			}
 			leases := newUILeases(engine, time.Minute)
 			defer leases.close()
-			owner, err := leases.acquire(uuid.New(), uuid.Nil)
+			owner, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -239,7 +239,7 @@ func TestHistoryRevocationAndBlockedReadRemainBounded(t *testing.T) {
 				if err := leases.release(owner.id); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := leases.acquire(uuid.New(), uuid.Nil); err != nil {
+				if _, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil); err != nil {
 					t.Fatal(err)
 				}
 			}

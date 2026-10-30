@@ -136,6 +136,10 @@ type Controller struct {
 func (e *Engine) GrantControl() (*Controller, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	return e.grantControlLocked()
+}
+
+func (e *Engine) grantControlLocked() (*Controller, error) {
 	if e.closed {
 		return nil, ErrControlRevoked
 	}
@@ -148,24 +152,56 @@ func (e *Engine) GrantControl() (*Controller, error) {
 	return control, nil
 }
 
+// GrantTimedControl atomically admits a controller and its initial deadline.
+func (e *Engine) GrantTimedControl(ctx context.Context, duration time.Duration) (*Controller, time.Time, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, time.Time{}, err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, time.Time{}, err
+	}
+	control, err := e.grantControlLocked()
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	return control, control.renewLocked(duration), nil
+}
+
 func (e *Engine) allowedLocked(control *Controller) bool {
 	return !e.closed && (control == nil || (e.controller == control && !control.revoked && (control.expiresAt.IsZero() || time.Now().Before(control.expiresAt))))
 }
 
 // Renew ties command admission to the lease deadline, independently of timer scheduling.
 func (c *Controller) Renew(duration time.Duration) (time.Time, error) {
+	return c.RenewContext(context.Background(), duration)
+}
+
+// RenewContext rejects cancellation before changing the controller deadline.
+func (c *Controller) RenewContext(ctx context.Context, duration time.Duration) (time.Time, error) {
+	if err := ctx.Err(); err != nil {
+		return time.Time{}, err
+	}
 	c.engine.mu.Lock()
 	defer c.engine.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return time.Time{}, err
+	}
 	if !c.engine.allowedLocked(c) {
 		return time.Time{}, ErrControlRevoked
 	}
+	return c.renewLocked(duration), nil
+}
+
+func (c *Controller) renewLocked(duration time.Duration) time.Time {
 	c.expiresAt = time.Now().Add(duration)
 	if c.timer == nil {
 		c.timer = time.AfterFunc(time.Until(c.expiresAt), c.expire)
 	} else {
 		c.timer.Reset(time.Until(c.expiresAt))
 	}
-	return c.expiresAt, nil
+	return c.expiresAt
 }
 
 func (c *Controller) expire() {
