@@ -401,6 +401,40 @@ it('finishes opening history when the same session replaces its service wrapper'
   expect(oldAudit).not.toHaveBeenCalled();
 });
 
+it('explains a canceled start in the saved audit', async () => {
+  api.list.mockResolvedValue({ items: [record], nextAfter: null });
+  api.test.mockResolvedValue(record);
+  api.measurements.mockResolvedValue({ items: [], nextAfter: null });
+  api.audit.mockResolvedValue({
+    items: [
+      {
+        sequence: 1,
+        occurredAt: '2026-10-30T00:00:00Z',
+        action: 'start',
+        outcome: 'failed',
+        operatorId: 'system',
+        reason: 'canceled_by_stop',
+      },
+    ],
+    nextAfter: null,
+  });
+  render(
+    <History
+      service={desktopDemoService}
+      available
+      disabled={false}
+      draftAvailable={false}
+      onNew={vi.fn()}
+      onCopy={vi.fn()}
+      onDiscard={vi.fn()}
+    />,
+  );
+  await userEvent.setup().click(await screen.findByRole('button', { name: /К-1/ }));
+  expect(
+    await screen.findByText(/причина запуск отменён при остановке до подтверждения оператора/),
+  ).toBeTruthy();
+});
+
 it('does not reuse a pending readiness response after the core identity changes', async () => {
   let finish: (value: Readiness) => void = () => {};
   const delayed = new Promise<Readiness>((resolve) => {
@@ -853,6 +887,50 @@ it('allows stopping while another command is unresolved and reports a confirmed 
   expect(api.stop).toHaveBeenCalledTimes(1);
   expect(api.stop).toHaveBeenCalledWith(testId, { commandId: stopId });
   await screen.findByText(/Остановка не выполнена или отклонена/);
+});
+
+it('explains when a pending start was canceled by stop', async () => {
+  const startId = '66666666-6666-4666-8666-666666666666';
+  sessionStorage.setItem(
+    'gk80.demo.pending-command',
+    JSON.stringify([{ id: startId, kind: 'start', testId, retired: false }]),
+  );
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 2,
+        lastEventSequence: 2,
+        activeTest: { ...record, stage: TestRecordStage.Running },
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.command.mockResolvedValue({
+    commandId: startId,
+    status: CommandStatusStatus.CommandStatusStatusFailed,
+    testId,
+    reason: 'canceled_by_stop',
+  });
+  render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  expect(
+    await screen.findByText('Запуск отменён при остановке испытания до подтверждения оператора.'),
+  ).toBeTruthy();
+  expect(api.start).not.toHaveBeenCalled();
 });
 
 it('offers the reserved stop after remount even when heartbeat cannot be confirmed', async () => {

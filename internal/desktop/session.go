@@ -1122,6 +1122,7 @@ func (s *demoSession) shutdown(ctx context.Context) error {
 	}
 	s.mu.Unlock()
 	confirmFinishedStop := false
+	var startsAfterSave []uuid.UUID
 	for _, id := range pending {
 		s.mu.Lock()
 		unresolved := s.inFlight[id] || s.ambiguous[id]
@@ -1158,7 +1159,11 @@ func (s *demoSession) shutdown(ctx context.Context) error {
 				unknown = true
 			}
 		} else if (err != nil || !terminalCommand(status.Status)) && !stopForActive {
-			unknown = true
+			if active != nil && (active.Stage != "finished" || active.SaveStatus != "saved") && strings.HasPrefix(identity, "start:"+active.TestId.String()+":") {
+				startsAfterSave = append(startsAfterSave, id)
+			} else {
+				unknown = true
+			}
 		}
 	}
 	s.mu.Lock()
@@ -1213,6 +1218,21 @@ func (s *demoSession) shutdown(ctx context.Context) error {
 				return ErrSessionShutdownUnconfirmed
 			case <-time.After(100 * time.Millisecond):
 			}
+		}
+	}
+	for _, id := range startsAfterSave {
+		status, err := s.client.Command(ctx, lease, id)
+		s.mu.Lock()
+		existing, tracked := s.commands[id]
+		if tracked && !s.inFlight[id] && !s.ambiguous[id] && err == nil {
+			s.commands[id] = mergeCommandStatus(existing, status)
+			status = s.commands[id]
+		} else {
+			err = ErrSessionShutdownUnconfirmed
+		}
+		s.mu.Unlock()
+		if err != nil || !terminalCommand(status.Status) || status.TestId == nil || *status.TestId != active.TestId {
+			result = ErrSessionShutdownUnconfirmed
 		}
 	}
 	if err := s.client.ReleaseLease(ctx, lease); err != nil {

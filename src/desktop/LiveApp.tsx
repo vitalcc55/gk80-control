@@ -523,7 +523,11 @@ function ActiveLiveApp({
           setPending(pendingRef.current);
         }
         if (merged.status === 'rejected' || merged.status === 'failed') {
-          setMessage('Команда отклонена или не выполнена.');
+          setMessage(
+            merged.reason === 'canceled_by_stop'
+              ? 'Запуск отменён при остановке испытания до подтверждения оператора.'
+              : 'Команда отклонена или не выполнена.',
+          );
           forget(item.id);
         }
       } catch {

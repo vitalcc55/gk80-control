@@ -259,7 +259,9 @@ export function History({
                 {item.occurredAt} · {item.action} · {item.outcome} · {item.operatorId}
                 {item.commandId ? ` · команда ${item.commandId}` : ''}
                 {item.actionId ? ` · действие ${item.actionId}` : ''}
-                {item.reason ? ` · причина ${item.reason}` : ''}
+                {item.reason
+                  ? ` · причина ${item.reason === 'canceled_by_stop' ? 'запуск отменён при остановке до подтверждения оператора' : item.reason}`
+                  : ''}
               </li>
             ))}
           </ul>

@@ -1120,6 +1120,88 @@ func TestDemoSessionShutdownRequiresStopConfirmationForFinishedTest(t *testing.T
 	}
 }
 
+func TestDemoSessionShutdownResolvesCanceledStart(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		status  contract.CommandStatusStatus
+		wantErr bool
+	}{
+		{name: "canceled", status: contract.CommandStatusStatusFailed},
+		{name: "unknown", status: contract.CommandStatusStatusUnknown, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run, lease, testID, stopID, startID := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
+			client := &testSessionClient{}
+			client.snapshot = func(context.Context, uuid.UUID) (contract.Snapshot, error) {
+				return contract.Snapshot{BackendRunId: run, ActiveTest: &contract.TestRecord{TestId: testID, StopCommandId: stopID, Stage: "finished", SaveStatus: "saved"}}, nil
+			}
+			client.lookup = func(_ context.Context, _ uuid.UUID, id uuid.UUID) (contract.CommandStatus, error) {
+				if id != startID {
+					t.Fatalf("unexpected lookup: %s", id)
+				}
+				return contract.CommandStatus{CommandId: id, TestId: &testID, Status: tc.status}, nil
+			}
+			client.release = func(context.Context, uuid.UUID) error { return nil }
+			session := newDemoSession(context.Background(), client, uuid.New(), run)
+			defer session.close()
+			session.leaseID = lease
+			session.commands[startID] = contract.CommandStatus{CommandId: startID, TestId: &testID, Status: contract.CommandStatusStatusAccepted}
+			session.commands[stopID] = contract.CommandStatus{CommandId: stopID, TestId: &testID, Status: contract.CommandStatusStatusCompleted}
+			err := session.shutdown(context.Background())
+			if errors.Is(err, ErrSessionShutdownUnconfirmed) != tc.wantErr {
+				t.Fatalf("shutdown outcome: %v; want uncertainty=%v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestDemoSessionShutdownReadsStartAfterStopIsSaved(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		final   contract.CommandStatusStatus
+		wantErr bool
+	}{
+		{name: "canceled", final: contract.CommandStatusStatusFailed},
+		{name: "unknown", final: contract.CommandStatusStatusUnknown, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run, lease, testID, stopID, startID := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
+			saved := false
+			reads := 0
+			client := &testSessionClient{}
+			client.snapshot = func(context.Context, uuid.UUID) (contract.Snapshot, error) {
+				return contract.Snapshot{BackendRunId: run, ActiveTest: &contract.TestRecord{TestId: testID, StopCommandId: stopID, Stage: "finished", SaveStatus: "pending"}}, nil
+			}
+			client.test = func(context.Context, uuid.UUID, uuid.UUID) (contract.TestRecord, error) {
+				saved = true
+				return contract.TestRecord{TestId: testID, StopCommandId: stopID, Stage: "finished", SaveStatus: "saved"}, nil
+			}
+			client.lookup = func(_ context.Context, _ uuid.UUID, id uuid.UUID) (contract.CommandStatus, error) {
+				if id != startID {
+					t.Fatalf("unexpected lookup: %s", id)
+				}
+				reads++
+				status := contract.CommandStatusStatusAccepted
+				if saved {
+					status = tc.final
+				}
+				return contract.CommandStatus{CommandId: id, TestId: &testID, Status: status}, nil
+			}
+			client.release = func(context.Context, uuid.UUID) error { return nil }
+			session := newDemoSession(context.Background(), client, uuid.New(), run)
+			defer session.close()
+			session.leaseID = lease
+			session.commands[startID] = contract.CommandStatus{CommandId: startID, TestId: &testID, Status: contract.CommandStatusStatusAccepted}
+			session.commandPayloads[startID] = "start:" + testID.String() + ":{}"
+			session.commands[stopID] = contract.CommandStatus{CommandId: stopID, TestId: &testID, Status: contract.CommandStatusStatusCompleted}
+			err := session.shutdown(context.Background())
+			if errors.Is(err, ErrSessionShutdownUnconfirmed) != tc.wantErr || !saved || reads < 2 {
+				t.Fatalf("shutdown: %v, saved=%v, reads=%d; want uncertainty=%v", err, saved, reads, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestDemoSessionShutdownWithoutLeaseReportsRejectedStop(t *testing.T) {
 	for _, closed := range []bool{false, true} {
 		t.Run(fmt.Sprintf("closed=%v", closed), func(t *testing.T) {

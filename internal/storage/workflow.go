@@ -714,7 +714,7 @@ func (s *Store) Recover(ctx context.Context) error {
 			s.noteWriteError(ctx, err, true)
 			return err
 		}
-		if err := markAcceptedUnknown(ctx, tx, record.TestId, &revision); err != nil {
+		if err := finalizeAcceptedCommands(ctx, tx, record.TestId, &revision, false); err != nil {
 			s.noteWriteError(ctx, err, true)
 			return err
 		}
@@ -902,7 +902,7 @@ func (s *Store) FinishStop(ctx context.Context, testID, commandID uuid.UUID, det
 		return contract.CommandStatus{}, err
 	}
 	revision++
-	if err := markAcceptedUnknown(ctx, tx, testID, &revision); err != nil {
+	if err := finalizeAcceptedCommands(ctx, tx, testID, &revision, true); err != nil {
 		s.noteWriteError(ctx, err, false)
 		return contract.CommandStatus{}, err
 	}
@@ -941,16 +941,23 @@ func (s *Store) FinishStop(ctx context.Context, testID, commandID uuid.UUID, det
 	return contract.CommandStatus{CommandId: commandID, Status: contract.CommandStatusStatus(status), TestId: &testID, Reason: reason}, nil
 }
 
-func markAcceptedUnknown(ctx context.Context, tx *sql.Tx, testID uuid.UUID, revision *int64) error {
-	rows, err := tx.QueryContext(ctx, `SELECT id, operation FROM commands WHERE test_id = ? AND status = 'accepted' ORDER BY id`, testID.String())
+func finalizeAcceptedCommands(ctx context.Context, tx *sql.Tx, testID uuid.UUID, revision *int64, stopping bool) error {
+	rows, err := tx.QueryContext(ctx, `SELECT c.id, c.operation, (
+		SELECT a.action_id FROM audit a JOIN test_actions t ON t.action_id = a.action_id AND t.test_id = a.test_id
+		WHERE a.command_id = c.id AND a.test_id = c.test_id AND a.action = 'start' AND a.outcome = 'accepted' AND t.state = 'canceled'
+		LIMIT 1
+	) FROM commands c WHERE c.test_id = ? AND c.status = 'accepted' ORDER BY c.id`, testID.String())
 	if err != nil {
 		return err
 	}
-	type accepted struct{ id, operation string }
+	type accepted struct {
+		id, operation string
+		canceled      sql.NullString
+	}
 	commands := make([]accepted, 0)
 	for rows.Next() {
 		var command accepted
-		if err := rows.Scan(&command.id, &command.operation); err != nil {
+		if err := rows.Scan(&command.id, &command.operation, &command.canceled); err != nil {
 			_ = rows.Close()
 			return err
 		}
@@ -964,11 +971,20 @@ func markAcceptedUnknown(ctx context.Context, tx *sql.Tx, testID uuid.UUID, revi
 		return err
 	}
 	for _, command := range commands {
-		if _, err := tx.ExecContext(ctx, `UPDATE commands SET status = 'unknown' WHERE id = ?`, command.id); err != nil {
+		status := "unknown"
+		var reason *string
+		var actionID *string
+		if stopping && command.operation == "start" && command.canceled.Valid {
+			status = "failed"
+			value := "canceled_by_stop"
+			reason = &value
+			actionID = &command.canceled.String
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE commands SET status = ?, reason = ? WHERE id = ?`, status, reason, command.id); err != nil {
 			return err
 		}
 		*revision++
-		if _, err := tx.ExecContext(ctx, `INSERT INTO audit(test_id, occurred_at, operator_id, action, outcome, revision, command_id) VALUES(?, ?, 'system', ?, 'unknown', ?, ?)`, testID.String(), time.Now().UTC().Format(time.RFC3339Nano), command.operation, *revision, command.id); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO audit(test_id, occurred_at, operator_id, action, outcome, revision, command_id, action_id, reason) VALUES(?, ?, 'system', ?, ?, ?, ?, ?, ?)`, testID.String(), time.Now().UTC().Format(time.RFC3339Nano), command.operation, status, *revision, command.id, actionID, reason); err != nil {
 			return err
 		}
 	}

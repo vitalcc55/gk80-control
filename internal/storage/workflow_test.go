@@ -231,6 +231,9 @@ func TestConfirmedStopIsPersistedOnceAndReopens(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = store.Close() }()
+	if err := store.Recover(ctx); err != nil {
+		t.Fatal(err)
+	}
 	stopped, err = store.FinishStop(ctx, id, record.StopCommandId, StopDetails{Actor: "demo-operator", Reason: "operator", AcceptedAt: time.Now()})
 	if err != nil || stopped.Status != "completed" {
 		t.Fatalf("stop replay: %+v %v", stopped, err)
@@ -239,9 +242,56 @@ func TestConfirmedStopIsPersistedOnceAndReopens(t *testing.T) {
 	if err != nil || result.Stage != "finished" || result.Outcome != "interrupted" || result.DataQuality != "incomplete" {
 		t.Fatalf("reopened stop: %+v %v", result, err)
 	}
+	for _, read := range []func() (contract.CommandStatus, error){
+		func() (contract.CommandStatus, error) { return store.Command(ctx, start.CommandId) },
+		func() (contract.CommandStatus, error) { return store.LookupStart(ctx, id, start) },
+	} {
+		status, err := read()
+		if err != nil || status.Status != "failed" || status.Reason == nil || *status.Reason != "canceled_by_stop" {
+			t.Fatalf("canceled start: %+v %v", status, err)
+		}
+	}
+	changed := start
+	changed.ExpectedRevision++
+	if _, err := store.LookupStart(ctx, id, changed); !errors.Is(err, ErrCommandConflict) {
+		t.Fatalf("changed start replay: %v", err)
+	}
 	audit, err := store.Audit(ctx, id, 0, 100)
-	if err != nil || len(audit) != 5 || audit[2].Action != "stop" || audit[2].Outcome != "accepted" || audit[2].Reason == nil || *audit[2].Reason != "operator" || audit[3].Outcome != "unknown" || audit[3].CommandId == nil || *audit[3].CommandId != start.CommandId || audit[4].Outcome != "completed" {
+	if err != nil || len(audit) != 5 || audit[2].Action != "stop" || audit[2].Outcome != "accepted" || audit[2].Reason == nil || *audit[2].Reason != "operator" || audit[3].Outcome != "failed" || audit[3].Reason == nil || *audit[3].Reason != "canceled_by_stop" || audit[3].CommandId == nil || *audit[3].CommandId != start.CommandId || audit[3].ActionId == nil || *audit[3].ActionId != action.ActionId || audit[4].Outcome != "completed" {
 		t.Fatalf("stop audit: %+v %v", audit, err)
+	}
+}
+
+func TestStopKeepsStartUnknownAfterConfirmation(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	created, err := store.Create(ctx, createCommand())
+	if err != nil || created.TestId == nil {
+		t.Fatalf("create: %v", err)
+	}
+	id := *created.TestId
+	record, err := store.Test(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	action := contract.PendingAction{ActionId: uuid.New(), TestId: id, Instruction: "Подтвердите измерение"}
+	start := contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: 1, ValveClosed: true, ConnectionConfirmed: true}
+	if _, err := store.Start(ctx, id, start, action); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Confirm(ctx, id, action.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishStop(ctx, id, record.StopCommandId, StopDetails{Actor: "demo-operator", Reason: "operator", AcceptedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	status, err := store.Command(ctx, start.CommandId)
+	if err != nil || status.Status != "unknown" {
+		t.Fatalf("start after confirmation: %+v %v", status, err)
 	}
 }
 

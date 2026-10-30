@@ -1912,6 +1912,41 @@ func TestControllerRejectsStartAfterConfirmedStop(t *testing.T) {
 	}
 }
 
+func TestCanceledStartReplayDoesNotStartSimulator(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	sim := &countedSimulator{}
+	engine := newTestEngine(t, store, sim, uuid.New())
+	created, err := engine.Create(ctx, command(1))
+	if err != nil || created.TestId == nil {
+		t.Fatalf("create: %v", err)
+	}
+	id := *created.TestId
+	start := contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: 1, ValveClosed: true, ConnectionConfirmed: true}
+	if _, err := engine.Start(ctx, id, start); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.Stop(ctx, id, engine.State().Record.StopCommandId); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, engine, func(state State) bool {
+		return state.Record != nil && state.Record.Stage == "finished" && state.Record.SaveStatus == "saved"
+	})
+	status, err := engine.Start(ctx, id, start)
+	if err != nil || status.Status != "failed" || status.Reason == nil || *status.Reason != "canceled_by_stop" || sim.starts.Load() != 0 || sim.stops.Load() != 1 {
+		t.Fatalf("canceled replay: %+v %v; starts=%d stops=%d", status, err, sim.starts.Load(), sim.stops.Load())
+	}
+	changed := start
+	changed.ExpectedRevision++
+	if _, err := engine.Start(ctx, id, changed); !errors.Is(err, storage.ErrCommandConflict) {
+		t.Fatalf("changed replay: %v", err)
+	}
+}
+
 type heldUnavailableRejection struct {
 	*storage.Store
 	entered     chan struct{}
@@ -2213,7 +2248,8 @@ func TestStalledStartCompletionStopsSimulatorWithoutOperator(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	id := *created.TestId
-	if _, err := controller.Start(context.Background(), id, contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: 1, ValveClosed: true, ConnectionConfirmed: true}); err != nil {
+	startID := uuid.New()
+	if _, err := controller.Start(context.Background(), id, contract.StartTestCommand{CommandId: startID, ExpectedRevision: 1, ValveClosed: true, ConnectionConfirmed: true}); err != nil {
 		t.Fatal(err)
 	}
 	action := engine.State().PendingAction
@@ -2233,6 +2269,11 @@ func TestStalledStartCompletionStopsSimulatorWithoutOperator(t *testing.T) {
 	state := waitFor(t, engine, func(state State) bool { return state.Stop != nil && state.Stop.Status == "completed" })
 	if state.Record.Outcome != "interrupted" || sim.starts.Load() != 1 || sim.stops.Load() != 1 {
 		t.Fatalf("system stop: %+v", state)
+	}
+	waitFor(t, engine, func(state State) bool { return state.Record != nil && state.Record.SaveStatus == "saved" })
+	startStatus, err := store.Command(context.Background(), startID)
+	if err != nil || startStatus.Status != "unknown" {
+		t.Fatalf("started simulator without confirmed completion: %+v %v", startStatus, err)
 	}
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	shutdownErr := engine.Shutdown(shutdownCtx, "owner_lost")
@@ -2301,6 +2342,10 @@ func TestStartCompletionIsReportedAfterConcurrentStop(t *testing.T) {
 	defer cancel()
 	if err := engine.Shutdown(ctx, "owner_lost"); err != nil {
 		t.Fatal(err)
+	}
+	startStatus, err := store.Command(ctx, startID)
+	if err != nil || startStatus.Status != "completed" {
+		t.Fatalf("confirmed start after stop: %+v %v", startStatus, err)
 	}
 	found := false
 	for {

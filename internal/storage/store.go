@@ -341,6 +341,9 @@ func (s *Store) lookup(ctx context.Context, id uuid.UUID, expectedOperation stri
 	}
 	if reason.Valid {
 		status.Reason = &reason.String
+		if expectedOperation == "start" && state == "failed" && reason.String == "canceled_by_stop" {
+			return status, nil
+		}
 		switch reason.String {
 		case "revision":
 			return status, ErrRevision
