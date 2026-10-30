@@ -14,6 +14,10 @@ import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wails
 // @ts-ignore: Unused imports
 import * as contract$0 from "../contract/models.js";
 
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as $models from "./models.js";
+
 export function Audit(testID: string, after: number, limit: number): $CancellablePromise<contract$0.AuditPage> {
     return $Call.ByID(945109110, testID, after, limit);
 }
@@ -22,7 +26,7 @@ export function Command(commandID: string): $CancellablePromise<contract$0.Comma
     return $Call.ByID(3690784748, commandID);
 }
 
-export function ConfirmAction(testID: string, actionID: string, command: contract$0.ConfirmActionCommand): $CancellablePromise<contract$0.CommandStatus> {
+export function ConfirmAction(testID: string, actionID: string, command: $models.ConfirmCommandInput): $CancellablePromise<contract$0.CommandStatus> {
     return $Call.ByID(4199905595, testID, actionID, command);
 }
 
@@ -30,7 +34,7 @@ export function ConnectionState(): $CancellablePromise<contract$0.ConnectionStat
     return $Call.ByID(1232443464);
 }
 
-export function CreateTest(command: contract$0.CreateTestCommand): $CancellablePromise<contract$0.CommandStatus> {
+export function CreateTest(command: $models.CreateCommandInput): $CancellablePromise<contract$0.CommandStatus> {
     return $Call.ByID(4135591651, command);
 }
 
@@ -58,11 +62,11 @@ export function Snapshot(): $CancellablePromise<contract$0.Snapshot> {
     return $Call.ByID(845326551);
 }
 
-export function StartTest(testID: string, command: contract$0.StartTestCommand): $CancellablePromise<contract$0.CommandStatus> {
+export function StartTest(testID: string, command: $models.StartCommandInput): $CancellablePromise<contract$0.CommandStatus> {
     return $Call.ByID(4013822117, testID, command);
 }
 
-export function StopTest(testID: string, command: contract$0.StopTestCommand): $CancellablePromise<contract$0.CommandStatus> {
+export function StopTest(testID: string, command: $models.StopCommandInput): $CancellablePromise<contract$0.CommandStatus> {
     return $Call.ByID(106225571, testID, command);
 }
 

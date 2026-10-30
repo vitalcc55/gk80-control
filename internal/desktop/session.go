@@ -49,9 +49,13 @@ type sessionClient interface {
 	Measurements(context.Context, uuid.UUID, uuid.UUID, int64, int) (contract.MeasurementPage, error)
 	Audit(context.Context, uuid.UUID, uuid.UUID, int64, int) (contract.AuditPage, error)
 	CreateTest(context.Context, uuid.UUID, contract.CreateTestCommand) (contract.CommandStatus, error)
+	CreateTestRaw(context.Context, uuid.UUID, uuid.UUID, []byte) (contract.CommandStatus, error)
 	StartTest(context.Context, uuid.UUID, uuid.UUID, contract.StartTestCommand) (contract.CommandStatus, error)
+	StartTestRaw(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, []byte) (contract.CommandStatus, error)
 	ConfirmAction(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, contract.ConfirmActionCommand) (contract.CommandStatus, error)
+	ConfirmActionRaw(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID, []byte) (contract.CommandStatus, error)
 	StopTest(context.Context, uuid.UUID, uuid.UUID, contract.StopTestCommand) (contract.CommandStatus, error)
+	StopTestRaw(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, []byte) (contract.CommandStatus, error)
 	openStream(context.Context, uuid.UUID, uuid.UUID) (sessionStream, contract.Snapshot, error)
 }
 
@@ -643,7 +647,7 @@ func (s *demoSession) pauseLiveLocked(now time.Time) {
 }
 
 // command registers the identifier before sending and never resends it automatically.
-func (s *demoSession) command(ctx context.Context, id uuid.UUID, identity string, stop bool, send func(context.Context, uuid.UUID) (contract.CommandStatus, error)) (contract.CommandStatus, error) {
+func (s *demoSession) command(ctx context.Context, id uuid.UUID, identity string, stop bool, send func(context.Context, uuid.UUID) (contract.CommandStatus, error), invalidNew ...error) (contract.CommandStatus, error) {
 	if id == uuid.Nil {
 		return contract.CommandStatus{}, errSessionUnavailable
 	}
@@ -748,6 +752,16 @@ func (s *demoSession) command(ctx context.Context, id uuid.UUID, identity string
 				s.mu.Unlock()
 				return contract.CommandStatus{}, lookupErr
 			}
+		}
+		if !previouslyPresent && len(invalidNew) != 0 && invalidNew[0] != nil {
+			s.mu.Lock()
+			if s.commandPayloads[id] == identity {
+				delete(s.commands, id)
+				delete(s.commandPayloads, id)
+				delete(s.inFlight, id)
+			}
+			s.mu.Unlock()
+			return contract.CommandStatus{}, invalidNew[0]
 		}
 		s.mu.Lock()
 		admitted := s.commandPayloads[id] == identity && s.leaseID == lease && s.commandAllowedLocked(false) && requestCtx.Err() == nil

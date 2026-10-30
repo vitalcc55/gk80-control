@@ -84,6 +84,21 @@ func TestNativeClientRunsAndReopensDemo(t *testing.T) {
 	if err != nil || created.Status != "completed" || created.TestId == nil {
 		t.Fatalf("create: %+v %v", created, err)
 	}
+	original, err := json.Marshal(command)
+	if err != nil || !strings.Contains(string(original), `"areaM2":1`) {
+		t.Fatalf("create JSON: %s %v", original, err)
+	}
+	equivalent := strings.Replace(string(original), `"areaM2":1`, `"areaM2":1.00`, 1)
+	replayed, err := client.CreateTestRaw(ctx, lease.LeaseId, command.CommandId, []byte(equivalent))
+	if err != nil || replayed.TestId == nil || *replayed.TestId != *created.TestId {
+		t.Fatalf("equivalent raw replay: %+v %v", replayed, err)
+	}
+	different := strings.Replace(string(original), `"areaM2":1`, `"areaM2":1.0000000000000001`, 1)
+	_, err = client.CreateTestRaw(ctx, lease.LeaseId, command.CommandId, []byte(different))
+	var conflict *RequestError
+	if !errors.As(err, &conflict) || conflict.Status != http.StatusConflict || conflict.Code != "command_conflict" {
+		t.Fatalf("raw numeric identity was lost: %#v", err)
+	}
 	id := *created.TestId
 	ready, err := client.Readiness(ctx, lease.LeaseId, id)
 	if err != nil || !ready.Ready {

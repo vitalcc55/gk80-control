@@ -315,11 +315,24 @@ func (c *Client) CreateTest(ctx context.Context, lease uuid.UUID, command contra
 	return c.command(ctx, lease, "/v1/tests", command.CommandId, command)
 }
 
+// CreateTestRaw forwards an already inspected original command to the fixed create route.
+func (c *Client) CreateTestRaw(ctx context.Context, lease, id uuid.UUID, body []byte) (contract.CommandStatus, error) {
+	return c.command(ctx, lease, "/v1/tests", id, json.RawMessage(body))
+}
+
 func (c *Client) StartTest(ctx context.Context, lease, testID uuid.UUID, command contract.StartTestCommand) (contract.CommandStatus, error) {
 	if testID == uuid.Nil {
 		return contract.CommandStatus{}, invalidRequest()
 	}
 	result, err := c.command(ctx, lease, "/v1/tests/"+testID.String()+"/start", command.CommandId, command)
+	return matchCommandTest(result, err, testID)
+}
+
+func (c *Client) StartTestRaw(ctx context.Context, lease, testID, id uuid.UUID, body []byte) (contract.CommandStatus, error) {
+	if testID == uuid.Nil {
+		return contract.CommandStatus{}, invalidRequest()
+	}
+	result, err := c.command(ctx, lease, "/v1/tests/"+testID.String()+"/start", id, json.RawMessage(body))
 	return matchCommandTest(result, err, testID)
 }
 
@@ -331,11 +344,27 @@ func (c *Client) ConfirmAction(ctx context.Context, lease, testID, actionID uuid
 	return matchCommandTest(result, err, testID)
 }
 
+func (c *Client) ConfirmActionRaw(ctx context.Context, lease, testID, actionID, id uuid.UUID, body []byte) (contract.CommandStatus, error) {
+	if testID == uuid.Nil || actionID == uuid.Nil {
+		return contract.CommandStatus{}, invalidRequest()
+	}
+	result, err := c.command(ctx, lease, "/v1/tests/"+testID.String()+"/actions/"+actionID.String()+"/confirm", id, json.RawMessage(body))
+	return matchCommandTest(result, err, testID)
+}
+
 func (c *Client) StopTest(ctx context.Context, lease, testID uuid.UUID, command contract.StopTestCommand) (contract.CommandStatus, error) {
 	if testID == uuid.Nil {
 		return contract.CommandStatus{}, invalidRequest()
 	}
 	result, err := c.command(ctx, lease, "/v1/tests/"+testID.String()+"/stop", command.CommandId, command)
+	return matchCommandTest(result, err, testID)
+}
+
+func (c *Client) StopTestRaw(ctx context.Context, lease, testID, id uuid.UUID, body []byte) (contract.CommandStatus, error) {
+	if testID == uuid.Nil {
+		return contract.CommandStatus{}, invalidRequest()
+	}
+	result, err := c.command(ctx, lease, "/v1/tests/"+testID.String()+"/stop", id, json.RawMessage(body))
 	return matchCommandTest(result, err, testID)
 }
 

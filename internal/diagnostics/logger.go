@@ -34,6 +34,7 @@ const (
 	ConnectionConfirmed Event = "connection.confirmed"
 	DiagnosticDegraded  Event = "diagnostics.degraded"
 	StorageReady        Event = "storage.ready"
+	CommandSent         Event = "command.sent"
 	CommandAccepted     Event = "command.accepted"
 	CommandRejected     Event = "command.rejected"
 	CommandCompleted    Event = "command.completed"
@@ -57,6 +58,7 @@ var eventCatalog = map[Event]eventSpec{
 	ConnectionConfirmed: {slog.LevelInfo, "Core identity confirmed"},
 	DiagnosticDegraded:  {slog.LevelWarn, "Diagnostic writer degraded"},
 	StorageReady:        {slog.LevelInfo, "SQLite settings confirmed"},
+	CommandSent:         {slog.LevelInfo, "Command sent to core"},
 	CommandAccepted:     {slog.LevelInfo, "Command accepted"},
 	CommandRejected:     {slog.LevelInfo, "Command rejected"},
 	CommandCompleted:    {slog.LevelInfo, "Command completed"},
@@ -235,7 +237,7 @@ func (f *fields) add(attr slog.Attr) {
 			}
 		case "error_code":
 			switch value {
-			case "unavailable", "invalid_command", "command_id_conflict", "storage_unavailable", "revision", "active_test", "invalid_state", "action_mismatch", "test_not_found", "not_ready", "simulator_stop_failed":
+			case "unavailable", "invalid_response", "lease_invalid", "state_unavailable", "outcome_unknown", "invalid_command", "command_id_conflict", "storage_unavailable", "revision", "active_test", "invalid_state", "action_mismatch", "test_not_found", "not_found", "not_ready", "simulator_stop_failed", "busy":
 				f.errorCode = value
 			}
 		case "command_status":

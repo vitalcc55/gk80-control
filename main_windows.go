@@ -118,7 +118,7 @@ func run() (resultErr error) {
 	}()
 	app = application.New(application.Options{
 		Name: "ГК80", Description: "Демонстрационное приложение ГК80",
-		Services: []application.Service{desktop.NewBootstrapWailsService(owner)},
+		Services: []application.Service{desktop.NewBootstrapWailsService(owner), desktop.NewWailsService(owner)},
 		Assets:   application.AssetOptions{Handler: application.AssetFileServerFS(desktopAssets)},
 		Logger:   logger.Framework(),
 		ErrorHandler: func(err error) {

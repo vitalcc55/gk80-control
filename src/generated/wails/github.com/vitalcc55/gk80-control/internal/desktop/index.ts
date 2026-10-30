@@ -7,3 +7,10 @@ export {
     BootstrapService,
     Service
 };
+
+export type {
+    ConfirmCommandInput,
+    CreateCommandInput,
+    StartCommandInput,
+    StopCommandInput
+} from "./models.js";

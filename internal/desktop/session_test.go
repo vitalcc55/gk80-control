@@ -2,39 +2,43 @@ package desktop
 
 import (
 	"context"
+	"encoding/json"
 	"io"
-	"log/slog"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/vitalcc55/gk80-control/internal/contract"
+	"github.com/vitalcc55/gk80-control/internal/diagnostics"
 	"github.com/vitalcc55/gk80-control/internal/transport"
 )
 
 type testSessionClient struct {
 	sessionClient
-	mu       sync.Mutex
-	acquires int
-	lease    uuid.UUID
-	acquire  func(context.Context, uuid.UUID, *uuid.UUID) (contract.UiLease, error)
-	run      uuid.UUID
-	stream   *testSessionStream
-	unknown  bool
-	command  contract.CommandStatus
-	lookup   func(context.Context, uuid.UUID, uuid.UUID) (contract.CommandStatus, error)
-	reads    int
-	open     func(context.Context, uuid.UUID, uuid.UUID) (sessionStream, contract.Snapshot, error)
-	renew    func(context.Context, uuid.UUID) (contract.UiLease, error)
-	snapshot func(context.Context, uuid.UUID) (contract.Snapshot, error)
-	stop     func(context.Context, uuid.UUID, uuid.UUID, contract.StopTestCommand) (contract.CommandStatus, error)
-	test     func(context.Context, uuid.UUID, uuid.UUID) (contract.TestRecord, error)
-	release  func(context.Context, uuid.UUID) error
-	list     func(context.Context, uuid.UUID, contract.ListTestsParams) (contract.TestList, error)
+	mu        sync.Mutex
+	acquires  int
+	lease     uuid.UUID
+	acquire   func(context.Context, uuid.UUID, *uuid.UUID) (contract.UiLease, error)
+	run       uuid.UUID
+	stream    *testSessionStream
+	unknown   bool
+	command   contract.CommandStatus
+	lookup    func(context.Context, uuid.UUID, uuid.UUID) (contract.CommandStatus, error)
+	reads     int
+	open      func(context.Context, uuid.UUID, uuid.UUID) (sessionStream, contract.Snapshot, error)
+	renew     func(context.Context, uuid.UUID) (contract.UiLease, error)
+	snapshot  func(context.Context, uuid.UUID) (contract.Snapshot, error)
+	stop      func(context.Context, uuid.UUID, uuid.UUID, contract.StopTestCommand) (contract.CommandStatus, error)
+	test      func(context.Context, uuid.UUID, uuid.UUID) (contract.TestRecord, error)
+	release   func(context.Context, uuid.UUID) error
+	list      func(context.Context, uuid.UUID, contract.ListTestsParams) (contract.TestList, error)
+	createRaw func(context.Context, uuid.UUID, uuid.UUID, []byte) (contract.CommandStatus, error)
 }
 
 func (c *testSessionClient) AcquireLease(ctx context.Context, client uuid.UUID, proof *uuid.UUID) (contract.UiLease, error) {
@@ -75,6 +79,10 @@ func (c *testSessionClient) ReleaseLease(ctx context.Context, lease uuid.UUID) e
 
 func (c *testSessionClient) ListTests(ctx context.Context, lease uuid.UUID, params contract.ListTestsParams) (contract.TestList, error) {
 	return c.list(ctx, lease, params)
+}
+
+func (c *testSessionClient) CreateTestRaw(ctx context.Context, lease, id uuid.UUID, body []byte) (contract.CommandStatus, error) {
+	return c.createRaw(ctx, lease, id, body)
 }
 
 func (c *testSessionClient) openStream(ctx context.Context, lease, run uuid.UUID) (sessionStream, contract.Snapshot, error) {
@@ -1017,7 +1025,13 @@ func TestOwnerSessionRunsAndReopensCore(t *testing.T) {
 		t.Fatalf("build core: %v %s", err, output)
 	}
 	profile := t.TempDir()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	hostID := uuid.New()
+	diagnostic, err := diagnostics.Open(filepath.Join(profile, "logs"), diagnostics.RoleDesktop, hostID, io.Discard, diagnostics.Config{QueueSize: 64, MaxBytes: 1 << 20, AppVersion: "0.1.0", ProfileID: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = diagnostic.Close(context.Background()) }()
+	logger := diagnostic.Application(diagnostics.ComponentTransport)
 	newOwner := func() *Owner {
 		owner := NewOwner(uuid.New(), executable, profile, "test", "0.1.0", logger, nil, false, func(contract.DesktopStatus) {})
 		owner.Start()
@@ -1038,7 +1052,16 @@ func TestOwnerSessionRunsAndReopensCore(t *testing.T) {
 		t.Fatal(err)
 	}
 	create := contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: snapshot.Revision, Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}}
-	created, err := owner.CreateTest(context.Background(), create)
+	service := NewService(owner)
+	body, err := json.Marshal(create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var createInput CreateCommandInput
+	if err := json.Unmarshal(body, &createInput); err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.CreateTest(context.Background(), createInput)
 	if err != nil || created.TestId == nil || created.Status != contract.CommandStatusStatusCompleted {
 		t.Fatalf("create: %+v %v", created, err)
 	}
@@ -1051,7 +1074,16 @@ func TestOwnerSessionRunsAndReopensCore(t *testing.T) {
 		state, stateErr := owner.ConnectionState(context.Background())
 		return stateErr == nil && state.Status == contract.Live
 	})
-	started, err := owner.StartTest(context.Background(), id, contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: ready.Revision, ValveClosed: true, ConnectionConfirmed: true})
+	start := contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: ready.Revision, ValveClosed: true, ConnectionConfirmed: true}
+	body, err = json.Marshal(start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var startInput StartCommandInput
+	if err := json.Unmarshal(body, &startInput); err != nil {
+		t.Fatal(err)
+	}
+	started, err := service.StartTest(context.Background(), id, startInput)
 	if err != nil || started.Status != contract.CommandStatusStatusAccepted {
 		t.Fatalf("start: %+v %v", started, err)
 	}
@@ -1060,7 +1092,16 @@ func TestOwnerSessionRunsAndReopensCore(t *testing.T) {
 		state, stateErr := owner.ConnectionState(context.Background())
 		return err == nil && stateErr == nil && state.Status == contract.Live && snapshot.PendingAction != nil
 	})
-	confirmed, err := owner.ConfirmAction(context.Background(), id, snapshot.PendingAction.ActionId.String(), contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: snapshot.Revision})
+	confirm := contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: snapshot.Revision}
+	body, err = json.Marshal(confirm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var confirmInput ConfirmCommandInput
+	if err := json.Unmarshal(body, &confirmInput); err != nil {
+		t.Fatal(err)
+	}
+	confirmed, err := service.ConfirmAction(context.Background(), id, snapshot.PendingAction.ActionId.String(), confirmInput)
 	if err != nil || confirmed.Status != contract.CommandStatusStatusCompleted {
 		session, _ := owner.currentSession()
 		session.mu.Lock()
@@ -1076,7 +1117,15 @@ func TestOwnerSessionRunsAndReopensCore(t *testing.T) {
 		t.Fatalf("source: %+v", snapshot.Measurements[0])
 	}
 	stopID := snapshot.ActiveTest.StopCommandId
-	stopped, err := owner.StopTest(context.Background(), id, contract.StopTestCommand{CommandId: stopID})
+	body, err = json.Marshal(contract.StopTestCommand{CommandId: stopID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stopInput StopCommandInput
+	if err := json.Unmarshal(body, &stopInput); err != nil {
+		t.Fatal(err)
+	}
+	stopped, err := service.StopTest(context.Background(), id, stopInput)
 	if err != nil || stopped.Status != contract.CommandStatusStatusAccepted {
 		t.Fatalf("stop: %+v %v", stopped, err)
 	}
@@ -1103,5 +1152,41 @@ func TestOwnerSessionRunsAndReopensCore(t *testing.T) {
 	audit, err := owner.Audit(context.Background(), id, 0, 10)
 	if err != nil || len(audit.Items) == 0 {
 		t.Fatalf("reopened audit: %+v %v", audit, err)
+	}
+	if err := owner.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := diagnostic.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	logs, err := os.ReadDir(filepath.Join(profile, "logs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hostSent, hostObserved, coreFound bool
+	for _, entry := range logs {
+		data, err := os.ReadFile(filepath.Join(profile, "logs", entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+			var record struct {
+				Event     string `json:"event"`
+				CommandID string `json:"command_id"`
+				TestID    string `json:"test_id"`
+			}
+			if err := json.Unmarshal([]byte(line), &record); err != nil {
+				t.Fatal(err)
+			}
+			if record.CommandID != create.CommandId.String() {
+				continue
+			}
+			hostSent = hostSent || strings.HasPrefix(entry.Name(), "desktop-") && record.Event == "command.sent"
+			hostObserved = hostObserved || strings.HasPrefix(entry.Name(), "desktop-") && record.Event == "command.observed" && record.TestID == id
+			coreFound = coreFound || strings.HasPrefix(entry.Name(), "core-") && record.Event == "command.completed" && record.TestID == id
+		}
+	}
+	if !hostSent || !hostObserved || !coreFound {
+		t.Fatalf("command correlation missing: sent=%v observed=%v core=%v", hostSent, hostObserved, coreFound)
 	}
 }

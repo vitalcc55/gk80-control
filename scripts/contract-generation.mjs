@@ -47,8 +47,23 @@ function filesIn(folder) {
 const expectedService = join(wailsOutput, 'github.com', 'vitalcc55', 'gk80-control', 'internal', 'desktop', 'service.ts');
 const expectedEvent = join(wailsOutput, 'github.com', 'wailsapp', 'wails', 'v3', 'internal', 'eventdata.d.ts');
 const expectedModels = join(wailsOutput, 'github.com', 'vitalcc55', 'gk80-control', 'internal', 'contract', 'models.ts');
-for (const path of [expectedService, expectedEvent, expectedModels]) {
+const expectedInputs = join(wailsOutput, 'github.com', 'vitalcc55', 'gk80-control', 'internal', 'desktop', 'models.ts');
+for (const path of [expectedService, expectedEvent, expectedModels, expectedInputs]) {
   if (!existsSync(path)) throw new Error(`Missing generated file: ${path}`);
+}
+const inputTypes = readFileSync(expectedInputs, 'utf8');
+for (const [name, fields] of [
+  ['CreateCommandInput', ['commandId', 'expectedRevision', 'parameters']],
+  ['StartCommandInput', ['commandId', 'connectionConfirmed', 'expectedRevision', 'valveClosed']],
+  ['ConfirmCommandInput', ['commandId', 'expectedRevision']],
+  ['StopCommandInput', ['commandId']],
+]) {
+  const match = inputTypes.match(new RegExp(`export interface ${name} \\{([\\s\\S]*?)\\}`));
+  if (!match) throw new Error(`Missing generated command input: ${name}`);
+  const generated = [...match[1].matchAll(/^\s*"([^"]+)"(\?)?:/gm)];
+  if (generated.some((item) => item[2]) || generated.map((item) => item[1]).sort().join(',') !== [...fields].sort().join(',')) {
+    throw new Error(`Unexpected generated command input shape: ${name}`);
+  }
 }
 const eventTypes = readFileSync(expectedEvent, 'utf8');
 if (!eventTypes.includes('"core:event": contract$0.Event') ||

@@ -23,9 +23,7 @@ export type {
     AuditEvent,
     AuditPage,
     CommandStatus,
-    ConfirmActionCommand,
     ConnectionState,
-    CreateTestCommand,
     DesktopStatus,
     Event,
     Handshake,
@@ -36,8 +34,6 @@ export type {
     Readiness,
     ReadinessCheck,
     Snapshot,
-    StartTestCommand,
-    StopTestCommand,
     TestList,
     TestParameters,
     TestRecord

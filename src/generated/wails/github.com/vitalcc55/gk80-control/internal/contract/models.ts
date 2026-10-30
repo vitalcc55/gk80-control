@@ -64,14 +64,6 @@ export enum CommandStatusStatus {
 };
 
 /**
- * ConfirmActionCommand defines model for ConfirmActionCommand.
- */
-export interface ConfirmActionCommand {
-    "commandId": types$0.UUID;
-    "expectedRevision": number;
-}
-
-/**
  * ConnectionState defines model for ConnectionState.
  */
 export interface ConnectionState {
@@ -96,15 +88,6 @@ export enum ConnectionStateStatus {
     Live = "live",
     Recovering = "recovering",
 };
-
-/**
- * CreateTestCommand defines model for CreateTestCommand.
- */
-export interface CreateTestCommand {
-    "commandId": types$0.UUID;
-    "expectedRevision": number;
-    "parameters": TestParameters;
-}
 
 /**
  * DesktopStatus defines model for DesktopStatus.
@@ -354,23 +337,6 @@ export interface Snapshot {
     "measurements": Measurement[] | null;
     "pendingAction": PendingAction | null;
     "revision": number;
-}
-
-/**
- * StartTestCommand defines model for StartTestCommand.
- */
-export interface StartTestCommand {
-    "commandId": types$0.UUID;
-    "connectionConfirmed": boolean;
-    "expectedRevision": number;
-    "valveClosed": boolean;
-}
-
-/**
- * StopTestCommand defines model for StopTestCommand.
- */
-export interface StopTestCommand {
-    "commandId": types$0.UUID;
 }
 
 /**

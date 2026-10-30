@@ -7,6 +7,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/vitalcc55/gk80-control/internal/contract"
+	"github.com/vitalcc55/gk80-control/internal/diagnostics"
+	"github.com/vitalcc55/gk80-control/internal/transport"
 )
 
 func (o *Owner) currentSession() (*demoSession, error) {
@@ -193,6 +195,58 @@ func commandIdentity(operation string, command any) (string, error) {
 	return operation + ":" + string(data), nil
 }
 
+func (o *Owner) forwardCommand(ctx context.Context, session *demoSession, commandID, testID, actionID uuid.UUID, send func(context.Context) (contract.CommandStatus, error)) (contract.CommandStatus, error) {
+	args := []any{"command_id", commandID, "backend_run_id", session.backendID}
+	if testID != uuid.Nil {
+		args = append(args, "test_id", testID)
+	}
+	if actionID != uuid.Nil {
+		args = append(args, "action_id", actionID)
+	}
+	if o.log != nil {
+		o.log.Info(string(diagnostics.CommandSent), args...)
+	}
+	result, err := send(ctx)
+	if o.log == nil {
+		return result, err
+	}
+	if result.TestId != nil && testID == uuid.Nil {
+		args = append(args, "test_id", *result.TestId)
+	}
+	if err == nil && result.Status.Valid() {
+		args = append(args, "command_status", string(result.Status))
+		if result.Reason != nil {
+			args = append(args, "error_code", *result.Reason)
+		}
+		o.log.Info(string(diagnostics.CommandObserved), args...)
+	} else {
+		var failure *transport.RequestError
+		if errors.As(err, &failure) && !failure.OutcomeUnknown {
+			switch failure.Code {
+			case "command_conflict":
+				args = append(args, "error_code", "command_id_conflict")
+			case "invalid_request":
+				args = append(args, "error_code", "invalid_command")
+			case "not_found":
+				args = append(args, "error_code", "not_found")
+			case "busy", "invalid_state":
+				args = append(args, "error_code", failure.Code)
+			}
+			o.log.Info(string(diagnostics.CommandRejected), args...)
+		} else {
+			args = append(args, "command_status", "unknown")
+			if errors.As(err, &failure) {
+				switch failure.Code {
+				case "unavailable", "invalid_response", "lease_invalid", "state_unavailable", "outcome_unknown":
+					args = append(args, "error_code", failure.Code)
+				}
+			}
+			o.log.Info(string(diagnostics.CommandObserved), args...)
+		}
+	}
+	return result, err
+}
+
 func (o *Owner) CreateTest(ctx context.Context, command contract.CreateTestCommand) (contract.CommandStatus, error) {
 	session, err := o.currentSession()
 	if err != nil {
@@ -205,6 +259,25 @@ func (o *Owner) CreateTest(ctx context.Context, command contract.CreateTestComma
 	return session.command(ctx, command.CommandId, identity, false, func(ctx context.Context, lease uuid.UUID) (contract.CommandStatus, error) {
 		return session.client.CreateTest(ctx, lease, command)
 	})
+}
+
+func (o *Owner) CreateTestInput(ctx context.Context, command CreateCommandInput) (contract.CommandStatus, error) {
+	if len(command.body) == 0 || len(command.identity) == 0 {
+		return contract.CommandStatus{}, errSessionUnavailable
+	}
+	session, err := o.currentSession()
+	if err != nil {
+		return contract.CommandStatus{}, err
+	}
+	var invalidNew error
+	if !command.lossless {
+		invalidNew = errors.New("decimal value cannot be preserved")
+	}
+	return session.command(ctx, command.CommandId, "create:"+string(command.identity), false, func(ctx context.Context, lease uuid.UUID) (contract.CommandStatus, error) {
+		return o.forwardCommand(ctx, session, command.CommandId, uuid.Nil, uuid.Nil, func(ctx context.Context) (contract.CommandStatus, error) {
+			return session.client.CreateTestRaw(ctx, lease, command.CommandId, command.body)
+		})
+	}, invalidNew)
 }
 
 func (o *Owner) StartTest(ctx context.Context, value string, command contract.StartTestCommand) (contract.CommandStatus, error) {
@@ -222,6 +295,23 @@ func (o *Owner) StartTest(ctx context.Context, value string, command contract.St
 	}
 	return session.command(ctx, command.CommandId, identity, false, func(ctx context.Context, lease uuid.UUID) (contract.CommandStatus, error) {
 		return session.client.StartTest(ctx, lease, id, command)
+	})
+}
+
+func (o *Owner) StartTestInput(ctx context.Context, value string, command StartCommandInput) (contract.CommandStatus, error) {
+	id, err := parseSessionID(value)
+	if err != nil || len(command.body) == 0 || len(command.identity) == 0 {
+		return contract.CommandStatus{}, errSessionUnavailable
+	}
+	session, err := o.currentSession()
+	if err != nil {
+		return contract.CommandStatus{}, err
+	}
+	identity := "start:" + id.String() + ":" + string(command.identity)
+	return session.command(ctx, command.CommandId, identity, false, func(ctx context.Context, lease uuid.UUID) (contract.CommandStatus, error) {
+		return o.forwardCommand(ctx, session, command.CommandId, id, uuid.Nil, func(ctx context.Context) (contract.CommandStatus, error) {
+			return session.client.StartTestRaw(ctx, lease, id, command.CommandId, command.body)
+		})
 	})
 }
 
@@ -247,16 +337,56 @@ func (o *Owner) ConfirmAction(ctx context.Context, value, actionValue string, co
 	})
 }
 
-func (o *Owner) StopTest(ctx context.Context, value string, command contract.StopTestCommand) (contract.CommandStatus, error) {
+func (o *Owner) ConfirmActionInput(ctx context.Context, value, actionValue string, command ConfirmCommandInput) (contract.CommandStatus, error) {
 	id, err := parseSessionID(value)
 	if err != nil {
 		return contract.CommandStatus{}, err
+	}
+	action, err := parseSessionID(actionValue)
+	if err != nil || len(command.body) == 0 || len(command.identity) == 0 {
+		return contract.CommandStatus{}, errSessionUnavailable
 	}
 	session, err := o.currentSession()
 	if err != nil {
 		return contract.CommandStatus{}, err
 	}
+	identity := "confirm:" + id.String() + ":" + action.String() + ":" + string(command.identity)
+	return session.command(ctx, command.CommandId, identity, false, func(ctx context.Context, lease uuid.UUID) (contract.CommandStatus, error) {
+		return o.forwardCommand(ctx, session, command.CommandId, id, action, func(ctx context.Context) (contract.CommandStatus, error) {
+			return session.client.ConfirmActionRaw(ctx, lease, id, action, command.CommandId, command.body)
+		})
+	})
+}
+
+func (o *Owner) StopTest(ctx context.Context, value string, command contract.StopTestCommand) (contract.CommandStatus, error) {
+	id, err := parseSessionID(value)
+	if err != nil {
+		return contract.CommandStatus{}, err
+	}
 	identity, err := commandIdentity("stop:"+id.String(), command)
+	if err != nil {
+		return contract.CommandStatus{}, err
+	}
+	return o.stopSessionCommand(ctx, id, command.CommandId, identity, func(ctx context.Context, _ *demoSession, client sessionClient, lease uuid.UUID) (contract.CommandStatus, error) {
+		return client.StopTest(ctx, lease, id, command)
+	})
+}
+
+func (o *Owner) StopTestInput(ctx context.Context, value string, command StopCommandInput) (contract.CommandStatus, error) {
+	id, err := parseSessionID(value)
+	if err != nil || len(command.body) == 0 || len(command.identity) == 0 {
+		return contract.CommandStatus{}, errSessionUnavailable
+	}
+	identity := "stop:" + id.String() + ":" + string(command.identity)
+	return o.stopSessionCommand(ctx, id, command.CommandId, identity, func(ctx context.Context, session *demoSession, client sessionClient, lease uuid.UUID) (contract.CommandStatus, error) {
+		return o.forwardCommand(ctx, session, command.CommandId, id, uuid.Nil, func(ctx context.Context) (contract.CommandStatus, error) {
+			return client.StopTestRaw(ctx, lease, id, command.CommandId, command.body)
+		})
+	})
+}
+
+func (o *Owner) stopSessionCommand(ctx context.Context, id, commandID uuid.UUID, identity string, send func(context.Context, *demoSession, sessionClient, uuid.UUID) (contract.CommandStatus, error)) (contract.CommandStatus, error) {
+	session, err := o.currentSession()
 	if err != nil {
 		return contract.CommandStatus{}, err
 	}
@@ -265,9 +395,9 @@ func (o *Owner) StopTest(ctx context.Context, value string, command contract.Sto
 	if session.snapshot != nil {
 		active = session.snapshot.ActiveTest
 	}
-	valid := (active != nil && active.Stage != "finished" && active.TestId == id && active.StopCommandId == command.CommandId) || (session.activeTestID == id && session.activeStopID == command.CommandId)
-	previous, tracked := session.commands[command.CommandId]
-	knownRepeat := tracked && session.commandPayloads[command.CommandId] == identity
+	valid := (active != nil && active.Stage != "finished" && active.TestId == id && active.StopCommandId == commandID) || (session.activeTestID == id && session.activeStopID == commandID)
+	previous, tracked := session.commands[commandID]
+	knownRepeat := tracked && session.commandPayloads[commandID] == identity
 	session.mu.Unlock()
 	if !valid {
 		if knownRepeat {
@@ -275,8 +405,8 @@ func (o *Owner) StopTest(ctx context.Context, value string, command contract.Sto
 		}
 		return contract.CommandStatus{}, errSessionUnavailable
 	}
-	return session.command(ctx, command.CommandId, identity, true, func(ctx context.Context, lease uuid.UUID) (contract.CommandStatus, error) {
-		return session.client.StopTest(ctx, lease, id, command)
+	return session.command(ctx, commandID, identity, true, func(ctx context.Context, lease uuid.UUID) (contract.CommandStatus, error) {
+		return send(ctx, session, session.client, lease)
 	})
 }
 
