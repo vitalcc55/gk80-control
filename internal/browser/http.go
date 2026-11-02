@@ -13,13 +13,13 @@ func (s *browserSession) beginResponse(ctx context.Context) (func(), bool) {
 	slot, ok := ctx.Value(requestSlotKey{}).(*requestSlot)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !ok || ctx.Err() != nil || s.cookie == "" || !time.Now().Before(s.deadline) {
+	if !ok || ctx.Err() != nil || s.cookie == "" || !time.Now().Before(s.deadline) || (s.bound && (slot.channel == nil || s.channel != slot.channel)) {
 		return nil, false
 	}
 	if _, exists := s.active[slot]; !exists {
 		return nil, false
 	}
-	write := &responseWrite{done: make(chan struct{})}
+	write := &responseWrite{done: make(chan struct{}), channel: slot.channel}
 	s.writes[write] = struct{}{}
 	return func() {
 		s.mu.Lock()
