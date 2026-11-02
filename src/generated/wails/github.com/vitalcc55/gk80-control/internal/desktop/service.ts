@@ -66,6 +66,13 @@ export function ListTests(params: contract$0.ListTestsParams): $CancellablePromi
     return $Call.ByID(623600912, params);
 }
 
+/**
+ * LookupCommandExact reads the saved attempt without retrying its action.
+ */
+export function LookupCommandExact(database: string, kind: string, testID: string, actionID: string, commandID: string, originalJSON: string): $CancellablePromise<contract$0.ExactLookupResult> {
+    return $Call.ByID(4030625553, database, kind, testID, actionID, commandID, originalJSON);
+}
+
 export function Measurements(testID: string, after: number, limit: number): $CancellablePromise<contract$0.MeasurementPage> {
     return $Call.ByID(1262557858, testID, after, limit);
 }

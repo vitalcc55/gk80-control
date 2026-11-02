@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -42,6 +43,29 @@ type testSessionClient struct {
 	release   func(context.Context, uuid.UUID) error
 	list      func(context.Context, uuid.UUID, contract.ListTestsParams) (contract.TestList, error)
 	createRaw func(context.Context, uuid.UUID, uuid.UUID, []byte) (contract.CommandStatus, error)
+}
+
+type lostOwnerCreate struct {
+	sessionClient
+	creates *atomic.Int32
+	lose    bool
+}
+
+func (c *lostOwnerCreate) CreateTest(ctx context.Context, lease uuid.UUID, command contract.CreateTestCommand) (contract.CommandStatus, error) {
+	c.creates.Add(1)
+	return c.sessionClient.CreateTest(ctx, lease, command)
+}
+
+func (c *lostOwnerCreate) CreateTestRaw(ctx context.Context, lease, id uuid.UUID, body []byte) (contract.CommandStatus, error) {
+	c.creates.Add(1)
+	result, err := c.sessionClient.CreateTestRaw(ctx, lease, id, body)
+	if err != nil {
+		return result, err
+	}
+	if !c.lose {
+		return result, nil
+	}
+	return contract.CommandStatus{}, &transport.RequestError{Code: "unavailable", OutcomeUnknown: true}
 }
 
 func (c *testSessionClient) AcquireLease(ctx context.Context, client uuid.UUID, proof *uuid.UUID) (contract.UiLease, error) {
@@ -2142,7 +2166,8 @@ func TestOwnerSessionRunsAndReopensCore(t *testing.T) {
 		}
 	})
 	logger := diagnostic.Application(diagnostics.ComponentTransport)
-	newOwner := func() (*Owner, func()) {
+	var createCount atomic.Int32
+	newOwner := func(mode string) (*Owner, func()) {
 		changes := make(chan struct{}, 1)
 		owner := NewOwner(uuid.New(), executable, profile, "test", "0.1.0", logger, nil, false, func(contract.DesktopStatus) {
 			select {
@@ -2157,6 +2182,15 @@ func TestOwnerSessionRunsAndReopensCore(t *testing.T) {
 		})
 		owner.Start()
 		waitProcessReady(t, owner, changes)
+		if mode != "" {
+			session, err := owner.currentSession()
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.mu.Lock()
+			session.client = &lostOwnerCreate{sessionClient: session.client, creates: &createCount, lose: mode == "lose"}
+			session.mu.Unlock()
+		}
 		if err := owner.KeepAlive(context.Background()); err != nil {
 			t.Fatal(err)
 		}
@@ -2203,7 +2237,7 @@ func TestOwnerSessionRunsAndReopensCore(t *testing.T) {
 		})
 		return owner, stopPulse
 	}
-	owner, stopPulse := newOwner()
+	owner, stopPulse := newOwner("")
 	snapshot, err := owner.Snapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -2294,7 +2328,7 @@ func TestOwnerSessionRunsAndReopensCore(t *testing.T) {
 	if err := owner.Close(); err != nil {
 		t.Fatal(err)
 	}
-	owner, stopPulse = newOwner()
+	owner, stopPulse = newOwner("lose")
 	history, err := owner.ListTests(context.Background(), contract.ListTestsParams{})
 	if err != nil || len(history.Items) != 1 || history.Items[0].TestId.String() != id {
 		t.Fatalf("reopened history: %+v %v", history, err)
@@ -2310,6 +2344,80 @@ func TestOwnerSessionRunsAndReopensCore(t *testing.T) {
 	audit, err := owner.Audit(context.Background(), id, 0, 10)
 	if err != nil || len(audit.Items) == 0 {
 		t.Fatalf("reopened audit: %+v %v", audit, err)
+	}
+	// Lose only the Create response after core completed the request. Resolve
+	// the original bytes, never repeat the mutating request.
+	snapshot, err = owner.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	lost := contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: snapshot.Revision, Parameters: contract.TestParameters{Valve: "lost", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}}
+	bytes, err := json.Marshal(lost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lostInput CreateCommandInput
+	if err := json.Unmarshal(bytes, &lostInput); err != nil {
+		t.Fatal(err)
+	}
+	service = NewService(owner)
+	_, err = service.CreateTest(context.Background(), lostInput)
+	var lostResponse *transport.RequestError
+	if !errors.As(err, &lostResponse) || !lostResponse.OutcomeUnknown {
+		t.Fatalf("lost create outcome: %v", err)
+	}
+	database := owner.Status().Handshake.DatabaseId.String()
+	lookup, err := service.LookupCommandExact(context.Background(), database, "create", "", "", lost.CommandId.String(), string(bytes))
+	if err != nil || lookup.Outcome != contract.ExactLookupResultOutcomeMatch || lookup.Command == nil || lookup.Command.Status != contract.CommandStatusStatusCompleted || lookup.Command.TestId == nil {
+		t.Fatalf("resolve lost create: %+v %v", lookup, err)
+	}
+	lostID := *lookup.Command.TestId
+	changed := strings.Replace(string(bytes), `"areaM2":1`, `"areaM2":1.0000000000000001`, 1)
+	if changed == string(bytes) {
+		t.Fatal("create body lacks expected area")
+	}
+	lookup, err = service.LookupCommandExact(context.Background(), database, "create", "", "", lost.CommandId.String(), changed)
+	if err != nil || lookup.Outcome != contract.ExactLookupResultOutcomeConflict || lookup.Command != nil {
+		t.Fatalf("different content: %+v %v", lookup, err)
+	}
+	if createCount.Load() != 1 {
+		t.Fatalf("create sent %d times", createCount.Load())
+	}
+	stopPulse()
+	if err := owner.Close(); err != nil {
+		t.Fatal(err)
+	}
+	owner, stopPulse = newOwner("track")
+	service = NewService(owner)
+	lookup, err = service.LookupCommandExact(context.Background(), database, "create", "", "", lost.CommandId.String(), string(bytes))
+	if err != nil || lookup.Outcome != contract.ExactLookupResultOutcomeMatch || lookup.Command == nil || lookup.Command.TestId == nil || *lookup.Command.TestId != lostID {
+		t.Fatalf("resolve after reopening core: %+v %v", lookup, err)
+	}
+	lookup, err = service.LookupCommandExact(context.Background(), database, "create", "", "", lost.CommandId.String(), changed)
+	if err != nil || lookup.Outcome != contract.ExactLookupResultOutcomeConflict || lookup.Command != nil {
+		t.Fatalf("different content after reopen: %+v %v", lookup, err)
+	}
+	missingID := uuid.New()
+	missingBody := strings.Replace(string(bytes), lost.CommandId.String(), missingID.String(), 1)
+	lookup, err = service.LookupCommandExact(context.Background(), database, "create", "", "", missingID.String(), missingBody)
+	if err != nil || lookup.Outcome != contract.ExactLookupResultOutcomeUnknown || lookup.Command != nil {
+		t.Fatalf("missing command after reopen: %+v %v", lookup, err)
+	}
+	lostAudit, err := owner.Audit(context.Background(), lostID.String(), 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var createEvents int
+	for _, event := range lostAudit.Items {
+		if event.CommandId != nil && *event.CommandId == lost.CommandId {
+			createEvents++
+		}
+	}
+	if createEvents != 1 {
+		t.Fatalf("create audit events: %d", createEvents)
+	}
+	if createCount.Load() != 1 {
+		t.Fatalf("create repeated: %d", createCount.Load())
 	}
 	stopPulse()
 	if err := owner.Close(); err != nil {

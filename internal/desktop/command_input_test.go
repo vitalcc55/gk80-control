@@ -72,8 +72,9 @@ func TestWailsBoundMethodUsesOriginalCommandDecoder(t *testing.T) {
 
 type bindingTestCore struct {
 	Core
-	calls int
-	input CreateCommandInput
+	calls     int
+	input     CreateCommandInput
+	exactBody string
 }
 
 type blockedSessionCore struct {
@@ -134,6 +135,11 @@ func (c *bindingTestCore) CreateTestInput(_ context.Context, input CreateCommand
 	return contract.CommandStatus{CommandId: input.CommandId, Status: contract.CommandStatusStatusCompleted}, nil
 }
 
+func (c *bindingTestCore) LookupCommandExact(_ context.Context, _, _, _, _, _ string, body string) (contract.ExactLookupResult, error) {
+	c.exactBody = body
+	return contract.ExactLookupResult{Outcome: contract.ExactLookupResultOutcomeConflict}, nil
+}
+
 func TestWailsRegisteredBindingRejectsMissingFields(t *testing.T) {
 	const childEnv = "GK80_WAILS_BINDING_TEST_CHILD"
 	if os.Getenv(childEnv) != "1" {
@@ -161,6 +167,22 @@ func TestWailsRegisteredBindingRejectsMissingFields(t *testing.T) {
 	valid := json.RawMessage(`{"commandId":"00000000-0000-4000-8000-000000000001","expectedRevision":0,"parameters":{"valve":"V","areaM2":0.100,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`)
 	if _, err := method.Call(context.Background(), []json.RawMessage{valid}); err != nil || core.calls != 1 || string(core.input.body) != string(valid) {
 		t.Fatalf("registered Wails method lost original input: calls=%d err=%v", core.calls, err)
+	}
+	lookup := bindings.Get(&application.CallOptions{MethodName: "github.com/vitalcc55/gk80-control/internal/desktop.Service.LookupCommandExact"})
+	if lookup == nil {
+		t.Fatal("exact lookup method was not registered")
+	}
+	raw := `{"commandId":"00000000-0000-4000-8000-000000000001","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`
+	var lookupArgs []json.RawMessage
+	for _, value := range []string{"00000000-0000-4000-8000-000000000004", "create", "", "", "00000000-0000-4000-8000-000000000001", raw} {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lookupArgs = append(lookupArgs, encoded)
+	}
+	if _, err := lookup.Call(context.Background(), lookupArgs); err != nil || core.exactBody != raw {
+		t.Fatalf("Wails exact body: %v", err)
 	}
 	for _, tc := range []struct {
 		name string

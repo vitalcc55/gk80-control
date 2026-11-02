@@ -89,6 +89,19 @@ func TestActionLookupSchemasAcceptHistoricalValuesButRequireStructure(t *testing
 	validateJSON(t, confirmLookup, confirm, false)
 }
 
+func TestExactLookupResultKeepsConflictSeparateFromCommandStatus(t *testing.T) {
+	schema := schemaFor(t, "ExactLookupResult")
+	command := CommandStatus{CommandId: uuid.New(), Status: CommandStatusStatusCompleted}
+	validateJSON(t, schema, ExactLookupResult{Outcome: ExactLookupResultOutcomeMatch, Command: &command}, true)
+	validateJSON(t, schema, ExactLookupResult{Outcome: ExactLookupResultOutcomeUnknown}, true)
+	validateJSON(t, schema, ExactLookupResult{Outcome: ExactLookupResultOutcomeConflict}, true)
+	validateJSON(t, schema, ExactLookupResult{Outcome: ExactLookupResultOutcomeDatabaseMismatch}, true)
+	validateJSON(t, schema, ExactLookupResult{Outcome: ExactLookupResultOutcomeMatch}, false)
+	validateJSON(t, schema, ExactLookupResult{Outcome: ExactLookupResultOutcomeConflict, Command: &command}, false)
+	command.Status = CommandStatusStatusUnknown
+	validateJSON(t, schema, ExactLookupResult{Outcome: ExactLookupResultOutcomeMatch, Command: &command}, false)
+}
+
 func TestMeasurementContractPreservesNullAndRejectsInvalidData(t *testing.T) {
 	schema := schemaFor(t, "Measurement")
 	measurement := Measurement{

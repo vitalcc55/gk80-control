@@ -126,6 +126,30 @@ func (e EventType) Valid() bool {
 	}
 }
 
+// Defines values for ExactLookupResultOutcome.
+const (
+	ExactLookupResultOutcomeConflict         ExactLookupResultOutcome = "conflict"
+	ExactLookupResultOutcomeDatabaseMismatch ExactLookupResultOutcome = "databaseMismatch"
+	ExactLookupResultOutcomeMatch            ExactLookupResultOutcome = "match"
+	ExactLookupResultOutcomeUnknown          ExactLookupResultOutcome = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the ExactLookupResultOutcome enum.
+func (e ExactLookupResultOutcome) Valid() bool {
+	switch e {
+	case ExactLookupResultOutcomeConflict:
+		return true
+	case ExactLookupResultOutcomeDatabaseMismatch:
+		return true
+	case ExactLookupResultOutcomeMatch:
+		return true
+	case ExactLookupResultOutcomeUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for MeasurementChannel.
 const (
 	Dd1 MeasurementChannel = "dd1"
@@ -500,6 +524,15 @@ type Event struct {
 
 // EventType defines model for Event.Type.
 type EventType string
+
+// ExactLookupResult defines model for ExactLookupResult.
+type ExactLookupResult struct {
+	Command *CommandStatus           `json:"command"`
+	Outcome ExactLookupResultOutcome `json:"outcome"`
+}
+
+// ExactLookupResultOutcome defines model for ExactLookupResult.Outcome.
+type ExactLookupResultOutcome string
 
 // Handshake defines model for Handshake.
 type Handshake struct {

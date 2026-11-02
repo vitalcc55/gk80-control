@@ -37,6 +37,7 @@ type Core interface {
 	Measurements(context.Context, string, int64, int) (contract.MeasurementPage, error)
 	Audit(context.Context, string, int64, int) (contract.AuditPage, error)
 	Command(context.Context, string) (contract.CommandStatus, error)
+	LookupCommandExact(context.Context, string, string, string, string, string, string) (contract.ExactLookupResult, error)
 }
 
 // Service forwards domain operations to the authenticated core client.
@@ -45,6 +46,7 @@ type Service struct {
 	sessionGate     sync.Mutex
 	observationGate sync.Mutex
 	watchGate       sync.Mutex
+	lookupGate      sync.Mutex
 	ticketMu        sync.Mutex
 	ticket          uuid.UUID
 	ticketUntil     time.Time
@@ -199,6 +201,15 @@ func (s *Service) Audit(ctx context.Context, testID string, after int64, limit i
 
 func (s *Service) Command(ctx context.Context, commandID string) (contract.CommandStatus, error) {
 	return s.core.Command(ctx, commandID)
+}
+
+// LookupCommandExact reads the saved attempt without retrying its action.
+func (s *Service) LookupCommandExact(ctx context.Context, database, kind, testID, actionID, commandID, originalJSON string) (contract.ExactLookupResult, error) {
+	if !s.lookupGate.TryLock() {
+		return contract.ExactLookupResult{}, errSessionBusy
+	}
+	defer s.lookupGate.Unlock()
+	return s.core.LookupCommandExact(ctx, database, kind, testID, actionID, commandID, originalJSON)
 }
 
 func init() {

@@ -196,6 +196,32 @@ export enum EventType {
 };
 
 /**
+ * ExactLookupResult defines model for ExactLookupResult.
+ */
+export interface ExactLookupResult {
+    "command": CommandStatus | null;
+    "outcome": ExactLookupResultOutcome;
+}
+
+/**
+ * ExactLookupResultOutcome defines model for ExactLookupResult.Outcome.
+ */
+export enum ExactLookupResultOutcome {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    /**
+     * Defines values for ExactLookupResultOutcome.
+     */
+    ExactLookupResultOutcomeConflict = "conflict",
+    ExactLookupResultOutcomeDatabaseMismatch = "databaseMismatch",
+    ExactLookupResultOutcomeMatch = "match",
+    ExactLookupResultOutcomeUnknown = "unknown",
+};
+
+/**
  * Handshake defines model for Handshake.
  */
 export interface Handshake {

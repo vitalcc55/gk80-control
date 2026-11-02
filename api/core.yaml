@@ -843,6 +843,25 @@ components:
         - if: { properties: { delivery: { const: notSent } } }
           then: { properties: { command: { type: "null" } } }
           else: { properties: { command: { $ref: "#/components/schemas/CommandStatus" } } }
+    ExactLookupResult:
+      type: object
+      additionalProperties: false
+      required: [outcome, command]
+      properties:
+        outcome: { type: string, enum: [match, unknown, conflict, databaseMismatch] }
+        command:
+          oneOf:
+            - $ref: "#/components/schemas/CommandStatus"
+            - type: "null"
+      allOf:
+        - if: { properties: { outcome: { const: match } } }
+          then:
+            properties:
+              command:
+                allOf:
+                  - $ref: "#/components/schemas/CommandStatus"
+                  - properties: { status: { not: { const: unknown } } }
+          else: { properties: { command: { type: "null" } } }
     ConnectionNotice:
       type: object
       additionalProperties: false
