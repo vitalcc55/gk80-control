@@ -25,7 +25,7 @@ import {
 import type { TestParameters as FormParameters } from '../model';
 import { readLastSession, type SessionBridge } from './bridge';
 import { beginCall, countCalls, endCall, totalCalls, useCallRevision } from './call-limits';
-import type { DemoService } from './demo-service';
+import { CommandConflictError, type DemoService } from './demo-service';
 import { History } from './History';
 import { LiveRun } from './LiveRun';
 import { SessionStatus } from './SessionStatus';
@@ -51,7 +51,23 @@ type Pending = {
   testId: string | null;
   status: CommandStatus | null;
   retired: boolean;
+  receiptRequired: boolean;
 };
+function samePending(left: Pending, right: Pending): boolean {
+  return left.id === right.id && left.kind === right.kind && left.testId === right.testId;
+}
+function pendingKey(item: Pending): string {
+  return JSON.stringify([item.id, item.kind, item.testId]);
+}
+function stopNoticeKey(id: string, testId: string | null): string {
+  return JSON.stringify([id, 'stop', testId]);
+}
+function hasUnstoredStop(values: Pending[], storageKey: string): boolean {
+  const stored = readStoredPending(storageKey);
+  return values.some(
+    (item) => item.kind === 'stop' && !stored?.some((current) => samePending(current, item)),
+  );
+}
 type CommandFailure = {
   id: string;
   kind: Exclude<Pending['kind'], 'stop'>;
@@ -265,10 +281,18 @@ function parsePending(raw: unknown): Pending | null {
       raw.kind !== 'confirm' &&
       raw.kind !== 'stop') ||
     (typeof raw.testId !== 'string' && raw.testId !== null) ||
-    typeof raw.retired !== 'boolean'
+    typeof raw.retired !== 'boolean' ||
+    ('receiptRequired' in raw && typeof raw.receiptRequired !== 'boolean')
   )
     return null;
-  return { id: raw.id, kind: raw.kind, testId: raw.testId, retired: raw.retired, status: null };
+  return {
+    id: raw.id,
+    kind: raw.kind,
+    testId: raw.testId,
+    retired: raw.retired,
+    status: null,
+    receiptRequired: 'receiptRequired' in raw && raw.receiptRequired === true,
+  };
 }
 function readStoredPending(storageKey: string): Pending[] | null {
   try {
@@ -402,19 +426,25 @@ function ActiveLiveApp({
     setLatestNotice('commandFailure');
   }, []);
   const [storageMessage, setStorageMessage] = useState('');
-  const [commandMessages, setCommandMessages] = useState<Map<string, string>>(() => new Map());
-  const setCommandMessage = useCallback((id: string, text: string) => {
+  const [commandMessages, setCommandMessages] = useState<Map<string, { id: string; text: string }>>(
+    () => new Map(),
+  );
+  const setCommandMessage = useCallback((id: string, text: string, key = id) => {
     setCommandMessages((current) => {
-      if ((current.get(id) ?? '') === text) return current;
+      if ((current.get(key)?.text ?? '') === text) return current;
       const next = new Map(current);
-      if (text) next.set(id, text);
-      else next.delete(id);
+      if (text) next.set(key, { id, text });
+      else next.delete(key);
       return next;
     });
   }, []);
   const unknownMessage = useCallback(
-    (id: string) => {
-      setCommandMessage(id, 'Исход команды пока неизвестен. Автоматический повтор не выполняется.');
+    (id: string, key = id) => {
+      setCommandMessage(
+        id,
+        'Исход команды пока неизвестен. Автоматический повтор не выполняется.',
+        key,
+      );
     },
     [setCommandMessage],
   );
@@ -427,7 +457,9 @@ function ActiveLiveApp({
     stopMessageValue.current = value;
     setStopMessageValue(value);
   }, []);
-  const [volatileStopTracking, setVolatileStopTracking] = useState(() => memory.volatile !== null);
+  const [volatileStopTracking, setVolatileStopTracking] = useState(() =>
+    memory.volatile ? hasUnstoredStop(memory.volatile, storageKey) : false,
+  );
   const lastStopId = useRef<string | null>(null);
   const [gapVersion, setGapVersion] = useState(0);
   const onGap = useCallback(() => setGapVersion((value) => value + 1), []);
@@ -537,12 +569,9 @@ function ActiveLiveApp({
         if (memory.storageUnknown) {
           const stored = readStoredPending(storageKey);
           if (!stored) throw new Error('pending storage not restored');
-          const merged = new Map(stored.map((item) => [item.id, item]));
+          const merged = new Map(stored.map((item) => [pendingKey(item), item]));
           for (const item of values) {
-            const previous = merged.get(item.id);
-            if (previous && (previous.kind !== item.kind || previous.testId !== item.testId))
-              throw new Error('conflicting pending command');
-            merged.set(item.id, item);
+            merged.set(pendingKey(item), item);
           }
           values = [...merged.values()];
           if (values.length > 65) throw new Error('pending list full');
@@ -550,7 +579,13 @@ function ActiveLiveApp({
         sessionStorage.setItem(
           storageKey,
           JSON.stringify(
-            values.map(({ id, kind, testId, retired }) => ({ id, kind, testId, retired })),
+            values.map(({ id, kind, testId, retired, receiptRequired }) => ({
+              id,
+              kind,
+              testId,
+              retired,
+              receiptRequired,
+            })),
           ),
         );
         pendingRef.current = values;
@@ -566,7 +601,7 @@ function ActiveLiveApp({
           memory.volatile = values;
           pendingRef.current = values;
           setPending(values);
-          setVolatileStopTracking(true);
+          setVolatileStopTracking(hasUnstoredStop(values, storageKey));
         }
         setStorageMessage(
           'Не удалось обновить список команд в интерфейсе; проверьте их состояние перед продолжением.',
@@ -577,28 +612,49 @@ function ActiveLiveApp({
     [memory, storageKey],
   );
   const forget = useCallback(
-    (id: string) => {
-      if (pendingRef.current.some((item) => item.id === id))
+    (item: Pending) => {
+      if (pendingRef.current.some((current) => samePending(current, item)))
         savePending(
-          pendingRef.current.filter((item) => item.id !== id),
+          pendingRef.current.filter((current) => !samePending(current, item)),
           true,
         );
-      setCommandMessage(id, '');
+      setCommandMessage(
+        item.id,
+        '',
+        item.kind === 'stop' ? stopNoticeKey(item.id, item.testId) : item.id,
+      );
     },
     [savePending, setCommandMessage],
   );
-  const updateTrackedStatus = useCallback((id: string, status: CommandStatus) => {
-    const current = pendingRef.current.find((item) => item.id === id);
+  const updateTrackedStatus = useCallback((id: string, testId: string, status: CommandStatus) => {
+    const current = pendingRef.current.find(
+      (item) => item.id === id && item.kind === 'stop' && item.testId === testId,
+    );
     if (!current) return;
     const merged = mergeStatus(current.status, status);
     if (JSON.stringify(current.status) === JSON.stringify(merged)) return;
     pendingRef.current = pendingRef.current.map((item) =>
-      item.id === id ? { ...item, status: merged } : item,
+      samePending(item, current) ? { ...item, status: merged } : item,
     );
     setPending(pendingRef.current);
   }, []);
   const lookup = useCallback(
     async (item: Pending, manual = false) => {
+      if (
+        item.receiptRequired ||
+        (item.kind !== 'stop' &&
+          (item.id === currentRecord.current?.stopCommandId ||
+            pendingRef.current.some(
+              (current) => current.kind === 'stop' && current.id === item.id,
+            )))
+      ) {
+        if (manual)
+          setCommandMessage(
+            item.id,
+            'Исход этой команды не подтверждён; требуется точная сверка её содержимого.',
+          );
+        return;
+      }
       const lookupKey = commandLookupKey(hostRunId, backendRunId, databaseId, item.id);
       if (!beginCall('lookup', lookupKey, manual ? 2 : 1)) {
         if (manual) showMessage('Ожидаем завершения предыдущих проверок состояния команды.');
@@ -608,13 +664,24 @@ function ActiveLiveApp({
       try {
         const status = await service.command(item.id);
         if (lifecycle.current !== generation || status.commandId !== item.id) return;
-        const existing = pendingRef.current.find((current) => current.id === item.id);
-        if (!existing) return;
+        const existing = pendingRef.current.find((current) => samePending(current, item));
+        if (
+          !existing ||
+          existing.receiptRequired ||
+          (item.kind !== 'stop' &&
+            (item.id === currentRecord.current?.stopCommandId ||
+              pendingRef.current.some(
+                (current) => current.kind === 'stop' && current.id === item.id,
+              )))
+        )
+          return;
         let merged = mergeStatus(existing.status, status);
         if (item.kind === 'stop') {
           const stopStatus = mergeStatus(stopStatuses.current.get(item.id) ?? null, merged);
           stopStatuses.current.set(item.id, stopStatus);
           merged = stopStatus;
+          if (terminalStatus(stopStatus))
+            setCommandMessage(item.id, '', stopNoticeKey(item.id, item.testId));
           if (lastStopId.current === item.id) {
             if (stopStatus.status === 'completed') setStopMessage('Остановка подтверждена ядром.');
             else if (stopStatus.status === 'failed' || stopStatus.status === 'rejected')
@@ -625,13 +692,13 @@ function ActiveLiveApp({
         }
         if (JSON.stringify(existing.status) !== JSON.stringify(merged)) {
           pendingRef.current = pendingRef.current.map((current) =>
-            current.id === item.id ? { ...current, status: merged } : current,
+            samePending(current, item) ? { ...current, status: merged } : current,
           );
           setPending(pendingRef.current);
         }
-        if (merged.status === 'completed')
+        if (item.kind !== 'stop' && merged.status === 'completed')
           setCommandMessage(item.id, 'Действие подтверждено ядром; ожидаем состояние.');
-        else if (merged.status === 'accepted')
+        else if (item.kind !== 'stop' && merged.status === 'accepted')
           setCommandMessage(item.id, 'Команда принята или её исход ещё не подтверждён.');
         if (merged.status === 'rejected' || merged.status === 'failed') {
           if (item.kind === 'stop') {
@@ -644,11 +711,10 @@ function ActiveLiveApp({
             }
             savePending(
               pendingRef.current.map((current) =>
-                current.id === item.id ? { ...current, retired: true } : current,
+                samePending(current, item) ? { ...current, retired: true } : current,
               ),
               true,
             );
-            setCommandMessage(item.id, '');
           } else {
             if (merged.reason === 'canceled_by_stop')
               showMessage('Запуск отменён при остановке испытания до подтверждения оператора.');
@@ -659,11 +725,11 @@ function ActiveLiveApp({
                 testId: item.testId,
                 text: 'Команда отклонена или не выполнена.',
               });
-            forget(item.id);
+            forget(item);
           }
         }
       } catch {
-        const current = pendingRef.current.find((pendingItem) => pendingItem.id === item.id);
+        const current = pendingRef.current.find((pendingItem) => samePending(pendingItem, item));
         const knownStop = item.kind === 'stop' ? (stopStatuses.current.get(item.id) ?? null) : null;
         if (
           lifecycle.current === generation &&
@@ -671,7 +737,10 @@ function ActiveLiveApp({
           !terminalStatus(current.status) &&
           !terminalStatus(knownStop)
         )
-          unknownMessage(item.id);
+          unknownMessage(
+            item.id,
+            item.kind === 'stop' ? stopNoticeKey(item.id, item.testId) : item.id,
+          );
       } finally {
         endCall('lookup', lookupKey);
       }
@@ -694,9 +763,29 @@ function ActiveLiveApp({
     if (!fresh || (!pending.length && !pendingRef.current.length)) return;
     const tracked = pendingRef.current;
     if (!tracked.length) return;
+    const conflicts = tracked.filter(
+      (item) =>
+        item.kind !== 'stop' &&
+        !item.receiptRequired &&
+        (item.id === record?.stopCommandId ||
+          tracked.some((current) => current.kind === 'stop' && current.id === item.id)),
+    );
+    if (conflicts.length) {
+      for (const item of conflicts) unknownMessage(item.id);
+      savePending(
+        tracked.map((item) =>
+          conflicts.some((current) => samePending(current, item))
+            ? { ...item, receiptRequired: true, status: null }
+            : item,
+        ),
+        true,
+      );
+      return;
+    }
     for (const item of tracked) {
       const expected = item.status?.testId ?? item.testId;
       if (
+        !item.receiptRequired &&
         item.status?.status === 'completed' &&
         record &&
         expected === record.testId &&
@@ -709,7 +798,7 @@ function ActiveLiveApp({
           setDraft(newDraft());
           setDraftAvailable(false);
         }
-        forget(item.id);
+        forget(item);
         return;
       }
     }
@@ -756,6 +845,7 @@ function ActiveLiveApp({
     setShowForm,
     setDraft,
     setDraftAvailable,
+    unknownMessage,
   ]);
 
   useEffect(() => {
@@ -781,8 +871,8 @@ function ActiveLiveApp({
             return;
           const merged = mergeStatus(stopStatuses.current.get(id) ?? null, status);
           stopStatuses.current.set(id, merged);
-          updateTrackedStatus(id, merged);
-          if (terminalStatus(merged)) setCommandMessage(id, '');
+          updateTrackedStatus(id, record.testId, merged);
+          if (terminalStatus(merged)) setCommandMessage(id, '', stopNoticeKey(id, record.testId));
           if (merged.status === 'completed') setStopMessage('Остановка подтверждена ядром.');
           else if (merged.status === 'failed' || merged.status === 'rejected')
             setStopMessage(
@@ -825,7 +915,24 @@ function ActiveLiveApp({
     )
       return;
     const generation = lifecycle.current;
-    const item: Pending = { id: crypto.randomUUID(), kind, testId, status: null, retired: false };
+    const id = crypto.randomUUID();
+    if (id === record?.stopCommandId || pendingRef.current.some((current) => current.id === id)) {
+      showCommandFailure({
+        id,
+        kind,
+        testId,
+        text: 'Идентификатор уже занят другой командой. Повторите действие.',
+      });
+      return;
+    }
+    const item: Pending = {
+      id,
+      kind,
+      testId,
+      status: null,
+      retired: false,
+      receiptRequired: service.requireCommandReceipt === true,
+    };
     if (!savePending([...pendingRef.current, item])) {
       showCommandFailure({
         id: item.id,
@@ -843,11 +950,11 @@ function ActiveLiveApp({
       const dispatch = await send(item.id);
       if (
         lifecycle.current !== generation ||
-        !pendingRef.current.some((current) => current.id === item.id)
+        !pendingRef.current.some((current) => samePending(current, item))
       )
         return;
       if (dispatch.delivery === 'notSent' && dispatch.command === null) {
-        const existing = pendingRef.current.find((current) => current.id === item.id);
+        const existing = pendingRef.current.find((current) => samePending(current, item));
         if (existing?.status && existing.status.status !== 'unknown') {
           if (terminalStatus(existing.status)) return;
           setCommandMessage(
@@ -862,20 +969,30 @@ function ActiveLiveApp({
           testId,
           text: 'Команда не отправлена: связь или состояние изменились. Повторите действие после восстановления.',
         });
-        forget(item.id);
+        forget(item);
         return;
       }
       const result = dispatch.command;
       if (dispatch.delivery !== 'response' || !result || result.commandId !== item.id) {
-        const current = pendingRef.current.find((pendingItem) => pendingItem.id === item.id);
+        const current = pendingRef.current.find((pendingItem) => samePending(pendingItem, item));
         if (current && !terminalStatus(current.status)) unknownMessage(item.id);
         return;
       }
-      const existing = pendingRef.current.find((current) => current.id === item.id);
+      const existing = pendingRef.current.find((current) => samePending(current, item));
       if (!existing) return;
       const merged = mergeStatus(existing.status, result);
+      if (existing.receiptRequired && result.status !== 'unknown') {
+        savePending(
+          pendingRef.current.map((current) =>
+            samePending(current, item)
+              ? { ...current, receiptRequired: false, status: merged }
+              : current,
+          ),
+          true,
+        );
+      }
       pendingRef.current = pendingRef.current.map((current) =>
-        current.id === item.id ? { ...current, status: merged } : current,
+        samePending(current, item) ? { ...current, status: merged } : current,
       );
       setPending(pendingRef.current);
       if (merged.status === 'rejected' || merged.status === 'failed') {
@@ -885,7 +1002,7 @@ function ActiveLiveApp({
           testId,
           text: 'Команда отклонена или не выполнена.',
         });
-        forget(item.id);
+        forget(item);
       } else
         setCommandMessage(
           item.id,
@@ -893,8 +1010,18 @@ function ActiveLiveApp({
             ? 'Действие подтверждено ядром; ожидаем состояние.'
             : 'Команда принята или её исход ещё не подтверждён.',
         );
-    } catch {
-      const current = pendingRef.current.find((pendingItem) => pendingItem.id === item.id);
+    } catch (error) {
+      const current = pendingRef.current.find((pendingItem) => samePending(pendingItem, item));
+      if (lifecycle.current === generation && current && error instanceof CommandConflictError) {
+        showCommandFailure({
+          id: item.id,
+          kind,
+          testId,
+          text: 'Идентификатор принадлежит другой команде. Эта попытка отклонена.',
+        });
+        forget(item);
+        return;
+      }
       if (lifecycle.current === generation && current && !terminalStatus(current.status))
         unknownMessage(item.id);
     }
@@ -908,7 +1035,10 @@ function ActiveLiveApp({
     setStopRequestedFor(record.testId);
     lastStopId.current = record.stopCommandId;
     if (
-      !pendingRef.current.some((item) => item.id === record.stopCommandId) &&
+      !pendingRef.current.some(
+        (item) =>
+          item.id === record.stopCommandId && item.kind === 'stop' && item.testId === record.testId,
+      ) &&
       pendingRef.current.length < 65
     ) {
       const values: Pending[] = [
@@ -919,6 +1049,7 @@ function ActiveLiveApp({
           testId: record.testId,
           status: null,
           retired: false,
+          receiptRequired: false,
         },
       ];
       savePending(values, true);
@@ -934,8 +1065,13 @@ function ActiveLiveApp({
       }
       const merged = mergeStatus(stopStatuses.current.get(record.stopCommandId) ?? null, result);
       stopStatuses.current.set(record.stopCommandId, merged);
-      if (terminalStatus(merged)) setCommandMessage(record.stopCommandId, '');
-      updateTrackedStatus(record.stopCommandId, merged);
+      if (terminalStatus(merged))
+        setCommandMessage(
+          record.stopCommandId,
+          '',
+          stopNoticeKey(record.stopCommandId, record.testId),
+        );
+      updateTrackedStatus(record.stopCommandId, record.testId, merged);
       setStopMessage(
         merged.status === 'completed'
           ? 'Остановка подтверждена ядром.'
@@ -1033,9 +1169,11 @@ function ActiveLiveApp({
                   </p>
                 )}
                 {message && latestNotice !== 'message' && <p role="status">{message}</p>}
-                {[...commandMessages].map(([id, text]) => (
-                  <p role="status" key={id}>
-                    {commandMessages.size > 1 ? `Команда ${id}: ` : ''}
+                {[...commandMessages].map(([key, { id, text }]) => (
+                  <p role="status" key={key}>
+                    {commandMessages.size > 1
+                      ? `${key === id ? 'Команда' : 'Остановка'} ${id}: `
+                      : ''}
                     {text}
                   </p>
                 ))}
@@ -1111,8 +1249,8 @@ function ActiveLiveApp({
               )}
               {volatileStopTracking && (
                 <p role="alert">
-                  Исход остановки отслеживается только в памяти: после перезагрузки или закрытия
-                  окна потребуется проверить историю испытания.
+                  Исход остановки отслеживается только в памяти либо его сохранение не подтверждено:
+                  после перезагрузки или закрытия окна потребуется проверить историю испытания.
                 </p>
               )}
               {pending.length >= 64 && (
@@ -1122,7 +1260,7 @@ function ActiveLiveApp({
                 </p>
               )}
               {pending.map((item) => (
-                <p key={item.id}>
+                <p key={pendingKey(item)}>
                   Команда: {commandStatusLabel(item.status?.status)}. ID {item.id}.{' '}
                   {item.kind === 'stop' && `Остановка испытания ${item.testId ?? 'неизвестно'}. `}
                   {item.kind === 'stop' && 'Безопасное давление не подтверждено. '}
@@ -1135,7 +1273,7 @@ function ActiveLiveApp({
                     Проверить состояние
                   </button>
                   {item.retired && (
-                    <button type="button" onClick={() => forget(item.id)}>
+                    <button type="button" onClick={() => forget(item)}>
                       Скрыть наблюдение команды
                     </button>
                   )}

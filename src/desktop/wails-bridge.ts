@@ -47,6 +47,7 @@ export const desktopBridge: DesktopBridge = {
 };
 
 export const desktopDemoService: DemoService = {
+  requireCommandReceipt: false,
   createTest: CreateTest,
   readiness: Readiness,
   startTest: StartTest,

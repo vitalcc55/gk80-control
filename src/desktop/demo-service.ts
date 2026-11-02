@@ -15,9 +15,19 @@ import type {
   StopCommandInput,
 } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/desktop/models';
 
+// A confirmed conflict rejects this attempt; the old command is a different action.
+export class CommandConflictError extends Error {
+  constructor() {
+    super('command identifier belongs to another command');
+    this.name = 'CommandConflictError';
+  }
+}
+
 // Replacements within one host/backend session must address the same demo profile and core.
 // The caller must preserve that profile binding when reconciling unresolved commands.
 export interface DemoService {
+  // Until an exact comparison is available, a browser attempt requires its own response.
+  readonly requireCommandReceipt: boolean;
   createTest(command: CreateCommandInput): Promise<CommandDispatch>;
   readiness(testId: string): Promise<Readiness>;
   startTest(testId: string, command: StartCommandInput): Promise<CommandDispatch>;

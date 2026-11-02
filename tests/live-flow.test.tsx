@@ -4,6 +4,7 @@ import { type ComponentProps, StrictMode } from 'react';
 import { beforeEach, expect, it, vi } from 'vitest';
 import type { DesktopBridge, SessionBridge } from '../src/desktop/bridge';
 import { DesktopApp as RealDesktopApp } from '../src/desktop/DesktopApp';
+import { CommandConflictError } from '../src/desktop/demo-service';
 import { History } from '../src/desktop/History';
 import { LiveApp as RealLiveApp } from '../src/desktop/LiveApp';
 import { desktopDemoService } from '../src/desktop/wails-bridge';
@@ -295,6 +296,127 @@ it('isolates pending commands and late lookups across databases', async () => {
   expect(sessionStorage.getItem(otherKey)).toBe(item);
   expect(api.create).not.toHaveBeenCalled();
 });
+
+it('tracks Stop separately from a restored ordinary command with the same identifier', async () => {
+  const oldTest = '77777777-7777-4777-8777-777777777777';
+  sessionStorage.setItem(
+    pendingKey,
+    JSON.stringify([
+      { id: stopId, kind: 'start', testId: oldTest, retired: true, receiptRequired: false },
+    ]),
+  );
+  let snapshot: Snapshot = {
+    apiVersion: 'v1',
+    backendRunId: backend,
+    revision: 2,
+    lastEventSequence: 2,
+    activeTest: { ...record, stage: TestRecordStage.Running },
+    pendingAction: null,
+    measurements: [],
+  };
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot,
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.command.mockResolvedValue({
+    commandId: stopId,
+    testId,
+    status: CommandStatusStatus.CommandStatusStatusUnknown,
+  });
+  api.stop.mockResolvedValue({
+    commandId: stopId,
+    testId,
+    status: CommandStatusStatus.CommandStatusStatusCompleted,
+  });
+  const mounted = render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  const stop = await screen.findByRole('button', { name: 'Остановить испытание' });
+  await userEvent.setup().click(stop);
+  await screen.findByText('Остановка подтверждена ядром.');
+  expect(api.stop).toHaveBeenCalledOnce();
+  expect(api.stop).toHaveBeenCalledWith(testId, { commandId: stopId });
+  const rows = screen.getAllByText(/Команда:/);
+  expect(
+    rows.some(
+      (row) =>
+        row.textContent?.includes('исход неизвестен') &&
+        !row.textContent.includes('Остановка испытания'),
+    ),
+  ).toBe(true);
+  expect(
+    rows.some(
+      (row) =>
+        row.textContent?.includes('выполнена') && row.textContent.includes('Остановка испытания'),
+    ),
+  ).toBe(true);
+  const stored = JSON.parse(sessionStorage.getItem(pendingKey) ?? '[]');
+  expect(stored).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        id: stopId,
+        kind: 'start',
+        testId: oldTest,
+        receiptRequired: true,
+      }),
+      expect.objectContaining({ id: stopId, kind: 'stop', testId }),
+    ]),
+  );
+  mounted.unmount();
+  snapshot = {
+    ...snapshot,
+    revision: 3,
+    lastEventSequence: 3,
+    activeTest: {
+      ...record,
+      testId: '88888888-8888-4888-8888-888888888888',
+      stopCommandId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      stage: TestRecordStage.Running,
+    },
+  };
+  api.command.mockResolvedValue({
+    commandId: stopId,
+    testId,
+    status: CommandStatusStatus.CommandStatusStatusCompleted,
+  });
+  api.command.mockClear();
+  render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  const stopCheck = (await screen.findAllByRole('button', { name: 'Проверить состояние' }))[1];
+  if (!stopCheck) throw new Error('historical Stop check missing');
+  await userEvent.setup().click(stopCheck);
+  await waitFor(() => expect(api.command).toHaveBeenCalledWith(stopId));
+  await waitFor(() =>
+    expect(
+      screen
+        .getAllByText(/Команда:/)
+        .some(
+          (row) =>
+            row.textContent?.includes('выполнена') &&
+            row.textContent.includes('Остановка испытания'),
+        ),
+    ).toBe(true),
+  );
+  expect(
+    screen
+      .getAllByText(/Команда:/)
+      .some(
+        (row) =>
+          row.textContent?.includes('исход неизвестен') &&
+          !row.textContent.includes('Остановка испытания'),
+      ),
+  ).toBe(true);
+}, 10000);
 
 it('shows diagnostics already degraded when the live session opens', async () => {
   const ready: DesktopStatus = {
@@ -964,6 +1086,207 @@ it('does not send another creation after an unknown response and remount', async
   expect(restored.hasAttribute('disabled')).toBe(true);
   expect(api.create).toHaveBeenCalledTimes(1);
   expect(screen.getByText(/Команда:/)).toBeTruthy();
+}, 10000);
+
+it('does not attribute a previous command to a conflicting browser creation', async () => {
+  const snapshot: Snapshot = {
+    apiVersion: 'v1',
+    backendRunId: backend,
+    revision: 0,
+    lastEventSequence: 0,
+    activeTest: null,
+    pendingAction: null,
+    measurements: [],
+  };
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot,
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  let rejectCreate: (reason: Error) => void = () => {};
+  const response = new Promise<CommandDispatch>((_resolve, reject) => {
+    rejectCreate = reject;
+  });
+  api.list.mockResolvedValue({ items: [], nextAfter: null });
+  api.create.mockReturnValue(response);
+  api.command.mockImplementation(async (id: string) => ({
+    commandId: id,
+    testId,
+    status: CommandStatusStatus.CommandStatusStatusCompleted,
+  }));
+  const browser = { ...desktopDemoService, requireCommandReceipt: true };
+  render(<LiveApp session={bridge} service={browser} hostRunId={host} backendRunId={backend} />);
+  const user = userEvent.setup();
+  const newTest = await screen.findByRole('button', { name: 'Новое испытание' });
+  await waitFor(() => expect(newTest.hasAttribute('disabled')).toBe(false));
+  await user.click(newTest);
+  const valve = screen.getByLabelText('Обозначение или наименование клапана') as HTMLInputElement;
+  await user.type(valve, 'К-1');
+  await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
+  await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+  await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
+  await screen.findByText(/Команда: исход неизвестен/);
+  await user.click(screen.getByRole('button', { name: 'Проверить состояние' }));
+  expect(screen.queryByText(/Команда: выполнена/)).toBeNull();
+  expect(valve.value).toBe('К-1');
+  await act(async () => {
+    rejectCreate(new CommandConflictError());
+    await response.catch(() => {});
+  });
+  await screen.findByText(/идентификатор.*другой команде/i);
+  expect(screen.queryByText(/Команда: выполнена/)).toBeNull();
+  expect(valve.value).toBe('К-1');
+  expect(api.create).toHaveBeenCalledOnce();
+}, 10000);
+
+it('keeps a browser creation unknown after a lost response and service replacement', async () => {
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 0,
+        lastEventSequence: 0,
+        activeTest: null,
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.list.mockResolvedValue({ items: [], nextAfter: null });
+  api.create.mockRejectedValue(new Error('response lost'));
+  api.command.mockImplementation(async (id: string) => ({
+    commandId: id,
+    testId,
+    status: CommandStatusStatus.CommandStatusStatusCompleted,
+  }));
+  const browser = { ...desktopDemoService, requireCommandReceipt: true };
+  const mounted = render(
+    <LiveApp session={bridge} service={browser} hostRunId={host} backendRunId={backend} />,
+  );
+  const user = userEvent.setup();
+  const newTest = await screen.findByRole('button', { name: 'Новое испытание' });
+  await waitFor(() => expect(newTest.hasAttribute('disabled')).toBe(false));
+  await user.click(newTest);
+  await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
+  await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
+  await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+  await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
+  await screen.findByText(/Исход команды пока неизвестен/);
+  mounted.unmount();
+  render(
+    <LiveApp
+      session={bridge}
+      service={desktopDemoService}
+      hostRunId={host}
+      backendRunId={backend}
+    />,
+  );
+  await screen.findByText(/Команда: исход неизвестен/);
+  await user.click(screen.getByRole('button', { name: 'Проверить состояние' }));
+  expect(screen.queryByText(/Команда: выполнена/)).toBeNull();
+  expect(api.command).not.toHaveBeenCalled();
+  expect(api.create).toHaveBeenCalledOnce();
+}, 10000);
+
+it('does not report an unpersisted Stop when an ordinary browser receipt cannot be saved', async () => {
+  sessionStorage.setItem(
+    pendingKey,
+    JSON.stringify([{ id: stopId, kind: 'stop', testId, retired: true }]),
+  );
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 0,
+        lastEventSequence: 0,
+        activeTest: null,
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  const originalSet = Storage.prototype.setItem;
+  let writes = 0;
+  const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (
+    this: Storage,
+    key: string,
+    value: string,
+  ) {
+    if (key === pendingKey && ++writes > 1) throw new Error('storage unavailable');
+    return originalSet.call(this, key, value);
+  });
+  api.list.mockResolvedValue({ items: [], nextAfter: null });
+  api.create.mockImplementation(async (input: CreateCommandInput) => ({
+    delivery: CommandDispatchDelivery.Response,
+    command: {
+      commandId: input.commandId,
+      testId,
+      status: CommandStatusStatus.CommandStatusStatusAccepted,
+    },
+  }));
+  api.command.mockRejectedValue(new Error('status unavailable'));
+  const browser = { ...desktopDemoService, requireCommandReceipt: true };
+  render(<LiveApp session={bridge} service={browser} hostRunId={host} backendRunId={backend} />);
+  const user = userEvent.setup();
+  const newTest = await screen.findByRole('button', { name: 'Новое испытание' });
+  await waitFor(() => expect(newTest.hasAttribute('disabled')).toBe(false));
+  await user.click(newTest);
+  await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
+  await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
+  await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+  await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
+  await screen.findByText(/Не удалось обновить список команд/);
+  expect(screen.queryByText(/Исход остановки отслеживается только в памяти/)).toBeNull();
+  expect(api.stop).not.toHaveBeenCalled();
+  setItem.mockRestore();
+  api.command.mockImplementation(async (id: string) => ({
+    commandId: id,
+    testId,
+    status: CommandStatusStatus.CommandStatusStatusRejected,
+  }));
+  const checks = screen.getAllByRole('button', { name: 'Проверить состояние' });
+  const createCheck = checks.at(-1);
+  if (!createCheck) throw new Error('creation status check missing');
+  await user.click(createCheck);
+  await waitFor(() => expect(screen.queryByText(/Не удалось обновить список команд/)).toBeNull());
 }, 10000);
 
 it.each(['rejected response', 'not sent response'] as const)(
