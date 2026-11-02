@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -160,12 +161,25 @@ func TestNativeClientRunsAndReopensDemo(t *testing.T) {
 		t.Fatalf("source: %+v", snapshot.Measurements[0])
 	}
 	stopID := snapshot.ActiveTest.StopCommandId
-	stopped, err := client.StopTest(ctx, lease.LeaseId, id, contract.StopTestCommand{CommandId: stopID})
-	if err != nil || stopped.Status != "accepted" {
-		t.Fatalf("stop: %+v %v", stopped, err)
+	stopBody, err := json.Marshal(contract.StopTestCommand{CommandId: stopID})
+	if err != nil {
+		t.Fatal(err)
 	}
+	stopped, err := client.LookupStopExact(ctx, lease.LeaseId, handshake.DatabaseId, id, stopID, stopBody)
+	if err != nil || stopped.Status != contract.CommandStatusStatusUnknown {
+		t.Fatalf("reserved stop: %+v %v", stopped, err)
+	}
+	var stopPosts atomic.Int32
+	dropStop := &droppedStopResponse{next: client.http.Transport, path: "/v1/tests/" + id.String() + "/stop", posts: &stopPosts, enabled: true}
+	client.http.Transport = dropStop
+	_, err = client.StopTestRaw(ctx, lease.LeaseId, id, stopID, stopBody)
+	var lost *RequestError
+	if !errors.As(err, &lost) || !lost.OutcomeUnknown || !dropStop.dropped.Load() || stopPosts.Load() != 1 {
+		t.Fatalf("lost Stop response: %v posts=%d", err, stopPosts.Load())
+	}
+	deadline = time.Now().Add(8 * time.Second)
 	for {
-		stopped, err = client.Command(ctx, lease.LeaseId, stopID)
+		stopped, err = client.LookupStopExact(ctx, lease.LeaseId, handshake.DatabaseId, id, stopID, stopBody)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -176,6 +190,29 @@ func TestNativeClientRunsAndReopensDemo(t *testing.T) {
 			t.Fatalf("stop not completed: %+v", stopped)
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+	if stopped.TestId == nil || *stopped.TestId != id {
+		t.Fatalf("stop linked test: %+v", stopped)
+	}
+	beforeAudit, err := client.Audit(ctx, lease.LeaseId, id, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	confirmedStop, err := client.LookupStopExact(ctx, lease.LeaseId, handshake.DatabaseId, id, stopID, stopBody)
+	if err != nil || confirmedStop.CommandId != stopID || confirmedStop.Status != contract.CommandStatusStatusCompleted || confirmedStop.TestId == nil || *confirmedStop.TestId != id {
+		t.Fatalf("repeat exact Stop lookup: %+v %v", confirmedStop, err)
+	}
+	_, err = client.LookupStopExact(ctx, lease.LeaseId, handshake.DatabaseId, uuid.New(), stopID, stopBody)
+	if !errors.As(err, &conflict) || conflict.Status != http.StatusConflict || conflict.OutcomeUnknown || conflict.Code != "command_conflict" {
+		t.Fatalf("Stop wrong test: %v", err)
+	}
+	_, err = client.LookupStopExact(ctx, lease.LeaseId, uuid.New(), id, stopID, stopBody)
+	if !errors.As(err, &conflict) || conflict.Status != http.StatusConflict || conflict.OutcomeUnknown || conflict.Code != "database_mismatch" {
+		t.Fatalf("Stop wrong database: %v", err)
+	}
+	afterAudit, err := client.Audit(ctx, lease.LeaseId, id, 0, 100)
+	if err != nil || !reflect.DeepEqual(beforeAudit, afterAudit) || stopPosts.Load() != 1 {
+		t.Fatalf("Stop lookup changed audit or repeated Stop: %v posts=%d", err, stopPosts.Load())
 	}
 	if err := process.Close(ctx); err != nil {
 		t.Fatal(err)
@@ -192,6 +229,7 @@ func TestNativeClientRunsAndReopensDemo(t *testing.T) {
 		t.Fatalf("database identity changed across restart: %s -> %s", handshake.DatabaseId, nextHandshake.DatabaseId)
 	}
 	client = reopened.client
+	client.http.Transport = &droppedStopResponse{next: client.http.Transport, path: "/v1/tests/" + id.String() + "/stop", posts: &stopPosts}
 	lease, err = client.AcquireLease(ctx, uuid.New(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -199,6 +237,28 @@ func TestNativeClientRunsAndReopensDemo(t *testing.T) {
 	record, err := client.Test(ctx, lease.LeaseId, id)
 	if err != nil || record.Outcome != "interrupted" || record.SaveStatus != "saved" || record.Parameters.Valve != "V" {
 		t.Fatalf("record: %+v %v", record, err)
+	}
+	stopped, err = client.LookupStopExact(ctx, lease.LeaseId, nextHandshake.DatabaseId, id, stopID, stopBody)
+	if err != nil || stopped.Status != contract.CommandStatusStatusCompleted || stopped.TestId == nil || *stopped.TestId != id || stopPosts.Load() != 1 {
+		t.Fatalf("reopened Stop: %+v %v posts=%d", stopped, err, stopPosts.Load())
+	}
+	stopAudit, err := client.Audit(ctx, lease.LeaseId, id, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, completed := 0, 0
+	for _, event := range stopAudit.Items {
+		if event.Action == "stop" && event.CommandId != nil && *event.CommandId == stopID {
+			if event.Outcome == "accepted" {
+				accepted++
+			}
+			if event.Outcome == "completed" {
+				completed++
+			}
+		}
+	}
+	if accepted != 1 || completed != 1 {
+		t.Fatalf("Stop audit accepted=%d completed=%d", accepted, completed)
 	}
 	page, err := client.Measurements(ctx, lease.LeaseId, id, 0, 1)
 	if err != nil || len(page.Items) != 1 || page.Items[0].Source != "simulator" {

@@ -51,6 +51,43 @@ func (d *droppedCreateResponse) CloseIdleConnections() {
 	}
 }
 
+// droppedStopResponse loses the first accepted Stop response, after core handled it.
+type droppedStopResponse struct {
+	next     http.RoundTripper
+	path     string
+	posts    *atomic.Int32
+	enabled  bool
+	selected atomic.Bool
+	dropped  atomic.Bool
+}
+
+func (d *droppedStopResponse) RoundTrip(req *http.Request) (*http.Response, error) {
+	stop := req.Method == http.MethodPost && req.URL.Path == d.path
+	if stop {
+		d.posts.Add(1)
+	}
+	response, err := d.next.RoundTrip(req)
+	if err != nil || !stop || !d.enabled || response.StatusCode != http.StatusAccepted || !d.selected.CompareAndSwap(false, true) {
+		return response, err
+	}
+	_, readErr := io.Copy(io.Discard, response.Body)
+	closeErr := response.Body.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	d.dropped.Store(true)
+	return nil, errors.New("test dropped accepted Stop response")
+}
+
+func (d *droppedStopResponse) CloseIdleConnections() {
+	if closer, ok := d.next.(interface{ CloseIdleConnections() }); ok {
+		closer.CloseIdleConnections()
+	}
+}
+
 func TestNativeExactLookupAfterLostCreateAndReopen(t *testing.T) {
 	ctx := context.Background()
 	profile, executable := t.TempDir(), buildCore(t)

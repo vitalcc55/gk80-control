@@ -46,6 +46,12 @@ func (c *Client) exactLookup(ctx context.Context, lease, database, id, testID uu
 			return result, invalidRequest()
 		}
 		received = input.CommandId
+	case "StopTestCommand":
+		var input contract.StopTestCommand
+		if _, err := exactInputValidation.validator.Inspect(schema, body, &input); err != nil {
+			return result, invalidRequest()
+		}
+		received = input.CommandId
 	default:
 		return result, invalidRequest()
 	}
@@ -60,7 +66,7 @@ func (c *Client) exactLookup(ctx context.Context, lease, database, id, testID uu
 	// results can legitimately precede the existence of that test.
 	if status != http.StatusOK || validateResponse("CommandStatus", data, &result) != nil || result.CommandId != id ||
 		(result.TestId != nil && (*result.TestId == uuid.Nil || (testID != uuid.Nil && *result.TestId != testID))) ||
-		(result.TestId == nil && result.Status != contract.CommandStatusStatusUnknown && result.Status != contract.CommandStatusStatusRejected) {
+		(result.TestId == nil && result.Status != contract.CommandStatusStatusUnknown && (schema == "StopTestCommand" || result.Status != contract.CommandStatusStatusRejected)) {
 		return contract.CommandStatus{}, &RequestError{Status: status, Code: "invalid_response"}
 	}
 	return result, nil
@@ -82,4 +88,11 @@ func (c *Client) LookupConfirmExact(ctx context.Context, lease, database, testID
 		return contract.CommandStatus{}, invalidRequest()
 	}
 	return c.exactLookup(ctx, lease, database, id, testID, "/v1/commands/lookup/confirm/"+testID.String()+"/"+actionID.String(), "ConfirmActionCommand", body)
+}
+
+func (c *Client) LookupStopExact(ctx context.Context, lease, database, testID, id uuid.UUID, body []byte) (contract.CommandStatus, error) {
+	if testID == uuid.Nil {
+		return contract.CommandStatus{}, invalidRequest()
+	}
+	return c.exactLookup(ctx, lease, database, id, testID, "/v1/commands/lookup/stop/"+testID.String(), "StopTestCommand", body)
 }

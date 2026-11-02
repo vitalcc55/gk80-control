@@ -20,6 +20,7 @@ func TestNativeExactLookupPreservesOriginalAndValidatesResponses(t *testing.T) {
 	create := `{"commandId":"` + commandID.String() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":10,"direction":"pressure","actuator":false}}`
 	start := `{"commandId":"` + commandID.String() + `","expectedRevision":9007199254740993,"valveClosed":true,"connectionConfirmed":true}`
 	confirm := `{"commandId":"` + commandID.String() + `","expectedRevision":2}`
+	stop := `{"commandId":"` + commandID.String() + `"}`
 	var calls atomic.Int32
 	var expectedPath, expectedBody string
 	var status int
@@ -51,6 +52,9 @@ func TestNativeExactLookupPreservesOriginalAndValidatesResponses(t *testing.T) {
 		{"/v1/commands/lookup/confirm/" + testID.String() + "/" + actionID.String(), confirm, func() (contract.CommandStatus, error) {
 			return client.LookupConfirmExact(context.Background(), lease, database, testID, actionID, commandID, []byte(confirm))
 		}},
+		{"/v1/commands/lookup/stop/" + testID.String(), stop, func() (contract.CommandStatus, error) {
+			return client.LookupStopExact(context.Background(), lease, database, testID, commandID, []byte(stop))
+		}},
 	} {
 		expectedPath, expectedBody, status = tc.path, tc.body, http.StatusOK
 		payload, _ := json.Marshal(contract.CommandStatus{CommandId: commandID, Status: contract.CommandStatusStatusUnknown})
@@ -79,12 +83,42 @@ func TestNativeExactLookupPreservesOriginalAndValidatesResponses(t *testing.T) {
 			t.Fatalf("%s: %v", code, err)
 		}
 	}
+	expectedPath, expectedBody = "/v1/commands/lookup/stop/"+testID.String(), stop
+	for _, code := range []string{"command_conflict", "database_mismatch"} {
+		status, response = http.StatusConflict, `{"code":"`+code+`","message":"conflict"}`
+		_, err := client.LookupStopExact(context.Background(), lease, database, testID, commandID, []byte(stop))
+		var failure *RequestError
+		if !errors.As(err, &failure) || failure.Status != http.StatusConflict || failure.Code != code || failure.OutcomeUnknown {
+			t.Fatalf("Stop %s: %v", code, err)
+		}
+	}
+	status = http.StatusOK
+	response = `{"commandId":"` + commandID.String() + `","status":"completed","testId":"` + uuid.NewString() + `"}`
+	if _, err := client.LookupStopExact(context.Background(), lease, database, testID, commandID, []byte(stop)); err == nil {
+		t.Fatal("Stop lookup accepted wrong test ID")
+	}
+	response = `{"commandId":"` + commandID.String() + `","status":"rejected"}`
+	if _, err := client.LookupStopExact(context.Background(), lease, database, testID, commandID, []byte(stop)); err == nil {
+		t.Fatal("Stop lookup accepted rejection without a test ID")
+	}
 	before := calls.Load()
 	if _, err := client.LookupCreateExact(context.Background(), lease, database, uuid.New(), []byte(create)); err == nil || calls.Load() != before {
 		t.Fatal("mismatched command ID was sent")
 	}
 	if _, err := client.LookupCreateExact(context.Background(), lease, database, commandID, []byte(strings.Repeat("x", 8193))); err == nil || calls.Load() != before {
 		t.Fatal("oversized input was sent")
+	}
+	for _, invalid := range []struct {
+		test, id uuid.UUID
+		body     string
+	}{
+		{uuid.Nil, commandID, stop}, {testID, uuid.New(), stop}, {testID, commandID, `{}`},
+		{testID, commandID, `{"commandId":"` + commandID.String() + `","extra":1}`},
+		{testID, commandID, `{"commandId":"` + commandID.String() + `","commandId":"` + commandID.String() + `"}`},
+	} {
+		if _, err := client.LookupStopExact(context.Background(), lease, database, invalid.test, invalid.id, []byte(invalid.body)); err == nil || calls.Load() != before {
+			t.Fatal("invalid Stop lookup was sent")
+		}
 	}
 }
 
@@ -144,5 +178,31 @@ func TestNativeExactLookupDoesNotRetryLostReadResponse(t *testing.T) {
 	var failure *RequestError
 	if !errors.As(err, &failure) || failure.Code != "unavailable" || failure.OutcomeUnknown || lookups.Load() != 1 || commands.Load() != 0 {
 		t.Fatalf("lost lookup response: %v lookups=%d commands=%d", err, lookups.Load(), commands.Load())
+	}
+}
+
+func TestNativeExactStopLookupDoesNotRetryLostReadResponse(t *testing.T) {
+	lease, database, commandID, testID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	body := `{"commandId":"` + commandID.String() + `"}`
+	var lookups, commands atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/commands/lookup/stop/"+testID.String() {
+			lookups.Add(1)
+		} else {
+			commands.Add(1)
+		}
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		_ = conn.Close()
+	}))
+	defer server.Close()
+	client := &Client{endpoint: server.URL, secret: "secret", http: server.Client()}
+	_, err := client.LookupStopExact(context.Background(), lease, database, testID, commandID, []byte(body))
+	var failure *RequestError
+	if !errors.As(err, &failure) || failure.Code != "unavailable" || failure.OutcomeUnknown || lookups.Load() != 1 || commands.Load() != 0 {
+		t.Fatalf("lost Stop lookup response: %v lookups=%d actions=%d", err, lookups.Load(), commands.Load())
 	}
 }
