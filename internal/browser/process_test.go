@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -92,6 +93,36 @@ func (p *processBrowser) request(method, path string, body any) (int, []byte, er
 	defer func() { _ = response.Body.Close() }()
 	data, err = io.ReadAll(response.Body)
 	return response.StatusCode, data, err
+}
+
+func (p *processBrowser) exact(database, kind, testID, actionID, commandID string, body []byte) (contract.ExactLookupResult, error) {
+	var result contract.ExactLookupResult
+	req, err := http.NewRequest(http.MethodPost, p.server.URL+"/api/commands/"+commandID+"/lookup-exact", bytes.NewReader(body))
+	if err != nil {
+		return result, err
+	}
+	req.AddCookie(p.cookie)
+	req.Header.Set("X-GK80-Session", p.proof)
+	req.Header.Set("Origin", p.server.URL)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GK80-Database", database)
+	req.Header.Set("X-GK80-Kind", kind)
+	if testID != "" {
+		req.Header.Set("X-GK80-Test", testID)
+	}
+	if actionID != "" {
+		req.Header.Set("X-GK80-Action", actionID)
+	}
+	response, err := p.server.Client().Do(req)
+	if err != nil {
+		return result, err
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		return result, fmt.Errorf("exact lookup HTTP %d", response.StatusCode)
+	}
+	err = json.NewDecoder(response.Body).Decode(&result)
+	return result, err
 }
 
 func (p *processBrowser) heartbeat() error {
@@ -262,6 +293,10 @@ func TestBrowserRoutesRunAndReopenCore(t *testing.T) {
 	handshake := *status.Handshake
 	view := waitProcessView(t, p, "initial live", func(v contract.SessionView) bool { return v.Connection.Status == contract.Live && v.Snapshot != nil })
 	create := contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: view.Snapshot.Revision, Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}}
+	createBody, err := json.Marshal(create)
+	if err != nil {
+		t.Fatal(err)
+	}
 	statusCode, _, requestErr := p.request(http.MethodPost, "/api/tests", create)
 	if requestErr == nil || statusCode != 0 {
 		t.Fatalf("create response was not lost: status=%d error=%v", statusCode, requestErr)
@@ -274,12 +309,24 @@ func TestBrowserRoutesRunAndReopenCore(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("create response was not intercepted")
 	}
-	var command contract.CommandStatus
-	processRequest(t, p, http.MethodGet, "/api/commands/"+create.CommandId.String(), nil, &command, http.StatusOK)
-	if command.CommandId != create.CommandId || command.Status != contract.CommandStatusStatusCompleted || command.TestId == nil {
-		t.Fatalf("created command after lost response: %+v", command)
+	lookup, err := p.exact(handshake.DatabaseId.String(), "create", "", "", create.CommandId.String(), createBody)
+	if err != nil || lookup.Outcome != contract.ExactLookupResultOutcomeMatch || lookup.Command == nil || lookup.Command.CommandId != create.CommandId || lookup.Command.Status != contract.CommandStatusStatusCompleted || lookup.Command.TestId == nil {
+		t.Fatalf("created command after lost response: %+v %v", lookup, err)
 	}
+	command := *lookup.Command
 	id := command.TestId.String()
+	changedBody := []byte(strings.Replace(string(createBody), `"areaM2":1`, `"areaM2":1.0000000000000001`, 1))
+	if string(changedBody) == string(createBody) {
+		t.Fatal("expected area missing")
+	}
+	lookup, err = p.exact(handshake.DatabaseId.String(), "create", "", "", create.CommandId.String(), changedBody)
+	if err != nil || lookup.Outcome != contract.ExactLookupResultOutcomeConflict || lookup.Command != nil {
+		t.Fatalf("exact conflict: %+v %v", lookup, err)
+	}
+	lookup, err = p.exact(uuid.NewString(), "create", "", "", create.CommandId.String(), createBody)
+	if err != nil || lookup.Outcome != contract.ExactLookupResultOutcomeDatabaseMismatch || lookup.Command != nil {
+		t.Fatalf("other database: %+v %v", lookup, err)
+	}
 	if count := p.creates.Load(); count != 1 {
 		t.Fatalf("create POST count after recovery: %d", count)
 	}
@@ -303,6 +350,18 @@ func TestBrowserRoutesRunAndReopenCore(t *testing.T) {
 	if started.Delivery != contract.Response || started.Command == nil || started.Command.Status != contract.CommandStatusStatusAccepted {
 		t.Fatalf("start: %+v", started)
 	}
+	startBody, err := json.Marshal(start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lookup, err = p.exact(handshake.DatabaseId.String(), "start", id, "", start.CommandId.String(), startBody)
+	if err != nil || lookup.Outcome != contract.ExactLookupResultOutcomeMatch || lookup.Command == nil || lookup.Command.CommandId != start.CommandId || lookup.Command.Status == contract.CommandStatusStatusUnknown {
+		t.Fatalf("exact start: %+v %v", lookup, err)
+	}
+	lookup, err = p.exact(handshake.DatabaseId.String(), "start", uuid.NewString(), "", start.CommandId.String(), startBody)
+	if err != nil || lookup.Outcome != contract.ExactLookupResultOutcomeConflict || lookup.Command != nil {
+		t.Fatalf("start wrong test: %+v %v", lookup, err)
+	}
 	view = waitProcessView(t, p, "pending action", func(v contract.SessionView) bool {
 		return v.Connection.Status == contract.Live && v.Snapshot != nil && v.Snapshot.PendingAction != nil
 	})
@@ -311,6 +370,19 @@ func TestBrowserRoutesRunAndReopenCore(t *testing.T) {
 	processRequest(t, p, http.MethodPost, "/api/tests/"+id+"/actions/"+view.Snapshot.PendingAction.ActionId.String()+"/confirm", confirm, &confirmed, http.StatusOK)
 	if confirmed.Delivery != contract.Response || confirmed.Command == nil || confirmed.Command.Status != contract.CommandStatusStatusCompleted {
 		t.Fatalf("confirm: %+v", confirmed)
+	}
+	confirmBody, err := json.Marshal(confirm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actionID := view.Snapshot.PendingAction.ActionId.String()
+	lookup, err = p.exact(handshake.DatabaseId.String(), "confirm", id, actionID, confirm.CommandId.String(), confirmBody)
+	if err != nil || lookup.Outcome != contract.ExactLookupResultOutcomeMatch || lookup.Command == nil || lookup.Command.CommandId != confirm.CommandId || lookup.Command.Status != contract.CommandStatusStatusCompleted {
+		t.Fatalf("exact confirm: %+v %v", lookup, err)
+	}
+	lookup, err = p.exact(handshake.DatabaseId.String(), "confirm", id, uuid.NewString(), confirm.CommandId.String(), confirmBody)
+	if err != nil || lookup.Outcome != contract.ExactLookupResultOutcomeConflict || lookup.Command != nil {
+		t.Fatalf("confirm wrong action: %+v %v", lookup, err)
 	}
 	view = waitProcessView(t, p, "measurements", func(v contract.SessionView) bool {
 		return v.Snapshot != nil && v.Snapshot.ActiveTest != nil && len(v.Snapshot.Measurements) > 0
@@ -350,6 +422,20 @@ func TestBrowserRoutesRunAndReopenCore(t *testing.T) {
 		t.Fatalf("reopened handshake: %+v", status.Handshake)
 	}
 	waitProcessView(t, p, "reopened live", func(v contract.SessionView) bool { return v.Connection.Status == contract.Live && v.Snapshot != nil })
+	lookup, err = p.exact(handshake.DatabaseId.String(), "create", "", "", create.CommandId.String(), createBody)
+	if err != nil || lookup.Outcome != contract.ExactLookupResultOutcomeMatch || lookup.Command == nil || lookup.Command.TestId == nil || lookup.Command.TestId.String() != id {
+		t.Fatalf("exact after reopen: %+v %v", lookup, err)
+	}
+	lookup, err = p.exact(handshake.DatabaseId.String(), "create", "", "", create.CommandId.String(), changedBody)
+	if err != nil || lookup.Outcome != contract.ExactLookupResultOutcomeConflict {
+		t.Fatalf("exact conflict after reopen: %+v %v", lookup, err)
+	}
+	missingID := uuid.NewString()
+	missingBody := []byte(strings.Replace(string(createBody), create.CommandId.String(), missingID, 1))
+	lookup, err = p.exact(handshake.DatabaseId.String(), "create", "", "", missingID, missingBody)
+	if err != nil || lookup.Outcome != contract.ExactLookupResultOutcomeUnknown || lookup.Command != nil {
+		t.Fatalf("missing exact: %+v %v", lookup, err)
+	}
 	changed := create
 	changed.Parameters.PmaxPa++
 	var conflict map[string]string

@@ -22,6 +22,7 @@ type domainOperations interface {
 	StartTest(context.Context, string, desktop.StartCommandInput) (contract.CommandDispatch, error)
 	ConfirmAction(context.Context, string, string, desktop.ConfirmCommandInput) (contract.CommandDispatch, error)
 	Command(context.Context, string) (contract.CommandStatus, error)
+	LookupCommandExact(context.Context, string, string, string, string, string, string) (contract.ExactLookupResult, error)
 }
 
 func (s *browserSession) call(w http.ResponseWriter, r *http.Request, operation func(context.Context) (any, error)) {
@@ -85,6 +86,17 @@ func commandBody[T any](w http.ResponseWriter, r *http.Request) (T, error) {
 	}
 	err = json.Unmarshal(body, &input)
 	return input, err
+}
+
+func singleHeader(r *http.Request, name string, required bool) (string, bool) {
+	values := r.Header.Values(name)
+	if len(values) == 0 && !required {
+		return "", true
+	}
+	if len(values) != 1 || values[0] == "" {
+		return "", false
+	}
+	return values[0], true
 }
 
 func registerDomainRoutes(mux *http.ServeMux, s *browserSession, service domainOperations, bootstrap bootstrapOperations) {
@@ -173,5 +185,46 @@ func registerDomainRoutes(mux *http.ServeMux, s *browserSession, service domainO
 			return
 		}
 		s.call(w, r, func(ctx context.Context) (any, error) { return service.Command(ctx, id) })
+	})
+	register("POST /api/commands/{commandId}/lookup-exact", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("commandId")
+		database, dbOK := singleHeader(r, "X-GK80-Database", true)
+		kind, kindOK := singleHeader(r, "X-GK80-Kind", true)
+		testID, testOK := singleHeader(r, "X-GK80-Test", false)
+		actionID, actionOK := singleHeader(r, "X-GK80-Action", false)
+		validPath := kind == "create" && testID == "" && actionID == "" ||
+			kind == "start" && validID(testID) && actionID == "" ||
+			kind == "confirm" && validID(testID) && validID(actionID)
+		if !validID(id) || !dbOK || !validID(database) || !kindOK || !testOK || !actionOK || !validPath || r.URL.RawQuery != "" || r.URL.ForceQuery {
+			invalid(w, r)
+			return
+		}
+		body, err := readJSON(w, r)
+		if err != nil {
+			invalid(w, r)
+			return
+		}
+		commandID := uuid.Nil
+		switch kind {
+		case "create":
+			var input desktop.CreateCommandInput
+			err = json.Unmarshal(body, &input)
+			commandID = input.CommandId
+		case "start":
+			var input desktop.StartCommandInput
+			err = json.Unmarshal(body, &input)
+			commandID = input.CommandId
+		case "confirm":
+			var input desktop.ConfirmCommandInput
+			err = json.Unmarshal(body, &input)
+			commandID = input.CommandId
+		}
+		if err != nil || commandID == uuid.Nil || !strings.EqualFold(commandID.String(), id) {
+			invalid(w, r)
+			return
+		}
+		s.call(w, r, func(ctx context.Context) (any, error) {
+			return service.LookupCommandExact(ctx, database, kind, testID, actionID, id, string(body))
+		})
 	})
 }

@@ -133,6 +133,9 @@ func (f *routeService) Command(_ context.Context, id string) (contract.CommandSt
 	parsed, _ := uuid.Parse(id)
 	return contract.CommandStatus{CommandId: parsed, Status: contract.CommandStatusStatusUnknown}, nil
 }
+func (f *routeService) LookupCommandExact(context.Context, string, string, string, string, string, string) (contract.ExactLookupResult, error) {
+	return contract.ExactLookupResult{Outcome: contract.ExactLookupResultOutcomeUnknown}, nil
+}
 func (f *routeService) CreateTest(ctx context.Context, input desktop.CreateCommandInput) (contract.CommandDispatch, error) {
 	f.mu.Lock()
 	f.creates++
@@ -490,19 +493,25 @@ func TestDomainRoutesForwardCommandsAndValidateWait(t *testing.T) {
 }
 
 func TestDomainRouteRevocationCancelsCallAndSuppressesLateResult(t *testing.T) {
-	for _, mode := range []string{"create", "wait"} {
+	for _, mode := range []string{"create", "wait", "exact"} {
 		t.Run(mode, func(t *testing.T) {
 			entered := make(chan context.Context, 1)
 			release := make(chan struct{})
 			var releaseOnce sync.Once
 			fake := &routeService{ticket: uuid.NewString()}
-			if mode == "create" {
+			exactFake := &exactRouteService{routeService: fake, lookup: func(ctx context.Context, _, _, _, _, _, _ string) (contract.ExactLookupResult, error) {
+				entered <- ctx
+				<-release
+				return contract.ExactLookupResult{Outcome: contract.ExactLookupResultOutcomeUnknown}, nil
+			}}
+			switch mode {
+			case "create":
 				fake.createFunc = func(ctx context.Context) (contract.CommandDispatch, error) {
 					entered <- ctx
 					<-release
 					return contract.CommandDispatch{Delivery: contract.NotSent}, nil
 				}
-			} else {
+			case "wait":
 				fake.waitFunc = func(ctx context.Context) (contract.ConnectionNotice, error) {
 					entered <- ctx
 					<-release
@@ -521,12 +530,17 @@ func TestDomainRouteRevocationCancelsCallAndSuppressesLateResult(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			router = newRoutes(s, fake, fake)
+			router = newRoutes(s, exactFake, fake)
 			server.Start()
 			method, path, body := http.MethodGet, "/api/session/wait?after=1&afterSequence=2", ""
 			if mode == "create" {
 				method, path = http.MethodPost, "/api/tests"
 				body = `{"commandId":"` + uuid.NewString() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`
+			}
+			if mode == "exact" {
+				id := uuid.NewString()
+				method, path = http.MethodPost, "/api/commands/"+id+"/lookup-exact"
+				body = `{"commandId":"` + id + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`
 			}
 			r, err := http.NewRequest(method, server.URL+path, strings.NewReader(body))
 			if err != nil {
@@ -536,6 +550,10 @@ func TestDomainRouteRevocationCancelsCallAndSuppressesLateResult(t *testing.T) {
 			r.Header.Set("X-GK80-Session", proof)
 			r.Header.Set("Origin", server.URL)
 			r.Header.Set("Content-Type", "application/json")
+			if mode == "exact" {
+				r.Header.Set("X-GK80-Database", uuid.NewString())
+				r.Header.Set("X-GK80-Kind", "create")
+			}
 			type response struct {
 				status int
 				body   string
