@@ -75,6 +75,9 @@ function stopNoticeKey(id: string, testId: string | null): string {
 function stopLookupNoticeKey(id: string, testId: string | null): string {
   return JSON.stringify([id, 'stop-lookup', testId]);
 }
+function stopAttemptNoticeKey(id: string, testId: string | null): string {
+  return JSON.stringify([id, 'stop-attempt', testId]);
+}
 function hasUnstoredStop(values: Pending[], storageKey: string): boolean {
   const stored = readStoredPending(storageKey);
   return values.some(
@@ -317,6 +320,14 @@ function stopPendingMessage(record: Snapshot['activeTest']): string {
   return record?.stage === 'finished' && record.outcome === 'interrupted'
     ? 'Испытание прервано по состоянию ядра; исход запроса остановки ещё не подтверждён.'
     : 'Остановка запрошена, её завершение ещё не подтверждено.';
+}
+
+function stopOutcomeMessage(status: CommandStatus, record: Snapshot['activeTest']): string {
+  return status.status === 'completed'
+    ? 'Остановка подтверждена ядром.'
+    : status.status === 'rejected' || status.status === 'failed'
+      ? `Остановка не выполнена или отклонена${status.reason ? `: ${status.reason}` : '.'} Безопасное давление не подтверждено.`
+      : stopPendingMessage(record);
 }
 
 function commandsBlock(
@@ -767,6 +778,8 @@ function ActiveLiveApp({
       );
       if (item.kind === 'stop')
         setCommandMessage(item.id, '', stopLookupNoticeKey(item.id, item.testId));
+      if (item.kind === 'stop')
+        setCommandMessage(item.id, '', stopAttemptNoticeKey(item.id, item.testId));
     },
     [savePending, setCommandMessage],
   );
@@ -1213,18 +1226,26 @@ function ActiveLiveApp({
     }
     setStopRequestedFor(record.testId);
     const stopKey = stopNoticeKey(record.stopCommandId, record.testId);
+    const attemptNoticeKey = stopAttemptNoticeKey(record.stopCommandId, record.testId);
+    setCommandMessage(record.stopCommandId, '', attemptNoticeKey);
     lastStopId.current = stopKey;
     const command = { commandId: record.stopCommandId };
     const originalJSON = JSON.stringify(command);
-    if (
-      !pendingRef.current.some(
-        (item) =>
-          item.id === record.stopCommandId &&
-          item.kind === 'stop' &&
-          item.testId === record.testId &&
-          item.originalJSON === originalJSON,
-      )
-    ) {
+    const existing = pendingRef.current.find(
+      (item) =>
+        item.id === record.stopCommandId &&
+        item.kind === 'stop' &&
+        item.testId === record.testId &&
+        item.originalJSON === originalJSON,
+    );
+    if (existing?.retired) {
+      savePending(
+        pendingRef.current.map((item) =>
+          samePending(item, existing) ? { ...item, retired: false } : item,
+        ),
+        true,
+      );
+    } else if (!existing) {
       const values: Pending[] = [
         ...pendingRef.current,
         {
@@ -1253,7 +1274,12 @@ function ActiveLiveApp({
       }
     }
     const generation = lifecycle.current;
-    setStopMessage('Запрошена остановка. Ожидаем подтверждения ядра.');
+    const knownBeforeSend = stopStatuses.current.get(stopKey);
+    setStopMessage(
+      knownBeforeSend && terminalStatus(knownBeforeSend)
+        ? stopOutcomeMessage(knownBeforeSend, currentRecord.current)
+        : 'Запрошена остановка. Ожидаем подтверждения ядра.',
+    );
     try {
       const result = await service.stopTest(record.testId, command);
       if (lifecycle.current !== generation) return;
@@ -1275,13 +1301,7 @@ function ActiveLiveApp({
         );
       updateTrackedStatus(record.stopCommandId, record.testId, originalJSON, merged);
       if (currentTest.current === record.testId)
-        setStopMessage(
-          merged.status === 'completed'
-            ? 'Остановка подтверждена ядром.'
-            : merged.status === 'rejected' || merged.status === 'failed'
-              ? `Остановка не выполнена или отклонена${merged.reason ? `: ${merged.reason}` : '.'} Безопасное давление не подтверждено.`
-              : stopPendingMessage(currentRecord.current),
-        );
+        setStopMessage(stopOutcomeMessage(merged, currentRecord.current));
     } catch (error) {
       const known = stopStatuses.current.get(stopKey);
       if (lifecycle.current === generation && error instanceof CommandConflictError) {
@@ -1292,12 +1312,25 @@ function ActiveLiveApp({
             item.testId === record.testId &&
             item.originalJSON === originalJSON,
         );
-        if (attempt) forget(attempt);
-        setCommandMessage(
-          record.stopCommandId,
-          'Запрос остановки отклонён: идентификатор принадлежит другой команде.',
-          stopKey,
-        );
+        if (attempt) {
+          savePending(
+            pendingRef.current.map((item) =>
+              samePending(item, attempt) ? { ...item, retired: true } : item,
+            ),
+            true,
+          );
+          setCommandMessage(
+            record.stopCommandId,
+            'Запрос остановки отклонён: идентификатор принадлежит другой команде.',
+            attemptNoticeKey,
+          );
+        } else if (currentTest.current === record.testId) {
+          if (!terminalStatus(known ?? null))
+            setStopMessage(
+              'Запрос остановки отклонён: идентификатор принадлежит другой команде. Безопасное давление не подтверждено.',
+            );
+          return;
+        }
       }
       if (
         lifecycle.current === generation &&
@@ -1509,12 +1542,29 @@ function ActiveLiveApp({
                     </button>
                   )}
                   {item.retired && (
-                    <button type="button" onClick={() => forget(item)}>
+                    <button
+                      type="button"
+                      disabled={
+                        item.kind === 'stop' &&
+                        (countCalls('stop', item.testId ?? '') > 0 ||
+                          countCalls(
+                            'stopLookup',
+                            commandLookupKey(hostRunId, backendRunId, databaseId, item.id),
+                          ) > 0)
+                      }
+                      onClick={() => forget(item)}
+                    >
                       {item.legacyUnverifiable
                         ? 'Удалить запись наблюдения'
-                        : 'Скрыть наблюдение команды'}
+                        : !terminalStatus(item.status)
+                          ? 'Прекратить наблюдение'
+                          : 'Скрыть наблюдение команды'}
                     </button>
                   )}
+                  {item.retired &&
+                    item.kind === 'stop' &&
+                    !terminalStatus(item.status) &&
+                    ' После удаления автоматическая сверка этой попытки невозможна.'}
                 </p>
               ))}
               {stopCount >= 2 && (

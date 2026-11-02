@@ -2072,6 +2072,263 @@ it('can confirm Stop while an exact lookup with the same ID is waiting', async (
   });
 });
 
+it('keeps the first unresolved Stop when a later Stop attempt is rejected', async () => {
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 2,
+        lastEventSequence: 2,
+        activeTest: { ...record, stage: TestRecordStage.Running },
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
+  api.stop
+    .mockRejectedValueOnce(new Error('first response lost'))
+    .mockRejectedValueOnce(new CommandConflictError());
+  render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('button', { name: 'Остановить испытание' }));
+  await screen.findByText(/Исход остановки неизвестен/);
+  await user.click(screen.getByRole('button', { name: 'Повторить запрос остановки' }));
+  await screen.findByText(/Запрос остановки отклонён/);
+  const stored = JSON.parse(sessionStorage.getItem(pendingKey) ?? '[]');
+  expect(stored).toContainEqual(
+    expect.objectContaining({
+      id: stopId,
+      kind: 'stop',
+      testId,
+      originalJSON: JSON.stringify({ commandId: stopId }),
+    }),
+  );
+  expect(api.stop).toHaveBeenCalledTimes(2);
+  await user.click(screen.getByRole('button', { name: 'Прекратить наблюдение' }));
+  expect(screen.queryByText(/Запрос остановки отклонён/)).toBeNull();
+});
+
+it('shows the restored terminal Stop status when the operator requests it again', async () => {
+  sessionStorage.setItem(pendingKey, JSON.stringify([savedAttempt(stopId, 'stop', testId, false)]));
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 2,
+        lastEventSequence: 2,
+        activeTest: { ...record, stage: TestRecordStage.Running },
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.exact.mockResolvedValue({
+    outcome: 'match',
+    command: { commandId: stopId, testId, status: 'completed' },
+  });
+  let finish: (value: { commandId: string; testId: string; status: string }) => void = () => {};
+  const response = new Promise<{ commandId: string; testId: string; status: string }>((resolve) => {
+    finish = resolve;
+  });
+  api.stop.mockReturnValue(response);
+  const view = render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  await screen.findByText(/Команда: выполнена/);
+  await userEvent
+    .setup()
+    .click(await screen.findByRole('button', { name: 'Остановить испытание' }));
+  expect(screen.getByText('Остановка подтверждена ядром.')).toBeTruthy();
+  view.unmount();
+  await act(async () => {
+    finish({ commandId: stopId, testId, status: 'completed' });
+    await response;
+  });
+});
+
+it.each(['failed', 'rejected'])(
+  'keeps a confirmed %s Stop visible during a retry',
+  async (status) => {
+    const bridge: SessionBridge = {
+      beginSessionCheck: async () => 'ticket',
+      keepAlive: async () => {},
+      sessionView: async () => ({
+        connection: {
+          hostRunId: host,
+          revision: 1,
+          status: ConnectionStateStatus.Live,
+          linkValid: true,
+          leaseAcquireUnknown: false,
+          streamGeneration: 0,
+        },
+        snapshot: {
+          apiVersion: 'v1',
+          backendRunId: backend,
+          revision: 2,
+          lastEventSequence: 2,
+          activeTest: { ...record, stage: TestRecordStage.Running },
+          pendingAction: null,
+          measurements: [],
+        },
+        validForMs: 6000,
+        linkValidForMs: 6000,
+      }),
+    };
+    api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
+    let finishRetry: (value: { commandId: string; testId: string; status: string }) => void =
+      () => {};
+    const retry = new Promise<{ commandId: string; testId: string; status: string }>((resolve) => {
+      finishRetry = resolve;
+    });
+    api.stop
+      .mockResolvedValueOnce({ commandId: stopId, testId, status })
+      .mockReturnValueOnce(retry);
+    const view = render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Остановить испытание' }));
+    expect(await screen.findByText(/Остановка не выполнена или отклонена/)).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Повторить запрос остановки' }));
+    expect(screen.getByText(/Остановка не выполнена или отклонена/)).toBeTruthy();
+    view.unmount();
+    await act(async () => {
+      finishRetry({ commandId: stopId, testId, status: 'unknown' });
+      await retry;
+    });
+  },
+);
+
+it('does not let a late rejected Stop replace a confirmed finished outcome', async () => {
+  let snapshot: Snapshot = {
+    apiVersion: 'v1',
+    backendRunId: backend,
+    revision: 2,
+    lastEventSequence: 2,
+    activeTest: { ...record, stage: TestRecordStage.Running },
+    pendingAction: null,
+    measurements: [],
+  };
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot,
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  let rejectSecond: (reason: Error) => void = () => {};
+  const second = new Promise<never>((_resolve, reject) => {
+    rejectSecond = reject;
+  });
+  const completed = { commandId: stopId, testId, status: 'completed' };
+  api.exact.mockResolvedValue({ outcome: 'match', command: completed });
+  api.stop.mockResolvedValueOnce(completed).mockReturnValueOnce(second);
+  render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('button', { name: 'Остановить испытание' }));
+  await screen.findByText('Остановка подтверждена ядром.');
+  await user.click(screen.getByRole('button', { name: 'Повторить запрос остановки' }));
+  snapshot = {
+    ...snapshot,
+    revision: 3,
+    lastEventSequence: 3,
+    activeTest: {
+      ...record,
+      stage: TestRecordStage.Finished,
+      outcome: TestRecordOutcome.TestRecordOutcomeInterrupted,
+    },
+  };
+  await waitFor(() => expect(screen.queryByText(/Команда: выполнена/)).toBeNull(), {
+    timeout: 8000,
+  });
+  await act(async () => {
+    rejectSecond(new CommandConflictError());
+    await second.catch(() => {});
+  });
+  expect(screen.queryByText(/Запрос остановки отклонён/)).toBeNull();
+  expect(screen.getByText('Остановка подтверждена ядром.')).toBeTruthy();
+}, 12000);
+
+it('does not discard a Stop observation while an earlier request is still in flight', async () => {
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 2,
+        lastEventSequence: 2,
+        activeTest: { ...record, stage: TestRecordStage.Running },
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  let rejectFirst: (reason: Error) => void = () => {};
+  const first = new Promise<never>((_resolve, reject) => {
+    rejectFirst = reject;
+  });
+  api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
+  api.stop.mockReturnValueOnce(first).mockRejectedValueOnce(new CommandConflictError());
+  render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('button', { name: 'Остановить испытание' }));
+  await user.click(screen.getByRole('button', { name: 'Повторить запрос остановки' }));
+  await screen.findByText(/Запрос остановки отклонён/);
+  const hide = screen.getByRole('button', { name: 'Прекратить наблюдение' });
+  expect(hide.hasAttribute('disabled')).toBe(true);
+  await act(async () => {
+    rejectFirst(new Error('response lost'));
+    await first.catch(() => {});
+  });
+  await waitFor(() => expect(hide.hasAttribute('disabled')).toBe(false));
+  expect(JSON.parse(sessionStorage.getItem(pendingKey) ?? '[]')).toHaveLength(1);
+});
+
 it.each(['conflict', 'wrongTest', 'badStatus'])('does not confirm Stop from %s', async (mode) => {
   const bridge: SessionBridge = {
     beginSessionCheck: async () => 'ticket',
