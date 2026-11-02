@@ -103,7 +103,7 @@ const actionId = '44444444-4444-4444-8444-444444444444';
 const stopId = '55555555-5555-4555-8555-555555555555';
 function savedAttempt(
   id: string,
-  kind: 'create' | 'start' | 'confirm',
+  kind: 'create' | 'start' | 'confirm' | 'stop',
   savedTestId: string | null,
   retired: boolean,
 ) {
@@ -124,7 +124,9 @@ function savedAttempt(
         }
       : kind === 'start'
         ? { commandId: id, expectedRevision: 0, valveClosed: true, connectionConfirmed: true }
-        : { commandId: id, expectedRevision: 0 };
+        : kind === 'confirm'
+          ? { commandId: id, expectedRevision: 0 }
+          : { commandId: id };
   return {
     schema: 2,
     id,
@@ -1179,6 +1181,284 @@ it('uses core confirmation and measurements for the operator path', async () => 
   expect(screen.queryByRole('heading', { name: 'Параметры испытания' })).toBeNull();
 }, 18000);
 
+it('does not infer a legacy Stop without its original contents', async () => {
+  sessionStorage.setItem(
+    pendingKey,
+    JSON.stringify([{ id: stopId, kind: 'stop', testId, retired: false }]),
+  );
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 0,
+        lastEventSequence: 0,
+        activeTest: null,
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  expect(await screen.findByText(/Исходное содержимое команды не сохранилось/)).toBeTruthy();
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Проверить состояние' }));
+  expect(api.exact).not.toHaveBeenCalled();
+  expect(api.command).not.toHaveBeenCalled();
+  expect(api.stop).not.toHaveBeenCalled();
+});
+
+it('persists the Stop attempt before sending and reconciles it after remount without resending', async () => {
+  const snapshot: Snapshot = {
+    apiVersion: 'v1',
+    backendRunId: backend,
+    revision: 2,
+    lastEventSequence: 2,
+    activeTest: { ...record, stage: TestRecordStage.Running },
+    pendingAction: null,
+    measurements: [],
+  };
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot,
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  const body = JSON.stringify({ commandId: stopId });
+  api.stop.mockImplementation(async () => {
+    const attempts = JSON.parse(sessionStorage.getItem(pendingKey) ?? '[]');
+    expect(attempts).toContainEqual(
+      expect.objectContaining({ kind: 'stop', id: stopId, testId, originalJSON: body }),
+    );
+    throw new Error('response lost');
+  });
+  api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
+  const mounted = render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  await userEvent
+    .setup()
+    .click(await screen.findByRole('button', { name: 'Остановить испытание' }));
+  await screen.findByText(/Исход остановки неизвестен/);
+  mounted.unmount();
+  api.exact.mockResolvedValue({
+    outcome: 'match',
+    command: { commandId: stopId, testId, status: 'completed' },
+  });
+  render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  await waitFor(() =>
+    expect(api.exact).toHaveBeenCalledWith(database, 'stop', testId, '', stopId, body),
+  );
+  await screen.findByText(/Команда: выполнена/);
+  expect(api.stop).toHaveBeenCalledOnce();
+});
+
+it('distinguishes a Stop lookup conflict from rejecting the actual request', async () => {
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 2,
+        lastEventSequence: 2,
+        activeTest: { ...record, stage: TestRecordStage.Running },
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.exact.mockResolvedValue({ outcome: 'conflict', command: null });
+  api.stop.mockResolvedValue({ commandId: stopId, testId, status: 'accepted' });
+  render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  await userEvent
+    .setup()
+    .click(await screen.findByRole('button', { name: 'Остановить испытание' }));
+  expect(await screen.findByText(/Сохранённая запись принадлежит другой команде/)).toBeTruthy();
+  expect(screen.queryByText(/Запрос остановки отклонён/)).toBeNull();
+  expect(screen.getByText(new RegExp(`Остановка испытания ${testId}`))).toBeTruthy();
+  expect(api.stop).toHaveBeenCalledOnce();
+});
+
+it('keeps a storage conflict visible after the direct Stop succeeds', async () => {
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 2,
+        lastEventSequence: 2,
+        activeTest: { ...record, stage: TestRecordStage.Running },
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  let finish: (value: { commandId: string; testId: string; status: string }) => void = () => {};
+  const response = new Promise<{ commandId: string; testId: string; status: string }>((resolve) => {
+    finish = resolve;
+  });
+  api.exact.mockResolvedValue({ outcome: 'conflict', command: null });
+  api.stop.mockReturnValue(response);
+  render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  await userEvent
+    .setup()
+    .click(await screen.findByRole('button', { name: 'Остановить испытание' }));
+  await screen.findByText(/Сохранённая запись принадлежит другой команде/);
+  await act(async () => {
+    finish({ commandId: stopId, testId, status: 'completed' });
+    await response;
+  });
+  expect(await screen.findByText('Остановка подтверждена ядром.')).toBeTruthy();
+  expect(screen.getByText(/Сохранённая запись принадлежит другой команде/)).toBeTruthy();
+});
+
+it('retains a confirmed Stop in volatile memory after remount', async () => {
+  const volatileDatabase = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 2,
+        lastEventSequence: 2,
+        activeTest: { ...record, stage: TestRecordStage.Running },
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.stop.mockResolvedValue({ commandId: stopId, testId, status: 'completed' });
+  api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
+  const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+    throw new Error('unavailable');
+  });
+  try {
+    const mounted = render(
+      <LiveApp
+        session={bridge}
+        hostRunId={host}
+        backendRunId={backend}
+        databaseId={volatileDatabase}
+      />,
+    );
+    await userEvent
+      .setup()
+      .click(await screen.findByRole('button', { name: 'Остановить испытание' }));
+    await screen.findByText('Остановка подтверждена ядром.');
+    mounted.unmount();
+    render(
+      <LiveApp
+        session={bridge}
+        hostRunId={host}
+        backendRunId={backend}
+        databaseId={volatileDatabase}
+      />,
+    );
+    expect(await screen.findByText(/Команда: выполнена/)).toBeTruthy();
+    expect(api.stop).toHaveBeenCalledOnce();
+  } finally {
+    setItem.mockRestore();
+  }
+});
+
+it('does not give an old Stop without contents the result of a new attempt', async () => {
+  sessionStorage.setItem(
+    pendingKey,
+    JSON.stringify([{ id: stopId, kind: 'stop', testId, retired: false }]),
+  );
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 2,
+        lastEventSequence: 2,
+        activeTest: { ...record, stage: TestRecordStage.Running },
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
+  api.stop.mockResolvedValue({ commandId: stopId, testId, status: 'completed' });
+  render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  await userEvent
+    .setup()
+    .click(await screen.findByRole('button', { name: 'Остановить испытание' }));
+  const old = screen.getByText(/Исходное содержимое команды не сохранилось/);
+  expect(old.textContent).toContain('исход неизвестен');
+  expect(old.textContent).not.toContain('Команда: выполнена');
+  expect(screen.getByText('Остановка подтверждена ядром.')).toBeTruthy();
+});
+
 it('does not send another creation after an unknown response and remount', async () => {
   const snapshot: Snapshot = {
     apiVersion: 'v1',
@@ -1766,20 +2046,81 @@ it('can confirm Stop while an exact lookup with the same ID is waiting', async (
   const held = new Promise<{ outcome: string; command: null }>((resolve) => {
     finish = resolve;
   });
-  api.exact.mockReturnValue(held);
-  api.command.mockResolvedValue({ commandId: stopId, testId, status: 'completed' });
+  api.exact.mockImplementation(async (_db: string, kind: string) =>
+    kind === 'stop'
+      ? { outcome: 'match', command: { commandId: stopId, testId, status: 'completed' } }
+      : held,
+  );
   api.stop.mockResolvedValue({ commandId: stopId, testId, status: 'accepted' });
   const view = render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   await waitFor(() => expect(api.exact).toHaveBeenCalled());
   await userEvent.setup().click(screen.getByRole('button', { name: 'Остановить испытание' }));
   await screen.findByText('Остановка подтверждена ядром.');
-  expect(api.command).toHaveBeenCalledWith(stopId);
+  expect(api.exact).toHaveBeenCalledWith(
+    database,
+    'stop',
+    testId,
+    '',
+    stopId,
+    JSON.stringify({ commandId: stopId }),
+  );
   expect(api.stop).toHaveBeenCalledOnce();
   view.unmount();
   await act(async () => {
     finish({ outcome: 'unknown', command: null });
     await held;
   });
+});
+
+it.each(['conflict', 'wrongTest', 'badStatus'])('does not confirm Stop from %s', async (mode) => {
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 2,
+        lastEventSequence: 2,
+        activeTest: { ...record, stage: TestRecordStage.Running },
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.list.mockResolvedValue({ items: [], nextAfter: null });
+  api.command.mockResolvedValue({
+    commandId: stopId,
+    testId: '77777777-7777-4777-8777-777777777777',
+    status: 'completed',
+  });
+  if (mode === 'conflict') api.stop.mockRejectedValue(new CommandConflictError());
+  else if (mode === 'wrongTest')
+    api.stop.mockResolvedValue({
+      commandId: stopId,
+      testId: '77777777-7777-4777-8777-777777777777',
+      status: 'completed',
+    });
+  else api.stop.mockResolvedValue({ commandId: stopId, testId, status: 'completed', reason: {} });
+  render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  await userEvent
+    .setup()
+    .click(await screen.findByRole('button', { name: 'Остановить испытание' }));
+  if (mode === 'conflict') await screen.findByText(/запрос остановки отклонён.*идентификатор/i);
+  else await screen.findByText(/Исход остановки неизвестен/);
+  expect(screen.queryByText('Остановка подтверждена ядром.')).toBeNull();
+  expect(screen.getAllByText(/безопасное давление не подтверждено/i).length).toBeGreaterThan(0);
+  expect(api.stop).toHaveBeenCalledOnce();
 });
 
 it('allows an explicitly reviewed legacy observation to be removed from a full list', async () => {
@@ -2115,7 +2456,7 @@ it('keeps an unknown stop message when a different command is confirmed', async 
   sessionStorage.setItem(
     pendingKey,
     JSON.stringify([
-      { id: stopId, kind: 'stop', testId, retired: false },
+      savedAttempt(stopId, 'stop', testId, false),
       savedAttempt(createId, 'create', null, false),
     ]),
   );
@@ -2173,7 +2514,7 @@ it('keeps another command unknown when an earlier command fails', async () => {
   sessionStorage.setItem(
     pendingKey,
     JSON.stringify([
-      { id: stopId, kind: 'stop', testId, retired: true },
+      savedAttempt(stopId, 'stop', testId, true),
       savedAttempt(createId, 'create', null, false),
     ]),
   );
@@ -2246,7 +2587,7 @@ it('keeps separate failed stop results visible until the operator hides them', a
   ];
   sessionStorage.setItem(
     pendingKey,
-    JSON.stringify(stops.map((item) => ({ ...item, kind: 'stop', retired: true }))),
+    JSON.stringify(stops.map((item) => savedAttempt(item.id, 'stop', item.testId, true))),
   );
   const bridge: SessionBridge = {
     beginSessionCheck: async () => 'ticket',

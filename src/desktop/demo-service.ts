@@ -39,7 +39,7 @@ export interface DemoService {
   command(commandId: string): Promise<CommandStatus>;
   lookupCommandExact(
     databaseId: string,
-    kind: 'create' | 'start' | 'confirm',
+    kind: 'create' | 'start' | 'confirm' | 'stop',
     testId: string,
     actionId: string,
     commandId: string,

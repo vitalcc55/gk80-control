@@ -72,6 +72,9 @@ function pendingKey(item: Pending): string {
 function stopNoticeKey(id: string, testId: string | null): string {
   return JSON.stringify([id, 'stop', testId]);
 }
+function stopLookupNoticeKey(id: string, testId: string | null): string {
+  return JSON.stringify([id, 'stop-lookup', testId]);
+}
 function hasUnstoredStop(values: Pending[], storageKey: string): boolean {
   const stored = readStoredPending(storageKey);
   return values.some(
@@ -359,7 +362,7 @@ function parsePending(raw: unknown, scoped = true): Pending | null {
     return null;
   let originalJSON: string | null = null;
   let actionId: string | null = null;
-  if ('schema' in raw && raw.schema === 2 && raw.kind !== 'stop') {
+  if ('schema' in raw && raw.schema === 2) {
     if (
       !('originalJSON' in raw) ||
       typeof raw.originalJSON !== 'string' ||
@@ -383,6 +386,7 @@ function parsePending(raw: unknown, scoped = true): Pending | null {
     if (
       (raw.kind === 'create' && (raw.testId !== null || raw.actionId !== null)) ||
       (raw.kind === 'start' && (typeof raw.testId !== 'string' || raw.actionId !== null)) ||
+      (raw.kind === 'stop' && (typeof raw.testId !== 'string' || raw.actionId !== null)) ||
       (raw.kind === 'confirm' &&
         (typeof raw.testId !== 'string' || typeof raw.actionId !== 'string'))
     )
@@ -390,7 +394,7 @@ function parsePending(raw: unknown, scoped = true): Pending | null {
     originalJSON = raw.originalJSON;
     actionId = raw.actionId;
   }
-  const legacyUnverifiable = scoped && raw.kind !== 'stop' && originalJSON === null;
+  const legacyUnverifiable = scoped && originalJSON === null;
   return {
     id: raw.id,
     kind: raw.kind,
@@ -400,7 +404,7 @@ function parsePending(raw: unknown, scoped = true): Pending | null {
         ? raw.retired
         : 'legacyReviewed' in raw && raw.legacyReviewed === true,
     status: null,
-    receiptRequired: scoped && raw.kind !== 'stop',
+    receiptRequired: scoped,
     legacyUnverifiable,
     legacyReviewed: 'legacyReviewed' in raw && raw.legacyReviewed === true,
     originalJSON,
@@ -430,16 +434,12 @@ function restorePending(storageKey: string, memory: PendingMemory): Pending[] | 
 }
 
 function restoredMemory(items: Pending[]): Pending[] {
-  return items.map((item) =>
-    item.kind === 'stop'
-      ? item
-      : {
-          ...item,
-          status: null,
-          receiptRequired: true,
-          legacyUnverifiable: item.originalJSON === null,
-        },
-  );
+  return items.map((item) => ({
+    ...item,
+    status: item.kind === 'stop' && item.originalJSON !== null ? item.status : null,
+    receiptRequired: true,
+    legacyUnverifiable: item.originalJSON === null,
+  }));
 }
 
 function readLegacyPending(): { items: Pending[]; unreadable: boolean } {
@@ -704,6 +704,7 @@ function ActiveLiveApp({
           values = [...merged.values()];
           if (values.length > 65) throw new Error('pending list full');
         }
+        if (values.length > 65) throw new Error('pending list full');
         sessionStorage.setItem(
           storageKey,
           JSON.stringify(
@@ -764,28 +765,39 @@ function ActiveLiveApp({
         '',
         item.kind === 'stop' ? stopNoticeKey(item.id, item.testId) : item.id,
       );
+      if (item.kind === 'stop')
+        setCommandMessage(item.id, '', stopLookupNoticeKey(item.id, item.testId));
     },
     [savePending, setCommandMessage],
   );
-  const updateTrackedStatus = useCallback((id: string, testId: string, status: CommandStatus) => {
-    const current = pendingRef.current.find(
-      (item) => item.id === id && item.kind === 'stop' && item.testId === testId,
-    );
-    if (!current) return;
-    const merged = mergeStatus(current.status, status);
-    if (JSON.stringify(current.status) === JSON.stringify(merged)) return;
-    pendingRef.current = pendingRef.current.map((item) =>
-      samePending(item, current) ? { ...item, status: merged } : item,
-    );
-    setPending(pendingRef.current);
-  }, []);
+  const updateTrackedStatus = useCallback(
+    (id: string, testId: string, originalJSON: string, status: CommandStatus) => {
+      const current = pendingRef.current.find(
+        (item) =>
+          item.id === id &&
+          item.kind === 'stop' &&
+          item.testId === testId &&
+          item.originalJSON === originalJSON,
+      );
+      if (!current) return;
+      const merged = mergeStatus(current.status, status);
+      if (JSON.stringify(current.status) === JSON.stringify(merged)) return;
+      pendingRef.current = pendingRef.current.map((item) =>
+        samePending(item, current) ? { ...item, status: merged } : item,
+      );
+      if (memory.volatile) memory.volatile = pendingRef.current;
+      setPending(pendingRef.current);
+    },
+    [memory],
+  );
   const lookup = useCallback(
     async (item: Pending, manual = false) => {
-      if (item.kind !== 'stop' && item.originalJSON === null) {
+      if (item.originalJSON === null) {
         if (manual)
           setCommandMessage(
             item.id,
             'Исход этой команды не подтверждён; требуется точная сверка её содержимого.',
+            item.kind === 'stop' ? stopNoticeKey(item.id, item.testId) : item.id,
           );
         return;
       }
@@ -798,10 +810,8 @@ function ActiveLiveApp({
       const generation = lifecycle.current;
       try {
         let status: CommandStatus;
-        if (item.kind === 'stop') {
-          status = await service.command(item.id);
-        } else {
-          if (item.originalJSON === null) return;
+        {
+          const noticeKey = item.kind === 'stop' ? stopNoticeKey(item.id, item.testId) : item.id;
           const result = await service.lookupCommandExact(
             databaseId,
             item.kind,
@@ -818,34 +828,43 @@ function ActiveLiveApp({
           const current = pendingRef.current.find((pendingItem) => samePending(pendingItem, item));
           const alreadyConfirmed = current?.status && current.status.status !== 'unknown';
           if (!validExactEnvelope(result)) {
-            if (!alreadyConfirmed) unknownMessage(item.id);
+            if (!alreadyConfirmed) unknownMessage(item.id, noticeKey);
             return;
           }
           if (result.outcome === 'conflict' && result.command === null) {
-            if (alreadyConfirmed) return;
-            showCommandFailure({
-              id: item.id,
-              kind: item.kind,
-              testId: item.testId,
-              text: 'Идентификатор принадлежит другой команде. Эта попытка отклонена.',
-            });
-            forget(item);
+            if (item.kind === 'stop') {
+              setCommandMessage(
+                item.id,
+                'Сохранённая запись принадлежит другой команде; точная сверка остановки невозможна.',
+                stopLookupNoticeKey(item.id, item.testId),
+              );
+            } else if (!alreadyConfirmed) {
+              forget(item);
+              showCommandFailure({
+                id: item.id,
+                kind: item.kind,
+                testId: item.testId,
+                text: 'Идентификатор принадлежит другой команде. Эта попытка отклонена.',
+              });
+            }
             return;
           }
           if (
             result.outcome !== 'match' ||
             !confirmedCommandStatus(result.command, item.id, item.testId)
           ) {
-            if (!alreadyConfirmed) unknownMessage(item.id);
+            if (!alreadyConfirmed) unknownMessage(item.id, noticeKey);
             return;
           }
           status = result.command;
+          if (item.kind === 'stop')
+            setCommandMessage(item.id, '', stopLookupNoticeKey(item.id, item.testId));
         }
         if (lifecycle.current !== generation || status.commandId !== item.id) return;
         const existing = pendingRef.current.find((current) => samePending(current, item));
-        if (!existing || (existing.kind !== 'stop' && existing.originalJSON === null)) return;
+        if (!existing || existing.originalJSON === null) return;
         let merged = mergeStatus(existing.status, status);
-        if (existing.kind !== 'stop' && existing.receiptRequired && status.status !== 'unknown') {
+        if (existing.receiptRequired && status.status !== 'unknown') {
           savePending(
             pendingRef.current.map((current) =>
               samePending(current, item) ? { ...current, receiptRequired: false } : current,
@@ -854,12 +873,13 @@ function ActiveLiveApp({
           );
         }
         if (item.kind === 'stop') {
-          const stopStatus = mergeStatus(stopStatuses.current.get(item.id) ?? null, merged);
-          stopStatuses.current.set(item.id, stopStatus);
+          const stopKey = stopNoticeKey(item.id, item.testId);
+          const stopStatus = mergeStatus(stopStatuses.current.get(stopKey) ?? null, merged);
+          stopStatuses.current.set(stopKey, stopStatus);
           merged = stopStatus;
           if (terminalStatus(stopStatus))
             setCommandMessage(item.id, '', stopNoticeKey(item.id, item.testId));
-          if (lastStopId.current === item.id) {
+          if (lastStopId.current === stopKey) {
             if (stopStatus.status === 'completed') setStopMessage('Остановка подтверждена ядром.');
             else if (stopStatus.status === 'failed' || stopStatus.status === 'rejected')
               setStopMessage(
@@ -871,6 +891,7 @@ function ActiveLiveApp({
           pendingRef.current = pendingRef.current.map((current) =>
             samePending(current, item) ? { ...current, status: merged } : current,
           );
+          if (memory.volatile) memory.volatile = pendingRef.current;
           setPending(pendingRef.current);
         }
         if (item.kind !== 'stop' && merged.status === 'completed')
@@ -881,8 +902,11 @@ function ActiveLiveApp({
           if (item.kind === 'stop') {
             const failure =
               'Остановка не выполнена или отклонена. Безопасное давление не подтверждено.';
-            if (lastStopId.current === null || lastStopId.current === item.id) {
-              lastStopId.current = item.id;
+            if (
+              lastStopId.current === null ||
+              lastStopId.current === stopNoticeKey(item.id, item.testId)
+            ) {
+              lastStopId.current = stopNoticeKey(item.id, item.testId);
               setStopRequestedFor(item.testId);
               setStopMessage(failure);
             }
@@ -907,7 +931,10 @@ function ActiveLiveApp({
         }
       } catch {
         const current = pendingRef.current.find((pendingItem) => samePending(pendingItem, item));
-        const knownStop = item.kind === 'stop' ? (stopStatuses.current.get(item.id) ?? null) : null;
+        const knownStop =
+          item.kind === 'stop'
+            ? (stopStatuses.current.get(stopNoticeKey(item.id, item.testId)) ?? null)
+            : null;
         if (
           lifecycle.current === generation &&
           current &&
@@ -929,6 +956,7 @@ function ActiveLiveApp({
       databaseId,
       forget,
       hostRunId,
+      memory,
       savePending,
       setCommandMessage,
       setStopMessage,
@@ -999,8 +1027,9 @@ function ActiveLiveApp({
     }
     const unresolved = tracked.filter(
       (item) =>
-        (item.kind === 'stop' || item.originalJSON !== null) &&
-        (!terminalStatus(item.status) ||
+        item.originalJSON !== null &&
+        (item.receiptRequired ||
+          !terminalStatus(item.status) ||
           (item.kind === 'create' && item.status?.status === 'completed' && !item.status.testId)),
     );
     const item = unresolved[lookupIndex.current++ % unresolved.length];
@@ -1016,55 +1045,6 @@ function ActiveLiveApp({
     setShowForm,
     setDraft,
     setDraftAvailable,
-  ]);
-
-  useEffect(() => {
-    if (!stopRequested || !record || !fresh) return;
-    const generation = lifecycle.current;
-    const id = record.stopCommandId;
-    const known = stopStatuses.current.get(id);
-    if (known?.status === 'completed' || known?.status === 'failed' || known?.status === 'rejected')
-      return;
-    if (record.stage === 'finished' && record.outcome === 'interrupted')
-      setStopMessage(stopPendingMessage(record));
-    const lookupKey = commandLookupKey(hostRunId, backendRunId, databaseId, id);
-    if (!beginCall('stopLookup', lookupKey, 1)) return;
-    void service
-      .command(id)
-      .then(
-        (status) => {
-          if (
-            lifecycle.current !== generation ||
-            status.commandId !== id ||
-            currentTest.current !== record.testId
-          )
-            return;
-          const merged = mergeStatus(stopStatuses.current.get(id) ?? null, status);
-          stopStatuses.current.set(id, merged);
-          updateTrackedStatus(id, record.testId, merged);
-          if (terminalStatus(merged)) setCommandMessage(id, '', stopNoticeKey(id, record.testId));
-          if (merged.status === 'completed') setStopMessage('Остановка подтверждена ядром.');
-          else if (merged.status === 'failed' || merged.status === 'rejected')
-            setStopMessage(
-              'Остановка не выполнена или отклонена. Безопасное давление не подтверждено.',
-            );
-        },
-        () => {},
-      )
-      .finally(() => {
-        endCall('stopLookup', lookupKey);
-      });
-  }, [
-    backendRunId,
-    databaseId,
-    hostRunId,
-    stopRequested,
-    record,
-    fresh,
-    setCommandMessage,
-    setStopMessage,
-    service,
-    updateTrackedStatus,
   ]);
 
   async function submit(
@@ -1232,13 +1212,18 @@ function ActiveLiveApp({
       return;
     }
     setStopRequestedFor(record.testId);
-    lastStopId.current = record.stopCommandId;
+    const stopKey = stopNoticeKey(record.stopCommandId, record.testId);
+    lastStopId.current = stopKey;
+    const command = { commandId: record.stopCommandId };
+    const originalJSON = JSON.stringify(command);
     if (
       !pendingRef.current.some(
         (item) =>
-          item.id === record.stopCommandId && item.kind === 'stop' && item.testId === record.testId,
-      ) &&
-      pendingRef.current.length < 65
+          item.id === record.stopCommandId &&
+          item.kind === 'stop' &&
+          item.testId === record.testId &&
+          item.originalJSON === originalJSON,
+      )
     ) {
       const values: Pending[] = [
         ...pendingRef.current,
@@ -1248,42 +1233,72 @@ function ActiveLiveApp({
           testId: record.testId,
           status: null,
           retired: false,
-          receiptRequired: false,
+          receiptRequired: true,
           legacyUnverifiable: false,
           legacyReviewed: false,
-          originalJSON: null,
+          originalJSON,
           actionId: null,
         },
       ];
-      savePending(values, true);
+      if (values.length <= 65) savePending(values, true);
+      else if (values.length === 66) {
+        memory.volatile = values;
+        pendingRef.current = values;
+        setPending(values);
+        setVolatileStopTracking(true);
+      } else {
+        setStorageMessage(
+          'Не удалось сохранить попытку остановки: список наблюдений заполнен. Проверьте историю испытания.',
+        );
+      }
     }
     const generation = lifecycle.current;
     setStopMessage('Запрошена остановка. Ожидаем подтверждения ядра.');
     try {
-      const result = await service.stopTest(record.testId, { commandId: record.stopCommandId });
-      if (lifecycle.current !== generation || currentTest.current !== record.testId) return;
-      if (result.commandId !== record.stopCommandId) {
-        setStopMessage('Исход остановки неизвестен; безопасное давление не подтверждено.');
+      const result = await service.stopTest(record.testId, command);
+      if (lifecycle.current !== generation) return;
+      if (!confirmedCommandStatus(result, record.stopCommandId, record.testId)) {
+        if (
+          currentTest.current === record.testId &&
+          !terminalStatus(stopStatuses.current.get(stopKey) ?? null)
+        )
+          setStopMessage('Исход остановки неизвестен; безопасное давление не подтверждено.');
         return;
       }
-      const merged = mergeStatus(stopStatuses.current.get(record.stopCommandId) ?? null, result);
-      stopStatuses.current.set(record.stopCommandId, merged);
+      const merged = mergeStatus(stopStatuses.current.get(stopKey) ?? null, result);
+      stopStatuses.current.set(stopKey, merged);
       if (terminalStatus(merged))
         setCommandMessage(
           record.stopCommandId,
           '',
           stopNoticeKey(record.stopCommandId, record.testId),
         );
-      updateTrackedStatus(record.stopCommandId, record.testId, merged);
-      setStopMessage(
-        merged.status === 'completed'
-          ? 'Остановка подтверждена ядром.'
-          : merged.status === 'rejected' || merged.status === 'failed'
-            ? `Остановка не выполнена или отклонена${merged.reason ? `: ${merged.reason}` : '.'} Безопасное давление не подтверждено.`
-            : stopPendingMessage(currentRecord.current),
-      );
-    } catch {
-      const known = stopStatuses.current.get(record.stopCommandId);
+      updateTrackedStatus(record.stopCommandId, record.testId, originalJSON, merged);
+      if (currentTest.current === record.testId)
+        setStopMessage(
+          merged.status === 'completed'
+            ? 'Остановка подтверждена ядром.'
+            : merged.status === 'rejected' || merged.status === 'failed'
+              ? `Остановка не выполнена или отклонена${merged.reason ? `: ${merged.reason}` : '.'} Безопасное давление не подтверждено.`
+              : stopPendingMessage(currentRecord.current),
+        );
+    } catch (error) {
+      const known = stopStatuses.current.get(stopKey);
+      if (lifecycle.current === generation && error instanceof CommandConflictError) {
+        const attempt = pendingRef.current.find(
+          (item) =>
+            item.kind === 'stop' &&
+            item.id === record.stopCommandId &&
+            item.testId === record.testId &&
+            item.originalJSON === originalJSON,
+        );
+        if (attempt) forget(attempt);
+        setCommandMessage(
+          record.stopCommandId,
+          'Запрос остановки отклонён: идентификатор принадлежит другой команде.',
+          stopKey,
+        );
+      }
       if (
         lifecycle.current === generation &&
         currentTest.current === record.testId &&
