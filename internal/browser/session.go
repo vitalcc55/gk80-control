@@ -32,6 +32,7 @@ type browserSession struct {
 	timer     *time.Timer
 	done      chan struct{}
 	active    map[*requestSlot]struct{}
+	writes    map[*responseWrite]struct{}
 }
 
 type requestClass uint8
@@ -45,6 +46,22 @@ const (
 type requestSlot struct {
 	cancel context.CancelFunc
 	class  requestClass
+}
+
+type requestSlotKey struct{}
+type responseWrite struct{ done chan struct{} }
+
+// actionAllowed is the admission point for an already authenticated operation.
+// An operation admitted before revocation can still have an unknown outcome.
+func (s *browserSession) actionAllowed(ctx context.Context) bool {
+	slot, ok := ctx.Value(requestSlotKey{}).(*requestSlot)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !ok || ctx.Err() != nil || s.cookie == "" || !time.Now().Before(s.deadline) {
+		return false
+	}
+	_, ok = s.active[slot]
+	return ok
 }
 
 func randomToken() (string, error) {
@@ -99,7 +116,7 @@ func (s *browserSession) admitClass(r *http.Request, class requestClass) (contex
 	slot := &requestSlot{cancel: cancel, class: class}
 	s.active[slot] = struct{}{}
 	s.mu.Unlock()
-	return ctx, func() {
+	return context.WithValue(ctx, requestSlotKey{}, slot), func() {
 		cancel()
 		s.mu.Lock()
 		delete(s.active, slot)
@@ -133,6 +150,7 @@ func (s *browserSession) pair(code string) (*http.Cookie, string, error) {
 	s.cookie, s.proof = cookie, proof
 	s.deadline = time.Now().Add(s.validFor)
 	s.active = make(map[*requestSlot]struct{})
+	s.writes = make(map[*responseWrite]struct{})
 	s.done = make(chan struct{})
 	s.timer = time.AfterFunc(s.validFor, s.revoke)
 	return &http.Cookie{Name: sessionCookie, Value: cookie, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode}, proof, nil
@@ -140,7 +158,6 @@ func (s *browserSession) pair(code string) (*http.Cookie, string, error) {
 
 func (s *browserSession) revoke() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.code, s.cookie, s.proof = "", "", ""
 	if s.timer != nil {
 		s.timer.Stop()
@@ -153,6 +170,14 @@ func (s *browserSession) revoke() {
 	if s.done != nil {
 		close(s.done)
 		s.done = nil
+	}
+	waits := make([]<-chan struct{}, 0, len(s.writes))
+	for write := range s.writes {
+		waits = append(waits, write.done)
+	}
+	s.mu.Unlock()
+	for _, done := range waits {
+		<-done
 	}
 }
 
