@@ -70,7 +70,11 @@ type sessionClient interface {
 type nativeSessionClient struct{ *transport.Client }
 
 func (c nativeSessionClient) openStream(ctx context.Context, lease, runID uuid.UUID) (sessionStream, contract.Snapshot, error) {
-	return c.OpenStream(ctx, lease, runID)
+	stream, snapshot, err := c.OpenStream(ctx, lease, runID)
+	if stream == nil {
+		return nil, snapshot, err
+	}
+	return stream, snapshot, err
 }
 
 // demoSession keeps all proof of UI ownership inside the host.

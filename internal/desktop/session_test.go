@@ -46,6 +46,22 @@ type testSessionClient struct {
 	createRaw  func(context.Context, uuid.UUID, uuid.UUID, []byte) (contract.CommandStatus, error)
 }
 
+func TestNativeSessionClientReturnsNilStreamWhenOpenFails(t *testing.T) {
+	client, err := transport.NewClient("127.0.0.1:1", [32]byte{1}, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	stream, _, err := (nativeSessionClient{Client: client}).openStream(ctx, uuid.New(), uuid.New())
+	if !errors.Is(err, transport.ErrStreamClosed) {
+		t.Fatalf("open error = %v, want stream closed", err)
+	}
+	if stream != nil {
+		t.Fatal("failed open returned a non-nil stream interface")
+	}
+}
+
 type lostOwnerCreate struct {
 	sessionClient
 	creates *atomic.Int32
@@ -713,6 +729,10 @@ func TestDemoSessionDoesNotCutOffAdmittedLeaseAtAdmissionDeadline(t *testing.T) 
 
 func TestDemoSessionRecoversAfterStreamLoss(t *testing.T) {
 	run := uuid.New()
+	native, err := transport.NewClient("127.0.0.1:1", [32]byte{1}, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
 	first := &testSessionStream{run: run, events: make(chan struct{}, 1), done: make(chan struct{})}
 	second := &testSessionStream{run: run, events: make(chan struct{}, 1), done: make(chan struct{})}
 	client := &testSessionClient{lease: uuid.New(), run: run, stream: first}
@@ -722,6 +742,11 @@ func TestDemoSessionRecoversAfterStreamLoss(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		opens++
+		if opens == 2 {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			return (nativeSessionClient{Client: native}).openStream(ctx, uuid.New(), run)
+		}
 		stream := first
 		if opens > 1 {
 			stream = second
@@ -743,7 +768,7 @@ func TestDemoSessionRecoversAfterStreamLoss(t *testing.T) {
 	waitSession(t, func() bool {
 		session.mu.Lock()
 		defer session.mu.Unlock()
-		return session.snapshot != nil && session.snapshot.Measurements[0].Sequence == 2
+		return session.snapshot != nil && session.snapshot.Measurements[0].Sequence == 3
 	})
 	waitSession(t, func() bool { return session.connectionState().Status == contract.Live })
 }
