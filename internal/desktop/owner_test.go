@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -151,6 +152,102 @@ func TestWaitConnectionObservesChangesWithoutEventAcknowledgement(t *testing.T) 
 		}
 	case <-time.After(time.Second):
 		t.Fatal("connection change was not observed")
+	}
+}
+
+func TestWaitConnectionRespectsCallerDeadline(t *testing.T) {
+	owner := newTestOwner(nil)
+	defer owner.cancel()
+	session := newDemoSession(owner.ctx, &testSessionClient{}, uuid.New(), uuid.New())
+	defer session.close()
+	owner.session = session
+	owner.process = &fakeCore{done: make(chan struct{})}
+	owner.status.Status = contract.DesktopStatusStatusReady
+	first := session.connectionState()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	_, err := owner.WaitConnection(ctx, first.Revision, 0)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("caller deadline returned notice instead of cancellation: %v", err)
+	}
+}
+
+func TestWaitConnectionRespectsAlreadyCancelledCaller(t *testing.T) {
+	owner := newTestOwner(nil)
+	defer owner.cancel()
+	session := newDemoSession(owner.ctx, &testSessionClient{}, uuid.New(), uuid.New())
+	defer session.close()
+	owner.session = session
+	owner.process = &fakeCore{done: make(chan struct{})}
+	owner.status.Status = contract.DesktopStatusStatusReady
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := owner.WaitConnection(ctx, 0, 0)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled caller returned notice: %v", err)
+	}
+}
+
+type cancellationAfterView struct {
+	context.Context
+	calls   atomic.Int32
+	checked chan struct{}
+	proceed chan struct{}
+}
+
+func (c *cancellationAfterView) Err() error {
+	err := c.Context.Err()
+	if c.calls.Add(1) == 2 {
+		close(c.checked)
+		<-c.proceed
+	}
+	return err
+}
+
+func TestWaitConnectionRejectsCancellationWhilePreparingNotice(t *testing.T) {
+	owner := newTestOwner(nil)
+	defer owner.cancel()
+	session := newDemoSession(owner.ctx, &testSessionClient{}, uuid.New(), uuid.New())
+	defer session.close()
+	owner.session = session
+	owner.process = &fakeCore{done: make(chan struct{})}
+	owner.status.Status = contract.DesktopStatusStatusReady
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx := &cancellationAfterView{Context: parent, checked: make(chan struct{}), proceed: make(chan struct{})}
+	result := make(chan error, 1)
+	owner.eventMu.Lock()
+	go func() {
+		_, err := owner.WaitConnection(ctx, 0, 0)
+		result <- err
+	}()
+	select {
+	case <-ctx.checked:
+	case <-time.After(time.Second):
+		owner.eventMu.Unlock()
+		close(ctx.proceed)
+		t.Fatal("caller check not reached")
+	}
+	cancel()
+	close(ctx.proceed)
+	owner.eventMu.Unlock()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled caller received a notice: %v", err)
+	}
+}
+
+func TestWaitConnectionReturnsNoticeAfterItsOwnTimeout(t *testing.T) {
+	owner := newTestOwner(nil)
+	defer owner.cancel()
+	session := newDemoSession(owner.ctx, &testSessionClient{}, uuid.New(), uuid.New())
+	defer session.close()
+	owner.session = session
+	owner.process = &fakeCore{done: make(chan struct{})}
+	owner.status.Status = contract.DesktopStatusStatusReady
+	first := session.connectionState()
+	notice, err := owner.WaitConnection(context.Background(), first.Revision, 0)
+	if err != nil || notice.Connection.Revision != first.Revision {
+		t.Fatalf("own timeout did not return current notice: %+v %v", notice, err)
 	}
 }
 

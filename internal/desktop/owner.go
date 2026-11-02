@@ -204,31 +204,51 @@ func (o *Owner) WaitConnection(ctx context.Context, after, afterSequence int64) 
 	if after < 0 || afterSequence < 0 {
 		return contract.ConnectionNotice{}, errSessionUnavailable
 	}
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	waitCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	for {
+		if err := ctx.Err(); err != nil {
+			return contract.ConnectionNotice{}, err
+		}
 		o.watchMu.Lock()
 		changes := o.watchChanges
 		o.watchMu.Unlock()
-		view, err := o.SessionView(ctx)
+		view, err := o.SessionView(waitCtx)
+		if callerErr := ctx.Err(); callerErr != nil {
+			return contract.ConnectionNotice{}, callerErr
+		}
 		if err != nil {
 			return contract.ConnectionNotice{}, err
 		}
 		state := view.Connection
 		if state.Revision > after {
-			return o.connectionNotice(view, afterSequence), nil
+			notice := o.connectionNotice(view, afterSequence)
+			if err := ctx.Err(); err != nil {
+				return contract.ConnectionNotice{}, err
+			}
+			return notice, nil
 		}
 		select {
 		case <-changes:
-		case <-ctx.Done():
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				view, err := o.SessionView(context.Background())
+		case <-waitCtx.Done():
+			if err := ctx.Err(); err != nil {
+				return contract.ConnectionNotice{}, err
+			}
+			if errors.Is(waitCtx.Err(), context.DeadlineExceeded) {
+				view, err := o.SessionView(ctx)
+				if callerErr := ctx.Err(); callerErr != nil {
+					return contract.ConnectionNotice{}, callerErr
+				}
 				if err != nil {
 					return contract.ConnectionNotice{}, err
 				}
-				return o.connectionNotice(view, afterSequence), nil
+				notice := o.connectionNotice(view, afterSequence)
+				if err := ctx.Err(); err != nil {
+					return contract.ConnectionNotice{}, err
+				}
+				return notice, nil
 			}
-			return contract.ConnectionNotice{}, ctx.Err()
+			return contract.ConnectionNotice{}, waitCtx.Err()
 		case <-o.ctx.Done():
 			return contract.ConnectionNotice{}, errSessionUnavailable
 		}
