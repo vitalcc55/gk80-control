@@ -151,6 +151,23 @@ func TestEventsHaveSharedIDsAndFrameworkNeverWritesRawData(t *testing.T) {
 	}
 }
 
+func TestBrowserDiagnosticsHasSeparateFileAndFiltersSecrets(t *testing.T) {
+	dir, id := t.TempDir(), uuid.New()
+	logger, err := Open(dir, RoleBrowser, id, io.Discard, Config{AppVersion: "0.1.0", ProfileID: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.Application(ComponentBrowser).Info(string(ProcessStarted), "secret", "secret-marker")
+	closeLogger(t, logger)
+	body, err := os.ReadFile(filepath.Join(dir, "browser-"+id.String()+".jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), string(ProcessStarted)) || strings.Contains(string(body), "secret-marker") {
+		t.Fatal("browser diagnostics missing or leaked sensitive data")
+	}
+}
+
 func TestBlockedWriterDoesNotBlockCallerAndReportsLoss(t *testing.T) {
 	writer := &blockedWriter{started: make(chan struct{}), release: make(chan struct{})}
 	logger := newLogger(RoleCore, uuid.New(), writer, io.Discard, Config{QueueSize: 1, MaxBytes: 4096})

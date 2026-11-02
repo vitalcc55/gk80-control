@@ -21,6 +21,7 @@ type Role string
 const (
 	RoleDesktop Role = "desktop"
 	RoleCore    Role = "core"
+	RoleBrowser Role = "browser"
 )
 
 type Event string
@@ -76,6 +77,7 @@ type Component string
 const (
 	ComponentCore      Component = "core"
 	ComponentDesktop   Component = "desktop"
+	ComponentBrowser   Component = "browser"
 	ComponentTransport Component = "transport"
 	ComponentWails     Component = "wails"
 	ComponentLibrary   Component = "library"
@@ -128,7 +130,7 @@ type Logger struct {
 // Open creates a distinct file for this process run. On a file error it
 // returns a degraded logger as well as the error so callers can keep running.
 func Open(dir string, role Role, runID uuid.UUID, fallback io.Writer, config Config) (*Logger, error) {
-	if (role != RoleCore && role != RoleDesktop) || runID == uuid.Nil || !validLabel(config.AppVersion) || !validLabel(config.ProfileID) {
+	if (role != RoleCore && role != RoleDesktop && role != RoleBrowser) || runID == uuid.Nil || !validLabel(config.AppVersion) || !validLabel(config.ProfileID) {
 		return nil, errors.New("invalid diagnostic process identity")
 	}
 	var writer io.WriteCloser
@@ -371,7 +373,7 @@ func (h applicationHandler) Handle(_ context.Context, record slog.Record) error 
 	if record.Level > spec.level {
 		spec.level = record.Level
 	}
-	if h.grouped || (h.component != ComponentCore && h.component != ComponentDesktop && h.component != ComponentTransport) {
+	if h.grouped || (h.component != ComponentCore && h.component != ComponentDesktop && h.component != ComponentBrowser && h.component != ComponentTransport) {
 		h.logger.drop(spec.level)
 		return nil
 	}
