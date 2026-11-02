@@ -284,6 +284,66 @@ it.each([false, true])(
   },
 );
 
+it('restores the browser profile pending attempt from shared storage without repeating it', async () => {
+  const browserDatabase = '77777777-7777-4777-8777-777777777777';
+  const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const key = `gk80.demo.pending-command.v1:${browserDatabase}`;
+  const attempt = savedAttempt(id, 'create', null, false);
+  localStorage.setItem(key, JSON.stringify([attempt]));
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 0,
+        lastEventSequence: 0,
+        activeTest: null,
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.list.mockResolvedValue({ items: [], nextAfter: null });
+  api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
+  try {
+    render(
+      <LiveApp
+        session={bridge}
+        hostRunId={host}
+        backendRunId={backend}
+        databaseId={browserDatabase}
+        pendingStorage={localStorage}
+      />,
+    );
+    await waitFor(() =>
+      expect(api.exact).toHaveBeenCalledWith(
+        browserDatabase,
+        'create',
+        '',
+        '',
+        id,
+        attempt.originalJSON,
+      ),
+    );
+    expect(api.create).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem(key)).toBeNull();
+  } finally {
+    localStorage.removeItem(key);
+  }
+});
+
 it('keeps Stop available when the legacy command list cannot be read', async () => {
   const originalGet = Storage.prototype.getItem;
   const getItem = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (
@@ -634,6 +694,144 @@ it('preserves the live form when diagnostics degrade', async () => {
   expect(await screen.findByText('Журнал диагностики недоступен или неполон.')).toBeTruthy();
   expect(screen.getByLabelText('Обозначение или наименование клапана')).toBe(input);
   expect((input as HTMLInputElement).value).toBe('Клапан');
+});
+
+it('retains the browser form when a replacement bridge cannot confirm status', async () => {
+  const heartbeat = vi.fn(async () => {});
+  const ready: DesktopStatus = {
+    hostRunId: host,
+    revision: 1,
+    connectionRevision: 1,
+    status: DesktopStatusStatus.DesktopStatusStatusReady,
+    handshake: { apiVersion: 'v1', backendRunId: backend, databaseId: database, demo: true },
+    diagnosticsDegraded: false,
+  };
+  const desktop: DesktopBridge = {
+    status: async () => ready,
+    verify: async () => ready,
+    subscribe: () => () => {},
+  };
+  const session: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: heartbeat,
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 0,
+        lastEventSequence: 0,
+        activeTest: null,
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.list.mockResolvedValue({ items: [], nextAfter: null });
+  const view = render(<DesktopApp bridge={desktop} session={session} retainLiveOnError />);
+  const user = userEvent.setup();
+  const create = await screen.findByRole('button', { name: 'Новое испытание' });
+  await waitFor(() => expect(create.hasAttribute('disabled')).toBe(false));
+  await user.click(create);
+  const input = screen.getByLabelText('Обозначение или наименование клапана');
+  await user.type(input, 'Клапан');
+  const disconnected: DesktopBridge = {
+    ...desktop,
+    status: async () => {
+      throw new Error('disconnected');
+    },
+  };
+  view.rerender(<DesktopApp bridge={disconnected} session={session} retainLiveOnError />);
+  expect(await screen.findByText('Не удалось подтвердить состояние приложения.')).toBeTruthy();
+  expect(screen.queryByLabelText('Обозначение или наименование клапана')).toBeNull();
+  const sent = heartbeat.mock.calls.length;
+  await new Promise((resolve) => setTimeout(resolve, 2200));
+  expect(heartbeat).toHaveBeenCalledTimes(sent);
+  view.rerender(<DesktopApp bridge={desktop} session={session} retainLiveOnError />);
+  const restored = await screen.findByLabelText('Обозначение или наименование клапана');
+  expect((restored as HTMLInputElement).value).toBe('Клапан');
+});
+
+it('does not open a browser live screen for an unconfirmed demo handshake', async () => {
+  const invalid: DesktopStatus = {
+    hostRunId: host,
+    revision: 1,
+    connectionRevision: 1,
+    status: DesktopStatusStatus.DesktopStatusStatusReady,
+    handshake: { apiVersion: 'v1', backendRunId: backend, databaseId: database, demo: false },
+    diagnosticsDegraded: false,
+  };
+  const desktop: DesktopBridge = {
+    status: async () => invalid,
+    verify: async () => invalid,
+    subscribe: () => () => {},
+  };
+  const session: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => {
+      throw new Error('unexpected');
+    },
+  };
+  render(<DesktopApp bridge={desktop} session={session} retainLiveOnError />);
+  expect(await screen.findByText('Не удалось получить состояние приложения')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Новое испытание' })).toBeNull();
+});
+
+it('accepts a verified browser bridge when the initial status read fails', async () => {
+  const ready: DesktopStatus = {
+    hostRunId: host,
+    revision: 1,
+    connectionRevision: 1,
+    status: DesktopStatusStatus.DesktopStatusStatusReady,
+    handshake: { apiVersion: 'v1', backendRunId: backend, databaseId: database, demo: true },
+    diagnosticsDegraded: false,
+  };
+  const desktop: DesktopBridge = {
+    status: async () => {
+      throw new Error('unavailable');
+    },
+    verify: async () => ready,
+    subscribe: () => () => {},
+  };
+  const session: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 0,
+        lastEventSequence: 0,
+        activeTest: null,
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.list.mockResolvedValue({ items: [], nextAfter: null });
+  render(<DesktopApp bridge={desktop} session={session} retainLiveOnError />);
+  await userEvent.setup().click(await screen.findByRole('button', { name: 'Повторить связь' }));
+  expect(await screen.findByRole('button', { name: 'Новое испытание' })).toBeTruthy();
 });
 
 it('keeps stop available when diagnostics degrade during a live test', async () => {

@@ -7,8 +7,8 @@ export default defineConfig(({ mode }) => ({
   plugins: [react(), tailwindcss()],
   resolve: { alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) } },
   build:
-    mode === 'desktop'
-      ? { rollupOptions: { input: fileURLToPath(new URL('./desktop.html', import.meta.url)) } }
+    mode === 'desktop' || mode === 'browser'
+      ? { rollupOptions: { input: fileURLToPath(new URL(`./${mode}.html`, import.meta.url)) } }
       : {},
   test: {
     environment: 'jsdom',

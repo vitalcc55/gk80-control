@@ -78,8 +78,8 @@ function stopLookupNoticeKey(id: string, testId: string | null): string {
 function stopAttemptNoticeKey(id: string, testId: string | null): string {
   return JSON.stringify([id, 'stop-attempt', testId]);
 }
-function hasUnstoredStop(values: Pending[], storageKey: string): boolean {
-  const stored = readStoredPending(storageKey);
+function hasUnstoredStop(values: Pending[], storageKey: string, storage?: Storage): boolean {
+  const stored = readStoredPending(storageKey, storage);
   return values.some(
     (item) => item.kind === 'stop' && !stored?.some((current) => samePending(current, item)),
   );
@@ -422,9 +422,9 @@ function parsePending(raw: unknown, scoped = true): Pending | null {
     actionId,
   };
 }
-function readStoredPending(storageKey: string): Pending[] | null {
+function readStoredPending(storageKey: string, storage?: Storage): Pending[] | null {
   try {
-    const raw: unknown = JSON.parse(sessionStorage.getItem(storageKey) ?? '[]');
+    const raw: unknown = JSON.parse((storage ?? sessionStorage).getItem(storageKey) ?? '[]');
     if (!Array.isArray(raw) || raw.length > 65) return null;
     const result: Pending[] = [];
     for (const item of raw) {
@@ -437,9 +437,13 @@ function readStoredPending(storageKey: string): Pending[] | null {
     return null;
   }
 }
-function restorePending(storageKey: string, memory: PendingMemory): Pending[] | null {
+function restorePending(
+  storageKey: string,
+  memory: PendingMemory,
+  storage?: Storage,
+): Pending[] | null {
   if (memory.volatile) return memory.storageUnknown ? null : restoredMemory(memory.volatile);
-  const stored = readStoredPending(storageKey);
+  const stored = readStoredPending(storageKey, storage);
   if (stored === null) memory.storageUnknown = true;
   return memory.storageUnknown ? null : stored;
 }
@@ -478,6 +482,8 @@ type LiveAppProps = {
   backendRunId: string;
   databaseId: string;
   diagnosticsDegraded?: boolean;
+  pendingStorage?: Storage;
+  suspended?: boolean;
 };
 
 export function LiveApp(props: LiveAppProps) {
@@ -485,6 +491,7 @@ export function LiveApp(props: LiveAppProps) {
   const [draftAvailable, setDraftAvailable] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  if (props.suspended) return null;
   return (
     <ActiveLiveApp
       key={`${props.hostRunId}:${props.backendRunId}:${props.databaseId}`}
@@ -508,6 +515,7 @@ function ActiveLiveApp({
   backendRunId,
   databaseId,
   diagnosticsDegraded = false,
+  pendingStorage,
   draft,
   setDraft,
   draftAvailable,
@@ -535,7 +543,7 @@ function ActiveLiveApp({
   const [readinessConfirmed, setReadinessConfirmed] = useState(false);
   const storageKey = `gk80.demo.pending-command.v1:${databaseId}`;
   const [memory] = useState(() => memoryFor(databaseId));
-  const [restored] = useState(() => restorePending(storageKey, memory));
+  const [restored] = useState(() => restorePending(storageKey, memory, pendingStorage));
   const [legacy, setLegacy] = useState(readLegacyPending);
   const [legacyReviewed, setLegacyReviewed] = useState(false);
   const legacyBlocks =
@@ -597,7 +605,7 @@ function ActiveLiveApp({
     setStopMessageValue(value);
   }, []);
   const [volatileStopTracking, setVolatileStopTracking] = useState(() =>
-    memory.volatile ? hasUnstoredStop(memory.volatile, storageKey) : false,
+    memory.volatile ? hasUnstoredStop(memory.volatile, storageKey, pendingStorage) : false,
   );
   const lastStopId = useRef<string | null>(null);
   const [gapVersion, setGapVersion] = useState(0);
@@ -706,7 +714,7 @@ function ActiveLiveApp({
     (values: Pending[], allowVolatile = false): boolean => {
       try {
         if (memory.storageUnknown) {
-          const stored = readStoredPending(storageKey);
+          const stored = readStoredPending(storageKey, pendingStorage);
           if (!stored) throw new Error('pending storage not restored');
           const merged = new Map(stored.map((item) => [pendingKey(item), item]));
           for (const item of values) {
@@ -716,7 +724,7 @@ function ActiveLiveApp({
           if (values.length > 65) throw new Error('pending list full');
         }
         if (values.length > 65) throw new Error('pending list full');
-        sessionStorage.setItem(
+        (pendingStorage ?? sessionStorage).setItem(
           storageKey,
           JSON.stringify(
             values.map(
@@ -754,7 +762,7 @@ function ActiveLiveApp({
           memory.volatile = values;
           pendingRef.current = values;
           setPending(values);
-          setVolatileStopTracking(hasUnstoredStop(values, storageKey));
+          setVolatileStopTracking(hasUnstoredStop(values, storageKey, pendingStorage));
         }
         setStorageMessage(
           'Не удалось обновить список команд в интерфейсе; проверьте их состояние перед продолжением.',
@@ -762,7 +770,7 @@ function ActiveLiveApp({
         return false;
       }
     },
-    [memory, storageKey],
+    [memory, pendingStorage, storageKey],
   );
   const forget = useCallback(
     (item: Pending) => {

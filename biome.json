@@ -8,6 +8,7 @@
       "!!src/generated",
       "!!dist",
       "!!dist-desktop",
+      "!!bin",
       "!!node_modules",
       "!!.tmp",
       "!!.cache",

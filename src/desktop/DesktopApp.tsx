@@ -42,14 +42,19 @@ export function DesktopApp({
   bridge,
   session,
   service,
+  pendingStorage,
+  retainLiveOnError = false,
 }: {
   bridge: DesktopBridge;
   session?: SessionBridge;
   service?: DemoService;
+  pendingStorage?: Storage;
+  retainLiveOnError?: boolean;
 }) {
   const current = useRef<ViewState>({ status: null, bridgeError: false });
   const [view, setView] = useState<ViewState>(current.current);
   const [pending, setPending] = useState(false);
+  const [verifiedBridge, setVerifiedBridge] = useState<DesktopBridge | null>(null);
   const generation = useRef(0);
 
   const apply = useCallback((next: DesktopStatus, baseline?: ViewState) => {
@@ -62,6 +67,12 @@ export function DesktopApp({
         (next.revision === old.revision && baseline !== previous))
     )
       return;
+    if (old && confirmed(old) && !confirmed(next)) {
+      const updated = { ...previous, bridgeError: true };
+      current.current = updated;
+      setView(updated);
+      return;
+    }
     const connectionChanged =
       old?.hostRunId !== next.hostRunId || old?.connectionRevision !== next.connectionRevision;
     const bridgeError =
@@ -87,9 +98,13 @@ export function DesktopApp({
   useEffect(() => {
     generation.current += 1;
     let subscribed = true;
+    const accept = (next: DesktopStatus, baseline?: ViewState) => {
+      apply(next, baseline);
+      if (current.current.status === next && confirmed(next)) setVerifiedBridge(bridge);
+    };
     const unsubscribe = bridge.subscribe(
       (next, polled) => {
-        if (subscribed) apply(next, polled ? current.current : undefined);
+        if (subscribed) accept(next, polled ? current.current : undefined);
       },
       () => {
         if (subscribed && current.current.status?.status !== 'ready') fail(current.current);
@@ -98,7 +113,7 @@ export function DesktopApp({
     const baseline = current.current;
     void bridge.status().then(
       (next) => {
-        if (subscribed) apply(next, baseline);
+        if (subscribed) accept(next, baseline);
       },
       () => {
         if (subscribed) fail(baseline);
@@ -117,7 +132,10 @@ export function DesktopApp({
     setPending(true);
     try {
       const result = await bridge.verify();
-      if (generation.current === currentGeneration) apply(result, baseline);
+      if (generation.current === currentGeneration) {
+        apply(result, baseline);
+        if (current.current.status === result && confirmed(result)) setVerifiedBridge(bridge);
+      }
     } catch {
       if (generation.current === currentGeneration) fail(baseline);
     } finally {
@@ -125,22 +143,37 @@ export function DesktopApp({
     }
   }
 
-  const { status, bridgeError } = view;
+  const { status } = view;
+  const bridgeError = view.bridgeError || (retainLiveOnError && verifiedBridge !== bridge);
   const label = bridgeError
     ? 'Не удалось получить состояние приложения'
     : status
       ? labels[status.status]
       : 'Запуск ядра';
-  if (!bridgeError && status?.status === 'ready' && status.handshake && session && service) {
+  if (
+    (!bridgeError || retainLiveOnError) &&
+    status?.status === 'ready' &&
+    confirmed(status) &&
+    status.handshake &&
+    session &&
+    service
+  ) {
     return (
-      <LiveApp
-        session={session}
-        service={service}
-        hostRunId={status.hostRunId}
-        backendRunId={status.handshake.backendRunId}
-        databaseId={status.handshake.databaseId}
-        diagnosticsDegraded={status.diagnosticsDegraded}
-      />
+      <>
+        {bridgeError && <p role="alert">Не удалось подтвердить состояние приложения.</p>}
+        <div hidden={bridgeError}>
+          <LiveApp
+            session={session}
+            service={service}
+            hostRunId={status.hostRunId}
+            backendRunId={status.handshake.backendRunId}
+            databaseId={status.handshake.databaseId}
+            diagnosticsDegraded={status.diagnosticsDegraded}
+            suspended={bridgeError}
+            {...(pendingStorage ? { pendingStorage } : {})}
+          />
+        </div>
+      </>
     );
   }
   return (

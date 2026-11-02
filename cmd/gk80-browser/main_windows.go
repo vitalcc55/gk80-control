@@ -39,6 +39,10 @@ var errHostRun = errors.New("browser host stopped unexpectedly")
 func main() {
 	if err := run(); err != nil {
 		report(os.Stderr, err)
+		// The listener is acquired before an Owner or core exists.
+		if err == errPort {
+			os.Exit(2)
+		}
 		os.Exit(1)
 	}
 }
