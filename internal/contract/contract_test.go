@@ -65,6 +65,30 @@ func TestCreateLookupAcceptsHistoricalValuesButRequiresFullStructure(t *testing.
 	validateJSON(t, lookup, value, false)
 }
 
+func TestActionLookupSchemasAcceptHistoricalValuesButRequireStructure(t *testing.T) {
+	start := map[string]any{"commandId": uuid.NewString(), "expectedRevision": -1, "valveClosed": false, "connectionConfirmed": true}
+	validateJSON(t, schemaFor(t, "StartTestCommand"), start, false)
+	startLookup := schemaFor(t, "StartTestLookupInput")
+	validateJSON(t, startLookup, start, true)
+	start["unexpected"] = true
+	validateJSON(t, startLookup, start, false)
+	delete(start, "unexpected")
+	delete(start, "expectedRevision")
+	validateJSON(t, startLookup, start, false)
+	start["expectedRevision"] = -1
+	delete(start, "valveClosed")
+	validateJSON(t, startLookup, start, false)
+	confirm := map[string]any{"commandId": uuid.NewString(), "expectedRevision": -1}
+	validateJSON(t, schemaFor(t, "ConfirmActionCommand"), confirm, false)
+	confirmLookup := schemaFor(t, "ConfirmActionLookupInput")
+	validateJSON(t, confirmLookup, confirm, true)
+	delete(confirm, "expectedRevision")
+	validateJSON(t, confirmLookup, confirm, false)
+	confirm["expectedRevision"] = -1
+	confirm["unexpected"] = true
+	validateJSON(t, confirmLookup, confirm, false)
+}
+
 func TestMeasurementContractPreservesNullAndRejectsInvalidData(t *testing.T) {
 	schema := schemaFor(t, "Measurement")
 	measurement := Measurement{

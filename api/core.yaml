@@ -23,8 +23,59 @@ paths:
         float64 или JavaScript number: такое преобразование может изменить идентичность.
         Размер исходного тела не должен превышать 8192 байта.
       parameters:
-        - name: X-GK80-Database-Id
-          in: header
+        - $ref: "#/components/parameters/LookupDatabaseId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTestLookupInput"
+      responses:
+        "200":
+          description: Совпавшее сохранённое состояние либо unknown, если запись пока не найдена.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandStatus"
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/commands/lookup/start/{testId}:
+    post:
+      operationId: lookupStartExact
+      description: >-
+        Сверяет исходное тело Start и testId без повторного действия. Отсутствие
+        записи означает unknown; тело не более 8192 байт передаётся без преобразования
+        чисел. Идентификатор базы должен совпадать с handshake.
+      parameters:
+        - $ref: "#/components/parameters/LookupDatabaseId"
+        - $ref: "#/components/parameters/LookupTestId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartTestLookupInput"
+      responses:
+        "200":
+          description: Совпавшее сохранённое состояние либо unknown, если запись пока не найдена.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandStatus"
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/commands/lookup/confirm/{testId}/{actionId}:
+    post:
+      operationId: lookupConfirmExact
+      description: >-
+        Сверяет исходное тело Confirm, testId и actionId без повторного действия.
+        Отсутствие записи означает unknown; тело не более 8192 байт передаётся без
+        преобразования чисел. Идентификатор базы должен совпадать с handshake.
+      parameters:
+        - $ref: "#/components/parameters/LookupDatabaseId"
+        - $ref: "#/components/parameters/LookupTestId"
+        - name: actionId
+          in: path
           required: true
           schema:
             type: string
@@ -35,7 +86,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/CreateTestLookupInput"
+              $ref: "#/components/schemas/ConfirmActionLookupInput"
       responses:
         "200":
           description: Совпавшее сохранённое состояние либо unknown, если запись пока не найдена.
@@ -335,6 +386,22 @@ components:
       in: header
       name: X-GK80-UI-Lease
   parameters:
+    LookupDatabaseId:
+      name: X-GK80-Database-Id
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+        not: { const: "00000000-0000-0000-0000-000000000000" }
+    LookupTestId:
+      name: testId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+        not: { const: "00000000-0000-0000-0000-000000000000" }
     TestId:
       name: testId
       in: path
@@ -479,6 +546,28 @@ components:
         expectedRevision: { type: integer, format: int64, minimum: 0 }
         parameters:
           $ref: "#/components/schemas/TestParameters"
+    StartTestLookupInput:
+      type: object
+      additionalProperties: false
+      required: [commandId, expectedRevision, valveClosed, connectionConfirmed]
+      properties:
+        commandId:
+          type: string
+          format: uuid
+          not: { const: "00000000-0000-0000-0000-000000000000" }
+        expectedRevision: { type: integer, format: int64 }
+        valveClosed: { type: boolean }
+        connectionConfirmed: { type: boolean }
+    ConfirmActionLookupInput:
+      type: object
+      additionalProperties: false
+      required: [commandId, expectedRevision]
+      properties:
+        commandId:
+          type: string
+          format: uuid
+          not: { const: "00000000-0000-0000-0000-000000000000" }
+        expectedRevision: { type: integer, format: int64 }
     StartTestCommand:
       type: object
       additionalProperties: false

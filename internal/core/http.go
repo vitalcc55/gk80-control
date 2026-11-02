@@ -24,9 +24,11 @@ type commandReader interface {
 	Command(context.Context, uuid.UUID) (contract.CommandStatus, error)
 }
 
-type exactCreateReader interface {
+type exactCommandReader interface {
 	DatabaseID() uuid.UUID
 	LookupCreateExact(context.Context, contract.CreateTestCommand, []byte) (contract.CommandStatus, error)
+	LookupStart(context.Context, uuid.UUID, contract.StartTestCommand) (contract.CommandStatus, error)
+	LookupConfirm(context.Context, uuid.UUID, uuid.UUID, contract.ConfirmActionCommand) (contract.CommandStatus, error)
 }
 
 type coreHTTP struct {
@@ -37,7 +39,7 @@ type coreHTTP struct {
 	feed           *eventFeed
 	engine         *demo.Engine
 	store          commandReader
-	exact          exactCreateReader
+	exact          exactCommandReader
 	history        historyReader
 	streams        *streamGroup
 	logger         *slog.Logger
@@ -103,7 +105,7 @@ func (h *coreHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/v1/events":
 		h.events(w, r)
 	case "/v1/commands/lookup/create":
-		h.lookupCreate(w, r)
+		h.lookupCommand(w, r, "create", uuid.Nil, uuid.Nil)
 	case "/v1/snapshot":
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", "GET")
@@ -149,7 +151,9 @@ func (h *coreHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed")
 		}
 	default:
-		if strings.HasPrefix(r.URL.Path, "/v1/commands/") {
+		if strings.HasPrefix(r.URL.Path, "/v1/commands/lookup/") {
+			h.lookupAction(w, r)
+		} else if strings.HasPrefix(r.URL.Path, "/v1/commands/") {
 			h.commandStatus(w, r)
 		} else if strings.HasPrefix(r.URL.Path, "/v1/tests/") {
 			if strings.HasSuffix(r.URL.Path, "/readiness") {

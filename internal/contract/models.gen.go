@@ -423,6 +423,12 @@ type ConfirmActionCommand struct {
 	ExpectedRevision int64              `json:"expectedRevision"`
 }
 
+// ConfirmActionLookupInput defines model for ConfirmActionLookupInput.
+type ConfirmActionLookupInput struct {
+	CommandId        openapi_types.UUID `json:"commandId"`
+	ExpectedRevision int64              `json:"expectedRevision"`
+}
+
 // ConnectionNotice defines model for ConnectionNotice.
 type ConnectionNotice struct {
 	Connection       ConnectionState `json:"connection"`
@@ -599,6 +605,14 @@ type StartTestCommand struct {
 	ValveClosed         bool               `json:"valveClosed"`
 }
 
+// StartTestLookupInput defines model for StartTestLookupInput.
+type StartTestLookupInput struct {
+	CommandId           openapi_types.UUID `json:"commandId"`
+	ConnectionConfirmed bool               `json:"connectionConfirmed"`
+	ExpectedRevision    int64              `json:"expectedRevision"`
+	ValveClosed         bool               `json:"valveClosed"`
+}
+
 // StopTestCommand defines model for StopTestCommand.
 type StopTestCommand struct {
 	CommandId openapi_types.UUID `json:"commandId"`
@@ -670,6 +684,12 @@ type UiLease struct {
 	LeaseId   openapi_types.UUID `json:"leaseId"`
 }
 
+// LookupDatabaseId defines model for LookupDatabaseId.
+type LookupDatabaseId = openapi_types.UUID
+
+// LookupTestId defines model for LookupTestId.
+type LookupTestId = openapi_types.UUID
+
 // TestId defines model for TestId.
 type TestId = openapi_types.UUID
 
@@ -679,9 +699,19 @@ type CommandResult = CommandStatus
 // Error defines model for Error.
 type Error = ApiError
 
+// LookupConfirmExactParams defines parameters for LookupConfirmExact.
+type LookupConfirmExactParams struct {
+	XGK80DatabaseId LookupDatabaseId `json:"X-GK80-Database-Id"`
+}
+
 // LookupCreateExactParams defines parameters for LookupCreateExact.
 type LookupCreateExactParams struct {
-	XGK80DatabaseId openapi_types.UUID `json:"X-GK80-Database-Id"`
+	XGK80DatabaseId LookupDatabaseId `json:"X-GK80-Database-Id"`
+}
+
+// LookupStartExactParams defines parameters for LookupStartExact.
+type LookupStartExactParams struct {
+	XGK80DatabaseId LookupDatabaseId `json:"X-GK80-Database-Id"`
 }
 
 // ListTestsParams defines parameters for ListTests.
@@ -711,8 +741,14 @@ type AcquireUiLeaseParams struct {
 	XGK80UILease *openapi_types.UUID `json:"X-GK80-UI-Lease,omitempty"`
 }
 
+// LookupConfirmExactJSONRequestBody defines body for LookupConfirmExact for application/json ContentType.
+type LookupConfirmExactJSONRequestBody = ConfirmActionLookupInput
+
 // LookupCreateExactJSONRequestBody defines body for LookupCreateExact for application/json ContentType.
 type LookupCreateExactJSONRequestBody = CreateTestLookupInput
+
+// LookupStartExactJSONRequestBody defines body for LookupStartExact for application/json ContentType.
+type LookupStartExactJSONRequestBody = StartTestLookupInput
 
 // CreateTestJSONRequestBody defines body for CreateTest for application/json ContentType.
 type CreateTestJSONRequestBody = CreateTestCommand

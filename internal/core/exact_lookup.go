@@ -14,8 +14,36 @@ import (
 	"github.com/vitalcc55/gk80-control/internal/storage"
 )
 
-// lookupCreate checks a saved command without reissuing Create.
-func (h *coreHTTP) lookupCreate(w http.ResponseWriter, r *http.Request) {
+func (h *coreHTTP) lookupAction(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/v1/commands/lookup/"), "/")
+	if (len(parts) != 2 || parts[0] != "start") && (len(parts) != 3 || parts[0] != "confirm") {
+		w.Header().Set("Connection", "close")
+		_ = http.NewResponseController(w).SetReadDeadline(time.Now())
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", "Invalid request")
+		return
+	}
+	testID, err := parsePathID(parts[1])
+	if err != nil {
+		w.Header().Set("Connection", "close")
+		_ = http.NewResponseController(w).SetReadDeadline(time.Now())
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", "Invalid request")
+		return
+	}
+	var actionID uuid.UUID
+	if parts[0] == "confirm" {
+		actionID, err = parsePathID(parts[2])
+		if err != nil {
+			w.Header().Set("Connection", "close")
+			_ = http.NewResponseController(w).SetReadDeadline(time.Now())
+			writeAPIError(w, http.StatusBadRequest, "invalid_request", "Invalid request")
+			return
+		}
+	}
+	h.lookupCommand(w, r, parts[0], testID, actionID)
+}
+
+// lookupCommand checks a saved command without reissuing the operator action.
+func (h *coreHTTP) lookupCommand(w http.ResponseWriter, r *http.Request, kind string, testID, actionID uuid.UUID) {
 	closeUnread := func() {
 		w.Header().Set("Connection", "close")
 		_ = http.NewResponseController(w).SetReadDeadline(time.Now())
@@ -106,8 +134,35 @@ func (h *coreHTTP) lookupCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body, readErr := io.ReadAll(io.LimitReader(r.Body, 8193))
-	var command contract.CreateTestCommand
-	input, inspectErr := h.validator.Inspect("CreateTestCommand", body, &command)
+	var commandID uuid.UUID
+	var lookup func(context.Context) (contract.CommandStatus, error)
+	var inspectErr error
+	switch kind {
+	case "create":
+		var command contract.CreateTestCommand
+		var input contract.InspectedInput
+		input, inspectErr = h.validator.Inspect("CreateTestCommand", body, &command)
+		commandID = command.CommandId
+		lookup = func(ctx context.Context) (contract.CommandStatus, error) {
+			return h.exact.LookupCreateExact(ctx, command, input.Identity)
+		}
+	case "start":
+		var command contract.StartTestCommand
+		_, inspectErr = h.validator.Inspect("StartTestCommand", body, &command)
+		commandID = command.CommandId
+		lookup = func(ctx context.Context) (contract.CommandStatus, error) {
+			return h.exact.LookupStart(ctx, testID, command)
+		}
+	case "confirm":
+		var command contract.ConfirmActionCommand
+		_, inspectErr = h.validator.Inspect("ConfirmActionCommand", body, &command)
+		commandID = command.CommandId
+		lookup = func(ctx context.Context) (contract.CommandStatus, error) {
+			return h.exact.LookupConfirm(ctx, testID, actionID, command)
+		}
+	default:
+		inspectErr = contract.ErrInvalidInput
+	}
 	if !h.leases.valid(owner) {
 		writeHistoryJSON(w, http.StatusForbidden, contract.ApiError{Code: "lease_invalid", Message: "UI lease required"})
 		return
@@ -116,7 +171,7 @@ func (h *coreHTTP) lookupCreate(w http.ResponseWriter, r *http.Request) {
 		writeHistoryJSON(w, http.StatusServiceUnavailable, contract.ApiError{Code: "state_unavailable", Message: "State is not yet confirmed"})
 		return
 	}
-	if readErr != nil || len(body) > 8192 || inspectErr != nil || command.CommandId == uuid.Nil {
+	if readErr != nil || len(body) > 8192 || inspectErr != nil || commandID == uuid.Nil {
 		closeUnread()
 		writeHistoryJSON(w, http.StatusBadRequest, contract.ApiError{Code: "invalid_request", Message: "Invalid request"})
 		return
@@ -129,7 +184,7 @@ func (h *coreHTTP) lookupCreate(w http.ResponseWriter, r *http.Request) {
 	workerStarted = true
 	go func() {
 		defer h.endWorker()
-		status, err := h.exact.LookupCreateExact(ctx, command, input.Identity)
+		status, err := lookup(ctx)
 		done <- result{status: status, err: err}
 		<-responseDone
 	}()
@@ -152,10 +207,10 @@ func (h *coreHTTP) lookupCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if errors.Is(value.err, storage.ErrCommandNotFound) {
-		writeHistoryJSON(w, http.StatusOK, contract.CommandStatus{CommandId: command.CommandId, Status: contract.CommandStatusStatusUnknown})
+		writeHistoryJSON(w, http.StatusOK, contract.CommandStatus{CommandId: commandID, Status: contract.CommandStatusStatusUnknown})
 		return
 	}
-	if value.status.CommandId != command.CommandId || !value.status.Status.Valid() || (value.err != nil && !knownStoredRejection(value.err)) {
+	if value.status.CommandId != commandID || !value.status.Status.Valid() || (value.err != nil && !knownStoredRejection(value.err)) {
 		writeHistoryJSON(w, http.StatusServiceUnavailable, contract.ApiError{Code: "state_unavailable", Message: "State is not yet confirmed"})
 		return
 	}

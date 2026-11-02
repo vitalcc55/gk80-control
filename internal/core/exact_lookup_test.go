@@ -64,6 +64,13 @@ func (b blockedExactCreate) LookupCreateExact(ctx context.Context, _ contract.Cr
 	return contract.CommandStatus{}, ctx.Err()
 }
 
+func (blockedExactCreate) LookupStart(context.Context, uuid.UUID, contract.StartTestCommand) (contract.CommandStatus, error) {
+	return contract.CommandStatus{}, storage.ErrCommandNotFound
+}
+func (blockedExactCreate) LookupConfirm(context.Context, uuid.UUID, uuid.UUID, contract.ConfirmActionCommand) (contract.CommandStatus, error) {
+	return contract.CommandStatus{}, storage.ErrCommandNotFound
+}
+
 func TestExactCreateLookupMatchesStoredIdentityWithoutExecuting(t *testing.T) {
 	store, err := storage.Open(t.TempDir())
 	if err != nil {
