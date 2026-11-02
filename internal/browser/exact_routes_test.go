@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/vitalcc55/gk80-control/internal/contract"
@@ -50,14 +49,7 @@ func TestExactLookupRoutePreservesAttemptsAndRejectsInvalidRequests(t *testing.T
 	var router http.Handler
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { router.ServeHTTP(w, r) }))
 	defer server.Close()
-	s, code, err := newSession(server.Listener.Addr().String(), time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cookie, proof, err := s.pair(code)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s, generation := testSession(t, server.Listener.Addr().String())
 	router = newRoutes(s, fake, fake)
 	server.Start()
 	request := func(kind, test, action, body string, mutate func(*http.Request)) (int, contract.ExactLookupResult) {
@@ -66,8 +58,7 @@ func TestExactLookupRoutePreservesAttemptsAndRejectsInvalidRequests(t *testing.T
 		if err != nil {
 			t.Fatal(err)
 		}
-		r.AddCookie(cookie)
-		r.Header.Set("X-GK80-Session", proof)
+		r.Header.Set("X-GK80-Channel", generation)
 		r.Header.Set("Origin", server.URL)
 		r.Header.Set("Content-Type", "application/json")
 		r.Header.Set("X-GK80-Database", database)
@@ -160,11 +151,11 @@ func TestExactLookupRoutePreservesAttemptsAndRejectsInvalidRequests(t *testing.T
 	if afterInvalid != before {
 		t.Fatal("invalid request reached service")
 	}
-	status, _ := request("create", "", "", body, func(r *http.Request) { r.Header.Del("X-GK80-Session") })
+	status, _ := request("create", "", "", body, func(r *http.Request) { r.Header.Del("X-GK80-Channel") })
 	mu.Lock()
-	afterUnauthorized := calls
+	afterMissingConnection := calls
 	mu.Unlock()
-	if status != http.StatusUnauthorized || afterUnauthorized != before {
-		t.Fatalf("unauthorized lookup: %d", status)
+	if status != http.StatusConflict || afterMissingConnection != before {
+		t.Fatalf("missing connection lookup: %d", status)
 	}
 }

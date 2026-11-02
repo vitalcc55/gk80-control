@@ -23,7 +23,7 @@ func TestHostReportsMissingEntryAsset(t *testing.T) {
 	}
 	defer func() { _ = listener.Close() }()
 	fake := &routeService{}
-	_, _, err = newHost(listener, fake, fake, fstest.MapFS{}, time.Minute, time.Hour)
+	_, err = newHost(listener, fake, fake, fstest.MapFS{})
 	if !errors.Is(err, ErrAssetsUnavailable) {
 		t.Fatalf("missing entry: %v", err)
 	}
@@ -36,11 +36,7 @@ func TestHostShutdownBoundsStalledChannelClose(t *testing.T) {
 	}
 	blocked := &delayedCloseListener{Listener: listener, entered: make(chan struct{}), release: make(chan struct{})}
 	fake := &routeService{}
-	host, code, err := newHost(blocked, fake, fake, fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("demo")}}, time.Minute, time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cookie, proof, err := host.session.pair(code)
+	host, err := newHost(blocked, fake, fake, fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("demo")}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,8 +44,8 @@ func TestHostShutdownBoundsStalledChannelClose(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	base := "http://" + listener.Addr().String()
-	headers := http.Header{"Origin": []string{base}, "Cookie": []string{cookie.String()}}
-	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(base, "http")+"/api/session/stream", &websocket.DialOptions{HTTPHeader: headers, Subprotocols: []string{"gk80-v1", "gk80-proof." + proof}})
+	headers := http.Header{"Origin": []string{base}}
+	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(base, "http")+"/api/session/stream", &websocket.DialOptions{HTTPHeader: headers, Subprotocols: []string{"gk80-v1"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +99,7 @@ func TestHostBoundsConcurrentAssetReads(t *testing.T) {
 	}
 	assets := blockedAssets{FS: fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("demo")}, "slow.js": &fstest.MapFile{Data: []byte("script")}}, entered: make(chan struct{}, 4), release: make(chan struct{})}
 	fake := &routeService{}
-	host, _, err := newHost(listener, fake, fake, assets, time.Minute, time.Hour)
+	host, err := newHost(listener, fake, fake, assets)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +146,7 @@ func TestHostServesOnlyAssetsAndBoundApplicationRoutes(t *testing.T) {
 	}
 	fake := &routeService{}
 	assets := fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("demo entry")}, "assets/app.js": &fstest.MapFile{Data: []byte("demo script")}}
-	host, _, err := newHost(listener, fake, fake, assets, time.Minute, time.Hour)
+	host, err := newHost(listener, fake, fake, assets)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +183,7 @@ func TestHostServesOnlyAssetsAndBoundApplicationRoutes(t *testing.T) {
 	if code, body := request(http.MethodGet, "/", ""); code != 200 || body != "demo entry" {
 		t.Fatalf("entry: %d %q", code, body)
 	}
-	if code, _ := request(http.MethodGet, "/api/status", ""); code != http.StatusUnauthorized {
+	if code, _ := request(http.MethodGet, "/api/status", ""); code != http.StatusConflict {
 		t.Fatalf("unbound API: %d", code)
 	}
 	if code, _ := request(http.MethodGet, "/", "other.invalid"); code != http.StatusForbidden {

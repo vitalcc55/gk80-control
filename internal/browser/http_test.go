@@ -40,17 +40,9 @@ func (w *delayedWriter) SetWriteDeadline(deadline time.Time) error {
 func (w *delayedWriter) SetReadDeadline(time.Time) error { return nil }
 
 func TestRevocationWaitsForAlreadyAdmittedResponse(t *testing.T) {
-	s, code, err := newSession("127.0.0.1:19080", time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cookie, proof, err := s.pair(code)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s, generation := testSession(t, "127.0.0.1:19080")
 	r := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19080/state", nil)
-	r.AddCookie(cookie)
-	r.Header.Set("X-GK80-Session", proof)
+	r.Header.Set("X-GK80-Channel", generation)
 	w := &delayedWriter{header: make(http.Header), started: make(chan struct{}), unblock: make(chan struct{}), deadlineSet: make(chan struct{})}
 	done := make(chan struct{})
 	go func() {
@@ -104,22 +96,14 @@ func TestRevokedSessionCannotStartLateHTTPResponse(t *testing.T) {
 	}))
 	defer server.Close()
 	defer release.Do(func() { close(continueHandler) })
-	var err error
-	s, _, err = newSession(server.Listener.Addr().String(), time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cookie, proof, err := s.pair(s.code)
-	if err != nil {
-		t.Fatal(err)
-	}
+	initial, generation := testSession(t, server.Listener.Addr().String())
+	s = initial
 	server.Start()
 	r, err := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL+"/state", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.AddCookie(cookie)
-	r.Header.Set("X-GK80-Session", proof)
+	r.Header.Set("X-GK80-Channel", generation)
 	type response struct {
 		status int
 		body   string
@@ -161,22 +145,15 @@ func TestRevocationInterruptsResponseWithIncompleteRequestBody(t *testing.T) {
 		})).ServeHTTP(w, r)
 	}))
 	defer server.Close()
-	var err error
-	s, _, err = newSession(server.Listener.Addr().String(), time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cookie, proof, err := s.pair(s.code)
-	if err != nil {
-		t.Fatal(err)
-	}
+	initial, generation := testSession(t, server.Listener.Addr().String())
+	s = initial
 	server.Start()
 	conn, err := net.DialTimeout("tcp", server.Listener.Addr().String(), time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = conn.Close() }()
-	_, err = fmt.Fprintf(conn, "POST /state HTTP/1.1\r\nHost: %s\r\nOrigin: http://%s\r\nCookie: %s=%s\r\nX-GK80-Session: %s\r\nContent-Length: 1000\r\n\r\nx", s.host, s.host, cookie.Name, cookie.Value, proof)
+	_, err = fmt.Fprintf(conn, "POST /state HTTP/1.1\r\nHost: %s\r\nOrigin: http://%s\r\nX-GK80-Channel: %s\r\nContent-Length: 1000\r\n\r\nx", s.host, s.host, generation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,22 +187,14 @@ func TestAllowedSessionReceivesBoundedJSONFromHTTPServer(t *testing.T) {
 		})).ServeHTTP(w, r)
 	}))
 	defer server.Close()
-	var err error
-	s, _, err = newSession(server.Listener.Addr().String(), time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cookie, proof, err := s.pair(s.code)
-	if err != nil {
-		t.Fatal(err)
-	}
+	initial, generation := testSession(t, server.Listener.Addr().String())
+	s = initial
 	server.Start()
 	r, err := http.NewRequest(http.MethodGet, server.URL+"/state", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.AddCookie(cookie)
-	r.Header.Set("X-GK80-Session", proof)
+	r.Header.Set("X-GK80-Channel", generation)
 	resp, err := server.Client().Do(r)
 	if err != nil {
 		t.Fatal(err)
@@ -245,22 +214,14 @@ func TestOversizedResponseIsNotPartiallyDelivered(t *testing.T) {
 		})).ServeHTTP(w, r)
 	}))
 	defer server.Close()
-	var err error
-	s, _, err = newSession(server.Listener.Addr().String(), time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cookie, proof, err := s.pair(s.code)
-	if err != nil {
-		t.Fatal(err)
-	}
+	initial, generation := testSession(t, server.Listener.Addr().String())
+	s = initial
 	server.Start()
 	r, err := http.NewRequest(http.MethodGet, server.URL+"/state", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.AddCookie(cookie)
-	r.Header.Set("X-GK80-Session", proof)
+	r.Header.Set("X-GK80-Channel", generation)
 	resp, err := server.Client().Do(r)
 	if err != nil {
 		t.Fatal(err)

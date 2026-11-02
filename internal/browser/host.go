@@ -19,7 +19,7 @@ import (
 
 var ErrAssetsUnavailable = errors.New("browser assets unavailable")
 
-// Host serves the local browser entry and its authenticated demo routes.
+// Host serves the local development browser entry and demo routes.
 type Host struct {
 	listener net.Listener
 	server   *http.Server
@@ -28,28 +28,26 @@ type Host struct {
 }
 
 // NewHost binds an existing loopback listener to the supplied owner and assets.
-// The returned one-time code must be shown through a private local channel.
-func NewHost(listener net.Listener, owner *desktop.Owner, assets fs.FS, codeTTL, sessionTTL time.Duration) (*Host, string, error) {
+func NewHost(listener net.Listener, owner *desktop.Owner, assets fs.FS) (*Host, error) {
 	if owner == nil {
-		return nil, "", errSessionDenied
+		return nil, errSessionDenied
 	}
-	return newHost(listener, desktop.NewService(owner), desktop.NewBootstrapService(owner), assets, codeTTL, sessionTTL)
+	return newHost(listener, desktop.NewService(owner), desktop.NewBootstrapService(owner), assets)
 }
 
-func newHost(listener net.Listener, service browserOperations, bootstrap bootstrapOperations, assets fs.FS, codeTTL, sessionTTL time.Duration) (*Host, string, error) {
-	if listener == nil || assets == nil || codeTTL <= 0 || sessionTTL <= 0 || codeTTL > sessionTTL {
-		return nil, "", errSessionDenied
+func newHost(listener net.Listener, service browserOperations, bootstrap bootstrapOperations, assets fs.FS) (*Host, error) {
+	if listener == nil || assets == nil {
+		return nil, errSessionDenied
 	}
 	entry, err := fs.Stat(assets, "index.html")
 	if err != nil || entry.IsDir() {
-		return nil, "", ErrAssetsUnavailable
+		return nil, ErrAssetsUnavailable
 	}
-	s, code, err := newSession(listener.Addr().String(), sessionTTL)
+	s, err := newSession(listener.Addr().String())
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
-	s.codeUntil = time.Now().Add(codeTTL)
-	api := newBoundRoutes(s, service, bootstrap)
+	api := newRoutes(s, service, bootstrap)
 	assetsGate := make(chan struct{}, 4)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Host != s.host {
@@ -115,7 +113,7 @@ func newHost(listener net.Listener, service browserOperations, bootstrap bootstr
 	})
 	host := &Host{listener: listener, session: s}
 	host.server = &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 15 * time.Second, MaxHeaderBytes: 8 << 10}
-	return host, code, nil
+	return host, nil
 }
 
 func (h *Host) Serve() error {

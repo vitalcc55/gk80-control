@@ -28,7 +28,6 @@ const browserAddress = "127.0.0.1:17880"
 var errPort = errors.New("browser address unavailable")
 var errProfile = errors.New("demo profile in use")
 var errCore = errors.New("demo core unavailable or incompatible")
-var errPairWindow = errors.New("pairing window unavailable")
 var errAssets = errors.New("browser assets unavailable")
 var errHostShutdown = errors.New("browser host shutdown unconfirmed")
 var errDiagnostics = errors.New("browser diagnostics unconfirmed")
@@ -56,7 +55,6 @@ func report(output io.Writer, err error) {
 		{errPort, "Порт браузерной демонстрации занят или недоступен."},
 		{errProfile, "Демонстрационный профиль уже открыт другим приложением."},
 		{errCore, "Демонстрационное ядро недоступно или несовместимо."},
-		{errPairWindow, "Не удалось показать окно сопряжения."},
 		{errAssets, "Ресурсы браузерной демонстрации не подготовлены."},
 		{errHostShutdown, "Завершение браузерного host не подтверждено."},
 		{errDiagnostics, "Журнал диагностики недоступен или неполон."},
@@ -88,21 +86,6 @@ func listen(ctx context.Context) (net.Listener, error) {
 		return socketErr
 	}}
 	return config.Listen(ctx, "tcp4", browserAddress)
-}
-
-func showPairing(code string) error {
-	message, err := windows.UTF16PtrFromString("Одноразовый код для браузерной демонстрации:\n\n" + code + "\n\nВведите его в открытой странице. Код действует две минуты.")
-	if err != nil {
-		return errPairWindow
-	}
-	title, err := windows.UTF16PtrFromString("ГК80 — сопряжение")
-	if err != nil {
-		return errPairWindow
-	}
-	if _, err := windows.MessageBox(0, message, title, windows.MB_OK|windows.MB_ICONINFORMATION); err != nil {
-		return errPairWindow
-	}
-	return nil
 }
 
 func waitReady(ctx context.Context, owner *desktop.Owner) error {
@@ -183,7 +166,7 @@ func run() (result error) {
 			result = errors.Join(result, errCoreExit)
 		}
 	}()
-	host, code, err := browser.NewHost(listener, owner, assets.FS(), 2*time.Minute, 8*time.Hour)
+	host, err := browser.NewHost(listener, owner, assets.FS())
 	if err != nil {
 		if errors.Is(err, browser.ErrAssetsUnavailable) {
 			return errors.Join(errAssets, err)
@@ -213,8 +196,6 @@ func run() (result error) {
 	server := make(chan error, 1)
 	go func() { server <- host.Serve() }()
 	_, _ = fmt.Fprintf(os.Stdout, "Браузерная демонстрация: http://%s\nПрофиль: %s (%s)\n", browserAddress, profileID, profile)
-	pairing := make(chan error, 1)
-	go func() { pairing <- showPairing(code) }()
 	for {
 		select {
 		case <-ctx.Done():
@@ -224,11 +205,6 @@ func run() (result error) {
 				return errors.Join(errHostRun, err)
 			}
 			return nil
-		case err := <-pairing:
-			if err != nil {
-				return err
-			}
-			pairing = nil
 		}
 	}
 }

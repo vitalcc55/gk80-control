@@ -20,18 +20,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/google/uuid"
 	"github.com/vitalcc55/gk80-control/internal/contract"
 	"github.com/vitalcc55/gk80-control/internal/desktop"
 )
 
-// processBrowser uses the real routes and owner; pairing is only test setup.
+// processBrowser uses the real routes and owner.
 type processBrowser struct {
 	owner   *desktop.Owner
 	server  *httptest.Server
 	session *browserSession
-	cookie  *http.Cookie
-	proof   string
+	channel string
+	conn    *websocket.Conn
 	stop    chan struct{}
 	done    chan error
 	once    sync.Once
@@ -78,8 +79,7 @@ func (p *processBrowser) request(method, path string, body any) (int, []byte, er
 	if err != nil {
 		return 0, nil, err
 	}
-	req.AddCookie(p.cookie)
-	req.Header.Set("X-GK80-Session", p.proof)
+	req.Header.Set("X-GK80-Channel", p.channel)
 	if method == http.MethodPost {
 		req.Header.Set("Origin", p.server.URL)
 		if body != nil {
@@ -101,8 +101,7 @@ func (p *processBrowser) exact(database, kind, testID, actionID, commandID strin
 	if err != nil {
 		return result, err
 	}
-	req.AddCookie(p.cookie)
-	req.Header.Set("X-GK80-Session", p.proof)
+	req.Header.Set("X-GK80-Channel", p.channel)
 	req.Header.Set("Origin", p.server.URL)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-GK80-Database", database)
@@ -197,19 +196,28 @@ func startProcessBrowser(t *testing.T, executable, profile string, loseCreate bo
 		}
 		handler.ServeHTTP(w, r)
 	}))
-	var code string
 	var err error
-	p.session, code, err = newSession(p.server.Listener.Addr().String(), 5*time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	p.cookie, p.proof, err = p.session.pair(code)
+	p.session, err = newSession(p.server.Listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
 	handler = newRoutes(p.session, desktop.NewService(p.owner), desktop.NewBootstrapService(p.owner))
 	p.server.Start()
 	p.server.Client().Timeout = 4 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	p.conn, _, err = websocket.Dial(ctx, "ws"+strings.TrimPrefix(p.server.URL, "http")+"/api/session/stream", &websocket.DialOptions{HTTPHeader: http.Header{"Origin": []string{p.server.URL}}, Subprotocols: []string{"gk80-v1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, welcome, err := p.conn.Read(ctx)
+	var opened struct {
+		Channel string `json:"channel"`
+	}
+	if err != nil || json.Unmarshal(welcome, &opened) != nil || opened.Channel == "" {
+		t.Fatal("browser connection unavailable")
+	}
+	p.channel = opened.Channel
 	if err := p.heartbeat(); err != nil {
 		t.Fatal(err)
 	}

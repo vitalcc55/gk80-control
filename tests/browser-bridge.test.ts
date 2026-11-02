@@ -4,17 +4,13 @@ import { CommandConflictError } from '../src/desktop/demo-service';
 
 afterEach(() => vi.useRealTimers());
 
-const channel = { capability: 'channel-proof', signal: new AbortController().signal };
+const channel = { generation: 'channel-generation', signal: new AbortController().signal };
 
 it('rejects a closed channel before dispatching any HTTP operation', async () => {
   const owner = new AbortController();
   owner.abort();
   const request = vi.fn<typeof fetch>();
-  const { service } = createBrowserBridge(
-    'proof',
-    { capability: 'closed', signal: owner.signal },
-    request,
-  );
+  const { service } = createBrowserBridge({ generation: 'closed', signal: owner.signal }, request);
   await expect(service.stopTest('test', { commandId: 'command' })).rejects.toThrow();
   expect(request).not.toHaveBeenCalled();
 });
@@ -26,11 +22,7 @@ it('does not accept a late conflict or repeat a command after its channel closes
     finish = resolve;
   });
   const request = vi.fn<typeof fetch>().mockReturnValue(response);
-  const { service } = createBrowserBridge(
-    'proof',
-    { capability: 'first', signal: owner.signal },
-    request,
-  );
+  const { service } = createBrowserBridge({ generation: 'first', signal: owner.signal }, request);
   const outcome = service
     .stopTest('test', { commandId: 'command' })
     .catch((error: unknown) => error);
@@ -59,8 +51,7 @@ it('aborts active reads and commands when their shared channel closes', async ()
       }),
   );
   const { bridge, service } = createBrowserBridge(
-    'proof',
-    { capability: 'first', signal: owner.signal },
+    { generation: 'first', signal: owner.signal },
     request,
   );
   const read = bridge.status().catch((error: unknown) => error);
@@ -85,11 +76,7 @@ it('rejects a response whose body finishes after the channel closes', async () =
     },
   });
   const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(body));
-  const { service } = createBrowserBridge(
-    'proof',
-    { capability: 'first', signal: owner.signal },
-    request,
-  );
+  const { service } = createBrowserBridge({ generation: 'first', signal: owner.signal }, request);
   const outcome = service
     .stopTest('test', { commandId: 'command' })
     .catch((error: unknown) => error);
@@ -100,7 +87,7 @@ it('rejects a response whose body finishes after the channel closes', async () =
   expect(request).toHaveBeenCalledOnce();
 });
 
-it('uses a new capability after reconnect and rejects an old channel response', async () => {
+it('uses a new generation after reconnect and rejects an old channel response', async () => {
   const first = new AbortController();
   let finish: (response: Response) => void = () => {};
   const pending = new Promise<Response>((resolve) => {
@@ -111,8 +98,7 @@ it('uses a new capability after reconnect and rejects an old channel response', 
     .mockReturnValueOnce(pending)
     .mockResolvedValueOnce(Response.json({ outcome: 'unknown', command: null }));
   const oldBridge = createBrowserBridge(
-    'proof',
-    { capability: 'old-channel', signal: first.signal },
+    { generation: 'old-channel', signal: first.signal },
     request,
   );
   const old = oldBridge.service
@@ -121,8 +107,7 @@ it('uses a new capability after reconnect and rejects an old channel response', 
   first.abort();
   const second = new AbortController();
   const newBridge = createBrowserBridge(
-    'proof',
-    { capability: 'new-channel', signal: second.signal },
+    { generation: 'new-channel', signal: second.signal },
     request,
   );
   await newBridge.service.lookupCommandExact('database', 'stop', 'test', '', 'command', '{}');
@@ -136,11 +121,11 @@ it('uses a new capability after reconnect and rejects an old channel response', 
   expect(newHeaders.get('X-GK80-Channel')).toBe('new-channel');
 });
 
-it('sends the original Stop attempt and browser proof only in headers', async () => {
+it('sends the original Stop attempt and connection generation in the header', async () => {
   const request = vi.fn<typeof fetch>(async () =>
     Response.json({ outcome: 'unknown', command: null }),
   );
-  const { service } = createBrowserBridge('browser-proof', channel, request);
+  const { service } = createBrowserBridge(channel, request);
   const original = '{ "commandId" : "command" }';
   await service.lookupCommandExact('database', 'stop', 'test', '', 'command', original);
   expect(request).toHaveBeenCalledOnce();
@@ -149,13 +134,12 @@ it('sends the original Stop attempt and browser proof only in headers', async ()
   expect(options?.body).toBe(original);
   expect(options?.redirect).toBe('error');
   const headers = new Headers(options?.headers);
-  expect(headers.get('X-GK80-Session')).toBe('browser-proof');
-  expect(headers.get('X-GK80-Channel')).toBe('channel-proof');
+  expect(headers.has('X-GK80-Session')).toBe(false);
+  expect(headers.get('X-GK80-Channel')).toBe('channel-generation');
   expect(headers.get('X-GK80-Database')).toBe('database');
   expect(headers.get('X-GK80-Kind')).toBe('stop');
   expect(headers.get('X-GK80-Test')).toBe('test');
   expect(headers.has('X-GK80-Action')).toBe(false);
-  expect(String(path)).not.toContain('browser-proof');
 });
 
 it('distinguishes a confirmed command conflict and never retries a failed POST', async () => {
@@ -166,7 +150,7 @@ it('distinguishes a confirmed command conflict and never retries a failed POST',
     new Response('{"error":"other","error":"command_conflict"}', { status: 409 }),
   );
   request.mockRejectedValueOnce(new Error('connection lost'));
-  const { service } = createBrowserBridge('proof', channel, request);
+  const { service } = createBrowserBridge(channel, request);
   const stop = { commandId: 'command' };
   await expect(service.stopTest('test', stop)).rejects.toBeInstanceOf(CommandConflictError);
   const different = await service.stopTest('test', stop).catch((error: unknown) => error);
@@ -220,7 +204,7 @@ it('rejects malformed session data rather than confirming a connection', async (
       linkValidForMs: 1000,
     }),
   );
-  const { session } = createBrowserBridge('proof', channel, request);
+  const { session } = createBrowserBridge(channel, request);
   await expect(session.sessionView()).rejects.toThrow();
   await expect(session.sessionView()).rejects.toThrow();
   await expect(session.sessionView()).rejects.toThrow();
@@ -237,7 +221,7 @@ it('rejects a non-string desktop status', async () => {
       status: ['ready'],
     }),
   );
-  await expect(createBrowserBridge('proof', channel, request).bridge.status()).rejects.toThrow();
+  await expect(createBrowserBridge(channel, request).bridge.status()).rejects.toThrow();
 });
 
 it('accepts a complete session snapshot with a simulated measurement', async () => {
@@ -294,15 +278,15 @@ it('accepts a complete session snapshot with a simulated measurement', async () 
     linkValidForMs: 1000,
   };
   const request = vi.fn<typeof fetch>().mockResolvedValue(Response.json(expected));
-  await expect(
-    createBrowserBridge('proof', channel, request).session.sessionView(),
-  ).resolves.toEqual(expected);
+  await expect(createBrowserBridge(channel, request).session.sessionView()).resolves.toEqual(
+    expected,
+  );
 });
 
 it('reports failed status polling and stops on unsubscribe', async () => {
   vi.useFakeTimers();
   const request = vi.fn<typeof fetch>().mockRejectedValue(new Error('unavailable'));
-  const { bridge } = createBrowserBridge('proof', channel, request);
+  const { bridge } = createBrowserBridge(channel, request);
   const onError = vi.fn();
   const unsubscribe = bridge.subscribe(vi.fn(), onError);
   await vi.advanceTimersByTimeAsync(1500);
@@ -316,11 +300,7 @@ it('stops status polling when its browser channel closes', async () => {
   vi.useFakeTimers();
   const owner = new AbortController();
   const request = vi.fn<typeof fetch>();
-  const { bridge } = createBrowserBridge(
-    'proof',
-    { capability: 'first', signal: owner.signal },
-    request,
-  );
+  const { bridge } = createBrowserBridge({ generation: 'first', signal: owner.signal }, request);
   const onError = vi.fn();
   const unsubscribe = bridge.subscribe(vi.fn(), onError);
   owner.abort();
@@ -348,7 +328,7 @@ it('does not publish an old poll failure after a newer verification', async () =
     .fn<typeof fetch>()
     .mockReturnValueOnce(pending)
     .mockResolvedValueOnce(Response.json(starting));
-  const { bridge } = createBrowserBridge('proof', channel, request);
+  const { bridge } = createBrowserBridge(channel, request);
   const onError = vi.fn();
   const unsubscribe = bridge.subscribe(vi.fn(), onError);
   await vi.advanceTimersByTimeAsync(1500);
@@ -370,7 +350,7 @@ it('aborts an overdue wait and never produces a successful notice', async () => 
       });
     });
   });
-  const { session } = createBrowserBridge('proof', channel, request);
+  const { session } = createBrowserBridge(channel, request);
   const waiting = session.waitConnection?.(1, 2);
   if (!waiting) throw new Error('wait unavailable');
   const result = waiting.catch((error: unknown) => error);

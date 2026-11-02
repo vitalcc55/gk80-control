@@ -3,9 +3,6 @@ package browser
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/subtle"
-	"encoding/base64"
 	"errors"
 	"net"
 	"net/http"
@@ -14,31 +11,21 @@ import (
 	"sync"
 	"time"
 
-	"github.com/coder/websocket"
+	"github.com/google/uuid"
 )
-
-const sessionCookie = "gk80_browser_session"
 
 var errSessionDenied = errors.New("browser session denied")
 
 type browserSession struct {
-	mu        sync.Mutex
-	host      string
-	code      string
-	codeUntil time.Time
-	validFor  time.Duration
-	attempts  int
-	cookie    string
-	proof     string
-	deadline  time.Time
-	timer     *time.Timer
-	done      chan struct{}
-	active    map[*requestSlot]struct{}
-	writes    map[*responseWrite]struct{}
-	bound     bool
-	channel   *browserChannel
-	revoking  chan struct{}
-	pairing   chan struct{}
+	mu       sync.Mutex
+	host     string
+	instance string
+	sequence uint64
+	closed   bool
+	active   map[*requestSlot]struct{}
+	writes   map[*responseWrite]struct{}
+	channel  *browserChannel
+	revoking chan struct{}
 }
 
 type requestClass uint8
@@ -62,60 +49,46 @@ type responseWrite struct {
 }
 
 type browserChannel struct {
-	capability string
-	conn       *websocket.Conn
-	transport  *channelTransport
+	generation string
+	close      func()
 	ctx        context.Context
 	cancel     context.CancelFunc
 }
 
-// actionAllowed is the admission point for an already authenticated operation.
-// An operation admitted before revocation can still have an unknown outcome.
+// actionAllowed associates an operation with the current browser connection.
 func (s *browserSession) actionAllowed(ctx context.Context) bool {
 	slot, ok := ctx.Value(requestSlotKey{}).(*requestSlot)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !ok || ctx.Err() != nil || s.cookie == "" || !time.Now().Before(s.deadline) || (s.bound && (slot.channel == nil || s.channel != slot.channel)) {
+	if !ok || ctx.Err() != nil || s.closed || slot.channel == nil || s.channel != slot.channel {
 		return false
 	}
 	_, ok = s.active[slot]
 	return ok
 }
 
-func randomToken() (string, error) {
-	var bytes [24]byte
-	if _, err := rand.Read(bytes[:]); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(bytes[:]), nil
-}
-
-func newSession(host string, validFor time.Duration) (*browserSession, string, error) {
+func newSession(host string) (*browserSession, error) {
 	address, port, err := net.SplitHostPort(host)
 	portNumber, portErr := strconv.ParseUint(port, 10, 16)
-	if err != nil || address != "127.0.0.1" || portErr != nil || portNumber == 0 || validFor <= 0 {
-		return nil, "", errSessionDenied
+	if err != nil || address != "127.0.0.1" || portErr != nil || portNumber == 0 {
+		return nil, errSessionDenied
 	}
-	code, err := randomToken()
+	instance, err := uuid.NewRandom()
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
-	return &browserSession{host: host, code: code, codeUntil: time.Now().Add(validFor), validFor: validFor, pairing: make(chan struct{}, 2)}, code, nil
+	return &browserSession{host: host, instance: instance.String(), active: make(map[*requestSlot]struct{}), writes: make(map[*responseWrite]struct{})}, nil
 }
 
 // admitClass registers cancellation under the same lock used to revoke a session.
 // The host selects the class by its fixed route; handlers must respect cancellation.
 func (s *browserSession) admitClass(r *http.Request, class requestClass) (context.Context, func(), int) {
-	cookie, err := r.Cookie(sessionCookie)
 	s.mu.Lock()
-	valid := err == nil && time.Now().Before(s.deadline) && sameToken(cookie.Value, s.cookie) && sameToken(strings.TrimSpace(r.Header.Get("X-GK80-Session")), s.proof)
-	if s.bound {
-		values := r.Header.Values("X-GK80-Channel")
-		valid = valid && len(values) == 1 && s.channel != nil && s.channel.ctx.Err() == nil && sameToken(strings.TrimSpace(values[0]), s.channel.capability)
-	}
+	values := r.Header.Values("X-GK80-Channel")
+	valid := !s.closed && len(values) == 1 && s.channel != nil && s.channel.ctx.Err() == nil && strings.TrimSpace(values[0]) == s.channel.generation
 	if !valid {
 		s.mu.Unlock()
-		return nil, nil, http.StatusUnauthorized
+		return nil, nil, http.StatusConflict
 	}
 	limit := 2
 	if class == ordinaryRequest {
@@ -134,7 +107,7 @@ func (s *browserSession) admitClass(r *http.Request, class requestClass) (contex
 		s.mu.Unlock()
 		return nil, nil, http.StatusTooManyRequests
 	}
-	ctx, cancel := context.WithDeadline(r.Context(), s.deadline)
+	ctx, cancel := context.WithCancel(r.Context())
 	slot := &requestSlot{cancel: cancel, class: class, channel: s.channel}
 	s.active[slot] = struct{}{}
 	s.mu.Unlock()
@@ -144,38 +117,6 @@ func (s *browserSession) admitClass(r *http.Request, class requestClass) (contex
 		delete(s.active, slot)
 		s.mu.Unlock()
 	}, 0
-}
-
-func sameToken(a, b string) bool {
-	return a != "" && b != "" && subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
-}
-
-func (s *browserSession) pair(code string) (*http.Cookie, string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.code == "" || !time.Now().Before(s.codeUntil) || s.attempts >= 8 {
-		return nil, "", errSessionDenied
-	}
-	s.attempts++
-	if !sameToken(s.code, code) {
-		return nil, "", errSessionDenied
-	}
-	cookie, err := randomToken()
-	if err != nil {
-		return nil, "", err
-	}
-	proof, err := randomToken()
-	if err != nil {
-		return nil, "", err
-	}
-	s.code = ""
-	s.cookie, s.proof = cookie, proof
-	s.deadline = time.Now().Add(s.validFor)
-	s.active = make(map[*requestSlot]struct{})
-	s.writes = make(map[*responseWrite]struct{})
-	s.done = make(chan struct{})
-	s.timer = time.AfterFunc(s.validFor, s.revoke)
-	return &http.Cookie{Name: sessionCookie, Value: cookie, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode}, proof, nil
 }
 
 func (s *browserSession) revoke() {
@@ -188,23 +129,15 @@ func (s *browserSession) revoke() {
 	}
 	done := make(chan struct{})
 	s.revoking = done
-	s.code, s.cookie, s.proof = "", "", ""
+	s.closed = true
 	channel := s.channel
 	s.channel = nil
 	if channel != nil {
 		channel.cancel()
 	}
-	if s.timer != nil {
-		s.timer.Stop()
-		s.timer = nil
-	}
 	for slot := range s.active {
 		slot.cancel()
 		delete(s.active, slot)
-	}
-	if s.done != nil {
-		close(s.done)
-		s.done = nil
 	}
 	waits := make([]<-chan struct{}, 0, len(s.writes))
 	for write := range s.writes {
@@ -212,8 +145,7 @@ func (s *browserSession) revoke() {
 	}
 	s.mu.Unlock()
 	if channel != nil {
-		_ = channel.conn.CloseNow()
-		_ = channel.transport.Close()
+		channel.close()
 	}
 	for _, done := range waits {
 		<-done

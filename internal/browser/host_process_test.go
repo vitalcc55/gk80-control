@@ -21,7 +21,7 @@ import (
 	"github.com/vitalcc55/gk80-control/internal/desktop"
 )
 
-func TestHostPairsWithSeparateCoreAndClosesIt(t *testing.T) {
+func TestHostConnectsAutomaticallyToSeparateCoreAndClosesIt(t *testing.T) {
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)
@@ -43,7 +43,7 @@ func TestHostPairsWithSeparateCoreAndClosesIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	assets := fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("demo")}}
-	host, code, err := NewHost(listener, owner, assets, time.Minute, time.Hour)
+	host, err := NewHost(listener, owner, assets)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,27 +77,8 @@ func TestHostPairsWithSeparateCoreAndClosesIt(t *testing.T) {
 		}
 	}
 	base := "http://" + listener.Addr().String()
-	r, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/session/pair", strings.NewReader(`{"code":"`+code+`"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.Header.Set("Origin", base)
-	r.Header.Set("Content-Type", "application/json")
-	response, err := http.DefaultClient.Do(r)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var paired struct {
-		Proof string `json:"proof"`
-	}
-	err = json.NewDecoder(response.Body).Decode(&paired)
-	_ = response.Body.Close()
-	cookies := response.Cookies()
-	if err != nil || response.StatusCode != http.StatusOK || paired.Proof == "" || len(cookies) != 1 {
-		t.Fatal("pair failed")
-	}
-	headers := http.Header{"Origin": []string{base}, "Cookie": []string{cookies[0].String()}}
-	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(base, "http")+"/api/session/stream", &websocket.DialOptions{HTTPHeader: headers, Subprotocols: []string{"gk80-v1", "gk80-proof." + paired.Proof}})
+	headers := http.Header{"Origin": []string{base}}
+	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(base, "http")+"/api/session/stream", &websocket.DialOptions{HTTPHeader: headers, Subprotocols: []string{"gk80-v1"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,10 +97,8 @@ func TestHostPairsWithSeparateCoreAndClosesIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	statusReq.AddCookie(cookies[0])
-	statusReq.Header.Set("X-GK80-Session", paired.Proof)
 	statusReq.Header.Set("X-GK80-Channel", welcome.Channel)
-	response, err = http.DefaultClient.Do(statusReq)
+	response, err := http.DefaultClient.Do(statusReq)
 	if err != nil {
 		t.Fatal(err)
 	}

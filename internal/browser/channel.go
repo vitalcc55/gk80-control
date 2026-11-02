@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
-	"strings"
+	"strconv"
 	"sync"
 	"time"
 
@@ -38,26 +38,6 @@ func (w *channelUpgradeWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return conn, buffer, err
 }
 
-// newBoundRoutes requires an authenticated live browser channel for application HTTP.
-// The separate unbound router remains useful for exercising the service in isolation.
-func newBoundRoutes(s *browserSession, service browserOperations, bootstrap bootstrapOperations) http.Handler {
-	s.mu.Lock()
-	s.bound = true
-	s.mu.Unlock()
-	app := newRoutes(s, service, bootstrap)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/session/pair" {
-			s.pairHTTP(w, r)
-			return
-		}
-		if r.URL.Path == "/api/session/stream" {
-			s.openChannel(w, r)
-			return
-		}
-		app.ServeHTTP(w, r)
-	})
-}
-
 func (s *browserSession) openChannel(w http.ResponseWriter, r *http.Request) {
 	deny := func(status int) { closeUnreadRequest(w); http.Error(w, "session unavailable", status) }
 	origins := r.Header.Values("Origin")
@@ -65,39 +45,10 @@ func (s *browserSession) openChannel(w http.ResponseWriter, r *http.Request) {
 		deny(http.StatusForbidden)
 		return
 	}
-	protocolHeaders := r.Header.Values("Sec-WebSocket-Protocol")
-	if len(protocolHeaders) != 1 {
-		deny(http.StatusUnauthorized)
-		return
-	}
-	protocols := strings.Split(protocolHeaders[0], ",")
-	if len(protocols) != 2 || strings.TrimSpace(protocols[0]) != "gk80-v1" || !strings.HasPrefix(strings.TrimSpace(protocols[1]), "gk80-proof.") {
-		deny(http.StatusUnauthorized)
-		return
-	}
-	proof := strings.TrimPrefix(strings.TrimSpace(protocols[1]), "gk80-proof.")
-	cookie, err := r.Cookie(sessionCookie)
-	cookieCount := 0
-	for _, item := range r.Cookies() {
-		if item.Name == sessionCookie {
-			cookieCount++
-		}
-	}
-	capability, tokenErr := randomToken()
-	if tokenErr != nil {
-		deny(http.StatusServiceUnavailable)
-		return
-	}
 	s.mu.Lock()
-	valid := err == nil && cookieCount == 1 && time.Now().Before(s.deadline) && sameToken(cookie.Value, s.cookie) && sameToken(proof, s.proof)
-	if !valid {
+	if s.closed {
 		s.mu.Unlock()
-		deny(http.StatusUnauthorized)
-		return
-	}
-	if s.channel != nil {
-		s.mu.Unlock()
-		deny(http.StatusConflict)
+		deny(http.StatusServiceUnavailable)
 		return
 	}
 	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(2 * time.Second)); err != nil {
@@ -116,14 +67,36 @@ func (s *browserSession) openChannel(w http.ResponseWriter, r *http.Request) {
 		_ = conn.CloseNow()
 		return
 	}
-	ctx, cancel := context.WithDeadline(context.Background(), s.deadline)
-	channel := &browserChannel{capability: capability, conn: conn, transport: upgrader.conn, ctx: ctx, cancel: cancel}
+	if s.channel != nil {
+		closing := s.channel.ctx.Err() != nil
+		generation := s.channel.generation
+		s.mu.Unlock()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		message, _ := json.Marshal(struct {
+			Busy    bool   `json:"busy"`
+			Channel string `json:"channel"`
+		}{Busy: true, Channel: generation})
+		if closing {
+			message = []byte(`{"retry":true}`)
+		}
+		_ = conn.Write(ctx, websocket.MessageText, message)
+		cancel()
+		_ = conn.Close(websocket.StatusPolicyViolation, "profile in use")
+		return
+	}
+	s.sequence++
+	generation := s.instance + ":" + strconv.FormatUint(s.sequence, 10)
+	ctx, cancel := context.WithCancel(context.Background())
+	channel := &browserChannel{generation: generation, ctx: ctx, cancel: cancel, close: func() {
+		_ = conn.CloseNow()
+		_ = upgrader.conn.Close()
+	}}
 	s.channel = channel
 	s.mu.Unlock()
 	defer s.closeChannel(channel)
 	message, err := json.Marshal(struct {
 		Channel string `json:"channel"`
-	}{Channel: capability})
+	}{Channel: generation})
 	if err != nil {
 		return
 	}
@@ -156,8 +129,7 @@ func (s *browserSession) closeChannel(channel *browserChannel) {
 		}
 	}
 	s.mu.Unlock()
-	_ = channel.conn.CloseNow()
-	_ = channel.transport.Close()
+	channel.close()
 	for _, done := range waits {
 		<-done
 	}

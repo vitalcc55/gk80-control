@@ -17,8 +17,8 @@ import (
 
 func TestReportKeepsIndependentShutdownWarnings(t *testing.T) {
 	var output bytes.Buffer
-	report(&output, errors.Join(errPairWindow, errDiagnostics, errHostShutdown, errors.New("secret-marker")))
-	for _, expected := range []string{"окно сопряжения", "Журнал диагностики", "Завершение браузерного host"} {
+	report(&output, errors.Join(errDiagnostics, errHostShutdown, errors.New("secret-marker")))
+	for _, expected := range []string{"Журнал диагностики", "Завершение браузерного host"} {
 		if !strings.Contains(output.String(), expected) {
 			t.Fatalf("missing %q", expected)
 		}

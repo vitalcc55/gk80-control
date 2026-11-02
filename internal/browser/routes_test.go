@@ -191,19 +191,11 @@ func TestHeartbeatAndStopUseProtectedFixedRoutes(t *testing.T) {
 	var router http.Handler
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { router.ServeHTTP(w, r) }))
 	defer server.Close()
-	s, code, err := newSession(server.Listener.Addr().String(), time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cookie, proof, err := s.pair(code)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s, generation := testSession(t, server.Listener.Addr().String())
 	router = newRoutes(s, fake, fake)
 	server.Start()
 	occupied := httptest.NewRequest(http.MethodGet, server.URL+"/state", nil)
-	occupied.AddCookie(cookie)
-	occupied.Header.Set("X-GK80-Session", proof)
+	occupied.Header.Set("X-GK80-Channel", generation)
 	var ordinaryReleases []func()
 	for i := 0; i < 60; i++ {
 		_, release, status := s.admitClass(occupied, ordinaryRequest)
@@ -217,16 +209,15 @@ func TestHeartbeatAndStopUseProtectedFixedRoutes(t *testing.T) {
 			release()
 		}
 	}()
-	request := func(path, body string, authenticated bool) (int, string) {
+	request := func(path, body string, withConnection bool) (int, string) {
 		r, err := http.NewRequest(http.MethodPost, server.URL+path, strings.NewReader(body))
 		if err != nil {
 			t.Fatal(err)
 		}
 		r.Header.Set("Origin", server.URL)
 		r.Header.Set("Content-Type", "application/json")
-		if authenticated {
-			r.AddCookie(cookie)
-			r.Header.Set("X-GK80-Session", proof)
+		if withConnection {
+			r.Header.Set("X-GK80-Channel", generation)
 		}
 		resp, err := server.Client().Do(r)
 		if err != nil {
@@ -239,20 +230,20 @@ func TestHeartbeatAndStopUseProtectedFixedRoutes(t *testing.T) {
 		}
 		return resp.StatusCode, string(data)
 	}
-	if status, _ := request("/api/session/check", "", false); status != http.StatusUnauthorized {
-		t.Fatalf("unauthenticated status: %d", status)
+	if status, _ := request("/api/session/check", "", false); status != http.StatusConflict {
+		t.Fatalf("without connection status: %d", status)
 	}
-	if status, _ := request("/api/session/heartbeat", `{"ticket":"`+fake.ticket+`"}`, false); status != http.StatusUnauthorized {
-		t.Fatalf("unauthenticated heartbeat: %d", status)
+	if status, _ := request("/api/session/heartbeat", `{"ticket":"`+fake.ticket+`"}`, false); status != http.StatusConflict {
+		t.Fatalf("without connection heartbeat: %d", status)
 	}
-	if status, _ := request("/api/tests/"+uuid.NewString()+"/stop", `{"commandId":"`+uuid.NewString()+`"}`, false); status != http.StatusUnauthorized {
-		t.Fatalf("unauthenticated stop: %d", status)
+	if status, _ := request("/api/tests/"+uuid.NewString()+"/stop", `{"commandId":"`+uuid.NewString()+`"}`, false); status != http.StatusConflict {
+		t.Fatalf("without connection stop: %d", status)
 	}
 	fake.mu.Lock()
-	unauthenticatedCalls := fake.checks + fake.beats + fake.stops
+	missingConnectionCalls := fake.checks + fake.beats + fake.stops
 	fake.mu.Unlock()
-	if unauthenticatedCalls != 0 {
-		t.Fatal("unauthenticated request reached service")
+	if missingConnectionCalls != 0 {
+		t.Fatal("without connection request reached service")
 	}
 	var heartbeatReleases []func()
 	for i := 0; i < 2; i++ {
@@ -335,14 +326,7 @@ func TestCreateRoutePreservesInputAndDelivery(t *testing.T) {
 	var router http.Handler
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { router.ServeHTTP(w, r) }))
 	defer server.Close()
-	s, code, err := newSession(server.Listener.Addr().String(), time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cookie, proof, err := s.pair(code)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s, generation := testSession(t, server.Listener.Addr().String())
 	router = newRoutes(s, fake, fake)
 	server.Start()
 	id := uuid.NewString()
@@ -356,8 +340,7 @@ func TestCreateRoutePreservesInputAndDelivery(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		r.AddCookie(cookie)
-		r.Header.Set("X-GK80-Session", proof)
+		r.Header.Set("X-GK80-Channel", generation)
 		r.Header.Set("Origin", server.URL)
 		r.Header.Set("Content-Type", "application/json")
 		resp, err := server.Client().Do(r)
@@ -407,26 +390,18 @@ func TestDomainRoutesForwardCommandsAndValidateWait(t *testing.T) {
 	var router http.Handler
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { router.ServeHTTP(w, r) }))
 	defer server.Close()
-	s, code, err := newSession(server.Listener.Addr().String(), time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cookie, proof, err := s.pair(code)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s, generation := testSession(t, server.Listener.Addr().String())
 	router = newRoutes(s, fake, fake)
 	server.Start()
-	request := func(method, path, body string, authenticated bool) (int, string) {
+	request := func(method, path, body string, withConnection bool) (int, string) {
 		r, err := http.NewRequest(method, server.URL+path, strings.NewReader(body))
 		if err != nil {
 			t.Fatal(err)
 		}
 		r.Header.Set("Origin", server.URL)
 		r.Header.Set("Content-Type", "application/json")
-		if authenticated {
-			r.AddCookie(cookie)
-			r.Header.Set("X-GK80-Session", proof)
+		if withConnection {
+			r.Header.Set("X-GK80-Channel", generation)
 		}
 		resp, err := server.Client().Do(r)
 		if err != nil {
@@ -451,8 +426,8 @@ func TestDomainRoutesForwardCommandsAndValidateWait(t *testing.T) {
 	}
 	startPath := "/api/tests/" + testID + "/start"
 	confirmPath := "/api/tests/" + testID + "/actions/" + actionID + "/confirm"
-	if status, _ := request(http.MethodPost, startPath, start, false); status != http.StatusUnauthorized {
-		t.Fatalf("unauthorized start: %d", status)
+	if status, _ := request(http.MethodPost, startPath, start, false); status != http.StatusConflict {
+		t.Fatalf("missing connection start: %d", status)
 	}
 	if status, body := request(http.MethodPost, startPath, start, true); status != http.StatusOK || !strings.Contains(body, `"delivery":"response"`) {
 		t.Fatalf("start: %d %s", status, body)
@@ -522,14 +497,7 @@ func TestDomainRouteRevocationCancelsCallAndSuppressesLateResult(t *testing.T) {
 			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { router.ServeHTTP(w, r) }))
 			defer server.Close()
 			defer releaseOnce.Do(func() { close(release) })
-			s, code, err := newSession(server.Listener.Addr().String(), time.Minute)
-			if err != nil {
-				t.Fatal(err)
-			}
-			cookie, proof, err := s.pair(code)
-			if err != nil {
-				t.Fatal(err)
-			}
+			s, generation := testSession(t, server.Listener.Addr().String())
 			router = newRoutes(s, exactFake, fake)
 			server.Start()
 			method, path, body := http.MethodGet, "/api/session/wait?after=1&afterSequence=2", ""
@@ -546,8 +514,7 @@ func TestDomainRouteRevocationCancelsCallAndSuppressesLateResult(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			r.AddCookie(cookie)
-			r.Header.Set("X-GK80-Session", proof)
+			r.Header.Set("X-GK80-Channel", generation)
 			r.Header.Set("Origin", server.URL)
 			r.Header.Set("Content-Type", "application/json")
 			if mode == "exact" {
@@ -607,24 +574,16 @@ func TestHistoryRoutesUseServiceAndValidateCursors(t *testing.T) {
 	var router http.Handler
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { router.ServeHTTP(w, r) }))
 	defer server.Close()
-	s, code, err := newSession(server.Listener.Addr().String(), time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cookie, proof, err := s.pair(code)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s, generation := testSession(t, server.Listener.Addr().String())
 	router = newRoutes(s, fake, fake)
 	server.Start()
-	request := func(path string, authenticated bool) (int, string) {
+	request := func(path string, withConnection bool) (int, string) {
 		r, err := http.NewRequest(http.MethodGet, server.URL+path, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if authenticated {
-			r.AddCookie(cookie)
-			r.Header.Set("X-GK80-Session", proof)
+		if withConnection {
+			r.Header.Set("X-GK80-Channel", generation)
 		}
 		resp, err := server.Client().Do(r)
 		if err != nil {
@@ -641,7 +600,7 @@ func TestHistoryRoutesUseServiceAndValidateCursors(t *testing.T) {
 	if status, body := request("/api/tests", true); status != http.StatusOK || !strings.Contains(body, first) || !strings.Contains(body, second) || !strings.Contains(body, `"nextAfter":null`) {
 		t.Fatalf("default page: %d %s", status, body)
 	}
-	if status, _ := request("/api/tests", false); status != http.StatusUnauthorized {
+	if status, _ := request("/api/tests", false); status != http.StatusConflict {
 		t.Fatalf("unprotected list: %d", status)
 	}
 	if status, body := request("/api/tests?limit=1", true); status != http.StatusOK || !strings.Contains(body, `"nextAfter":"`+first+`"`) || strings.Contains(body, second) {
@@ -659,7 +618,7 @@ func TestHistoryRoutesUseServiceAndValidateCursors(t *testing.T) {
 		if status, body := request(item.path, true); status != http.StatusOK || !strings.Contains(body, item.marker) {
 			t.Fatalf("history %s: %d %s", item.path, status, body)
 		}
-		if status, _ := request(item.path, false); status != http.StatusUnauthorized {
+		if status, _ := request(item.path, false); status != http.StatusConflict {
 			t.Fatalf("unprotected %s: %d", item.path, status)
 		}
 	}
@@ -701,14 +660,7 @@ func TestHistoryReadRevocationSuppressesLateResult(t *testing.T) {
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { router.ServeHTTP(w, r) }))
 	defer server.Close()
 	defer releaseOnce.Do(func() { close(release) })
-	s, code, err := newSession(server.Listener.Addr().String(), time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cookie, proof, err := s.pair(code)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s, generation := testSession(t, server.Listener.Addr().String())
 	router = newRoutes(s, fake, fake)
 	server.Start()
 	testID := uuid.NewString()
@@ -716,8 +668,7 @@ func TestHistoryReadRevocationSuppressesLateResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.AddCookie(cookie)
-	r.Header.Set("X-GK80-Session", proof)
+	r.Header.Set("X-GK80-Channel", generation)
 	type response struct {
 		status int
 		body   string
@@ -789,14 +740,7 @@ func TestRevocationDuringBodyReadDoesNotCallService(t *testing.T) {
 				router.ServeHTTP(w, r)
 			}))
 			defer server.Close()
-			s, code, err := newSession(server.Listener.Addr().String(), time.Minute)
-			if err != nil {
-				t.Fatal(err)
-			}
-			cookie, proof, err := s.pair(code)
-			if err != nil {
-				t.Fatal(err)
-			}
+			s, generation := testSession(t, server.Listener.Addr().String())
 			router = newRoutes(s, fake, fake)
 			server.Start()
 			conn, err := net.DialTimeout("tcp", server.Listener.Addr().String(), time.Second)
@@ -804,7 +748,7 @@ func TestRevocationDuringBodyReadDoesNotCallService(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer func() { _ = conn.Close() }()
-			_, err = fmt.Fprintf(conn, "POST %s HTTP/1.1\r\nHost: %s\r\nOrigin: http://%s\r\nCookie: %s=%s\r\nX-GK80-Session: %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", path, s.host, s.host, cookie.Name, cookie.Value, proof, len(body), body[:1])
+			_, err = fmt.Fprintf(conn, "POST %s HTTP/1.1\r\nHost: %s\r\nOrigin: http://%s\r\nX-GK80-Channel: %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", path, s.host, s.host, generation, len(body), body[:1])
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -842,7 +786,7 @@ func TestRejectedIncompletePostDoesNotHoldConnection(t *testing.T) {
 			var router http.Handler
 			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { router.ServeHTTP(w, r) }))
 			defer server.Close()
-			s, _, err := newSession(server.Listener.Addr().String(), time.Minute)
+			s, err := newSession(server.Listener.Addr().String())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -877,14 +821,7 @@ func TestCancelledAdmissionDoesNotHoldIncompletePost(t *testing.T) {
 		router.ServeHTTP(w, r.WithContext(ctx))
 	}))
 	defer server.Close()
-	s, code, err := newSession(server.Listener.Addr().String(), time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cookie, proof, err := s.pair(code)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s, generation := testSession(t, server.Listener.Addr().String())
 	router = newRoutes(s, fake, fake)
 	server.Start()
 	conn, err := net.DialTimeout("tcp", server.Listener.Addr().String(), time.Second)
@@ -892,7 +829,7 @@ func TestCancelledAdmissionDoesNotHoldIncompletePost(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = conn.Close() }()
-	_, err = fmt.Fprintf(conn, "POST /api/session/heartbeat HTTP/1.1\r\nHost: %s\r\nOrigin: http://%s\r\nCookie: %s=%s\r\nX-GK80-Session: %s\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{", s.host, s.host, cookie.Name, cookie.Value, proof)
+	_, err = fmt.Fprintf(conn, "POST /api/session/heartbeat HTTP/1.1\r\nHost: %s\r\nOrigin: http://%s\r\nX-GK80-Channel: %s\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{", s.host, s.host, generation)
 	if err != nil {
 		t.Fatal(err)
 	}

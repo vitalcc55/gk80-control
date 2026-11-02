@@ -151,18 +151,17 @@ function desktopStatus(value: unknown): boolean {
   );
 }
 
-// The proof belongs to the browser session. The core secret never leaves Go.
+// The generation associates requests with the current connection; it is not an access credential.
 export function createBrowserBridge(
-  proof: string,
-  channel: Readonly<{ capability: string; signal: AbortSignal }>,
+  channel: Readonly<{ generation: string; signal: AbortSignal }>,
   fetcher: typeof fetch = fetch,
 ): {
   bridge: DesktopBridge;
   session: SessionBridge;
   service: DemoService;
 } {
-  const { capability, signal: channelSignal } = channel;
-  if (!proof || !capability) throw new Error('browser session unavailable');
+  const { generation, signal: channelSignal } = channel;
+  if (!generation) throw new Error('browser connection unavailable');
   type RequestOptions = {
     method?: 'GET' | 'POST';
     body?: string;
@@ -190,8 +189,7 @@ export function createBrowserBridge(
     try {
       ensureActive();
       const headers = new Headers(options.headers);
-      headers.set('X-GK80-Session', proof);
-      headers.set('X-GK80-Channel', capability);
+      headers.set('X-GK80-Channel', generation);
       if (options.body !== undefined) headers.set('Content-Type', 'application/json');
       const response = await fetcher(path, {
         method: options.method ?? 'GET',

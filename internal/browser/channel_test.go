@@ -51,21 +51,17 @@ func TestConcurrentRevocationWaitsForChannelClosure(t *testing.T) {
 	listener := &delayedCloseListener{Listener: server.Listener, entered: make(chan struct{}), release: make(chan struct{})}
 	server.Listener = listener
 	defer server.Close()
-	s, code, err := newSession(listener.Addr().String(), time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cookie, proof, err := s.pair(code)
+	s, err := newSession(listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
 	fake := &routeService{}
-	handler = newBoundRoutes(s, fake, fake)
+	handler = newRoutes(s, fake, fake)
 	server.Start()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	headers := http.Header{"Origin": []string{server.URL}, "Cookie": []string{cookie.String()}}
-	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/api/session/stream", &websocket.DialOptions{HTTPHeader: headers, Subprotocols: []string{"gk80-v1", "gk80-proof." + proof}})
+	headers := http.Header{"Origin": []string{server.URL}}
+	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/api/session/stream", &websocket.DialOptions{HTTPHeader: headers, Subprotocols: []string{"gk80-v1"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,21 +103,17 @@ func TestRevocationWaitsForAlreadyClosingChannel(t *testing.T) {
 	listener := &delayedCloseListener{Listener: server.Listener, entered: make(chan struct{}), release: make(chan struct{})}
 	server.Listener = listener
 	defer server.Close()
-	s, code, err := newSession(listener.Addr().String(), time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cookie, proof, err := s.pair(code)
+	s, err := newSession(listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
 	fake := &routeService{}
-	handler = newBoundRoutes(s, fake, fake)
+	handler = newRoutes(s, fake, fake)
 	server.Start()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	headers := http.Header{"Origin": []string{server.URL}, "Cookie": []string{cookie.String()}}
-	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/api/session/stream", &websocket.DialOptions{HTTPHeader: headers, Subprotocols: []string{"gk80-v1", "gk80-proof." + proof}})
+	headers := http.Header{"Origin": []string{server.URL}}
+	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/api/session/stream", &websocket.DialOptions{HTTPHeader: headers, Subprotocols: []string{"gk80-v1"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,11 +150,7 @@ func TestBrowserChannelBindsHTTPAndRevokesOnDisconnect(t *testing.T) {
 	var handler http.Handler
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { handler.ServeHTTP(w, r) }))
 	defer server.Close()
-	s, code, err := newSession(server.Listener.Addr().String(), time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cookie, proof, err := s.pair(code)
+	s, err := newSession(server.Listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +162,7 @@ func TestBrowserChannelBindsHTTPAndRevokesOnDisconnect(t *testing.T) {
 		close(cancelled)
 		return contract.ConnectionNotice{}, ctx.Err()
 	}}
-	handler = newBoundRoutes(s, fake, fake)
+	handler = newRoutes(s, fake, fake)
 	server.Start()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -183,8 +171,7 @@ func TestBrowserChannelBindsHTTPAndRevokesOnDisconnect(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		r.AddCookie(cookie)
-		r.Header.Set("X-GK80-Session", proof)
+
 		if channel != "" {
 			r.Header.Set("X-GK80-Channel", channel)
 		}
@@ -195,26 +182,20 @@ func TestBrowserChannelBindsHTTPAndRevokesOnDisconnect(t *testing.T) {
 		defer func() { _ = resp.Body.Close() }()
 		return resp.StatusCode
 	}
-	if got := request(""); got != http.StatusUnauthorized {
+	if got := request(""); got != http.StatusConflict {
 		t.Fatalf("missing channel: %d", got)
 	}
-	dial := func(origin, token string) (*websocket.Conn, *http.Response, error) {
-		h := http.Header{"Origin": []string{origin}, "Cookie": []string{cookie.String()}}
-		return websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/api/session/stream", &websocket.DialOptions{HTTPHeader: h, Subprotocols: []string{"gk80-v1", "gk80-proof." + token}})
+	dial := func(origin string) (*websocket.Conn, *http.Response, error) {
+		h := http.Header{"Origin": []string{origin}}
+		return websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/api/session/stream", &websocket.DialOptions{HTTPHeader: h, Subprotocols: []string{"gk80-v1"}})
 	}
-	if conn, resp, err := dial("http://evil.invalid", proof); err == nil {
+	if conn, resp, err := dial("http://evil.invalid"); err == nil {
 		_ = conn.CloseNow()
 		t.Fatal("foreign origin accepted")
 	} else if resp == nil || resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("foreign origin: %v %+v", err, resp)
 	}
-	if conn, resp, err := dial(server.URL, "wrong"); err == nil {
-		_ = conn.CloseNow()
-		t.Fatal("wrong proof accepted")
-	} else if resp == nil || resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("wrong proof: %v %+v", err, resp)
-	}
-	conn, _, err := dial(server.URL, proof)
+	conn, _, err := dial(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,21 +222,27 @@ func TestBrowserChannelBindsHTTPAndRevokesOnDisconnect(t *testing.T) {
 	if err := conn.Ping(ctx); err != nil {
 		t.Fatalf("channel stopped responding after handshake deadline: %v", err)
 	}
-	if got := request("wrong"); got != http.StatusUnauthorized {
+	if got := request("wrong"); got != http.StatusConflict {
 		t.Fatalf("wrong channel: %d", got)
 	}
-	if second, resp, err := dial(server.URL, proof); err == nil {
-		_ = second.CloseNow()
-		t.Fatal("second channel accepted")
-	} else if resp == nil || resp.StatusCode != http.StatusConflict {
-		t.Fatalf("second channel: %v %+v", err, resp)
+	second, _, err := dial(server.URL)
+	if err != nil {
+		t.Fatal(err)
 	}
+	_, busy, err := second.Read(ctx)
+	var occupied struct {
+		Busy    bool   `json:"busy"`
+		Channel string `json:"channel"`
+	}
+	if err != nil || json.Unmarshal(busy, &occupied) != nil || !occupied.Busy || occupied.Channel != welcome.Channel {
+		t.Fatalf("second connection: %s %v", busy, err)
+	}
+	_ = second.CloseNow()
 	requestDone := make(chan struct{})
 	go func() {
 		defer close(requestDone)
 		r, _ := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/api/session/wait?after=0&afterSequence=0", nil)
-		r.AddCookie(cookie)
-		r.Header.Set("X-GK80-Session", proof)
+
 		r.Header.Set("X-GK80-Channel", welcome.Channel)
 		resp, err := server.Client().Do(r)
 		if err == nil {
@@ -288,20 +275,24 @@ func TestBrowserChannelBindsHTTPAndRevokesOnDisconnect(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("cancelled wait did not return")
 	}
-	if got := request(welcome.Channel); got != http.StatusUnauthorized {
+	if got := request(welcome.Channel); got != http.StatusConflict {
 		t.Fatalf("unexpected frame left HTTP active: %d", got)
 	}
-	var replacement *websocket.Conn
-	for replacement == nil {
-		var response *http.Response
-		replacement, response, err = dial(server.URL, proof)
-		if err == nil {
+	for {
+		s.mu.Lock()
+		closed := s.channel == nil
+		s.mu.Unlock()
+		if closed {
 			break
 		}
-		if response == nil || response.StatusCode != http.StatusConflict || ctx.Err() != nil {
-			t.Fatalf("reconnect: %v", err)
+		if ctx.Err() != nil {
+			t.Fatal("channel did not close")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	replacement, _, err := dial(server.URL)
+	if err != nil {
+		t.Fatal(err)
 	}
 	defer func() { _ = replacement.CloseNow() }()
 	_, raw, err = replacement.Read(ctx)
@@ -314,7 +305,7 @@ func TestBrowserChannelBindsHTTPAndRevokesOnDisconnect(t *testing.T) {
 	if err := json.Unmarshal(raw, &renewed); err != nil || renewed.Channel == "" || renewed.Channel == welcome.Channel {
 		t.Fatalf("renewed channel: %v", err)
 	}
-	if got := request(welcome.Channel); got != http.StatusUnauthorized {
+	if got := request(welcome.Channel); got != http.StatusConflict {
 		t.Fatalf("old channel accepted: %d", got)
 	}
 	if got := request(renewed.Channel); got != http.StatusOK {
@@ -324,7 +315,7 @@ func TestBrowserChannelBindsHTTPAndRevokesOnDisconnect(t *testing.T) {
 	if _, _, err := replacement.Read(ctx); err == nil {
 		t.Fatal("revoked channel remained open")
 	}
-	if got := request(renewed.Channel); got != http.StatusUnauthorized {
+	if got := request(renewed.Channel); got != http.StatusConflict {
 		t.Fatalf("request after revoke: %d", got)
 	}
 }
@@ -333,23 +324,19 @@ func TestBrowserChannelRejectsIncompleteUpgradeBodyWithoutHoldingSession(t *test
 	var handler http.Handler
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { handler.ServeHTTP(w, r) }))
 	defer server.Close()
-	s, code, err := newSession(server.Listener.Addr().String(), time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cookie, proof, err := s.pair(code)
+	s, err := newSession(server.Listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
 	fake := &routeService{}
-	handler = newBoundRoutes(s, fake, fake)
+	handler = newRoutes(s, fake, fake)
 	server.Start()
 	for _, method := range []string{http.MethodGet, http.MethodPost} {
 		conn, err := net.DialTimeout("tcp", server.Listener.Addr().String(), time.Second)
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = fmt.Fprintf(conn, "%s /api/session/stream HTTP/1.1\r\nHost: %s\r\nOrigin: http://%s\r\nCookie: %s=%s\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Protocol: gk80-v1, gk80-proof.%s\r\nContent-Length: 100\r\n\r\nx", method, s.host, s.host, cookie.Name, cookie.Value, proof)
+		_, err = fmt.Fprintf(conn, "%s /api/session/stream HTTP/1.1\r\nHost: %s\r\nOrigin: http://%s\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Protocol: gk80-v1\r\nContent-Length: 100\r\n\r\nx", method, s.host, s.host)
 		if err != nil {
 			t.Fatal(err)
 		}

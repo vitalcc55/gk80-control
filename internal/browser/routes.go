@@ -83,6 +83,7 @@ func (s *browserSession) reply(w http.ResponseWriter, r *http.Request, status in
 
 func newRoutes(s *browserSession, service browserOperations, bootstrap bootstrapOperations) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/api/session/stream", s.openChannel)
 	registerDomainRoutes(mux, s, service, bootstrap)
 	registerHistoryRoutes(mux, s, service)
 	mux.Handle("POST /api/session/check", s.protectClass(heartbeatRequest, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

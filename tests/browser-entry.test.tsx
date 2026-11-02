@@ -12,10 +12,7 @@ vi.mock('../src/desktop/DesktopApp', () => ({
   ),
 }));
 
-const proof = 'p'.repeat(32);
-const channel = 'c'.repeat(32);
-const code = 'a'.repeat(32);
-
+const generation = '11111111-1111-4111-8111-111111111111:1';
 class Socket {
   static instances: Socket[] = [];
   protocol = 'gk80-v1';
@@ -31,8 +28,8 @@ class Socket {
   close() {
     this.onclose?.();
   }
-  accept() {
-    this.onmessage?.({ data: JSON.stringify({ channel }) });
+  receive(value: object) {
+    this.onmessage?.({ data: JSON.stringify(value) });
   }
 }
 
@@ -41,106 +38,111 @@ describe('browser entry', () => {
     sessionStorage.clear();
     Socket.instances = [];
     vi.stubGlobal('WebSocket', Socket);
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ proof }) }));
-    Object.defineProperty(navigator, 'locks', {
-      configurable: true,
-      value: {
-        request: (_name: string, _options: object, callback: (lock: object) => Promise<void>) =>
-          callback({}),
-      },
-    });
+    vi.stubGlobal('fetch', vi.fn());
   });
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
-  it('pairs once and reconnects the same session without another POST', async () => {
+  it('connects automatically and restores the screen after a channel break', async () => {
     render(<BrowserApp />);
-    fireEvent.change(await screen.findByLabelText('Код из окна запуска'), {
-      target: { value: code },
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Подключить' }));
     await waitFor(() => expect(Socket.instances).toHaveLength(1));
-    expect(fetch).toHaveBeenCalledTimes(1);
-    expect(fetch).toHaveBeenCalledWith(
-      '/api/session/pair',
-      expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({ code }),
-        redirect: 'error',
-      }),
-    );
-    expect(Socket.instances[0]?.protocols).toEqual(['gk80-v1', `gk80-proof.${proof}`]);
-    Socket.instances[0]?.accept();
+    expect(Socket.instances[0]?.protocols).toEqual(['gk80-v1']);
+    expect(fetch).not.toHaveBeenCalled();
+    Socket.instances[0]?.receive({ channel: generation });
     expect(await screen.findByText('Рабочий экран')).toBeTruthy();
     fireEvent.change(screen.getByLabelText('Черновик'), { target: { value: 'Клапан' } });
     Socket.instances[0]?.close();
     expect(await screen.findByText(/Подключение…/)).toBeTruthy();
     await waitFor(() => expect(Socket.instances).toHaveLength(2));
-    Socket.instances[1]?.accept();
+    Socket.instances[1]?.receive({ channel: generation });
     expect(await screen.findByText('Рабочий экран')).toBeTruthy();
     expect((screen.getByLabelText('Черновик') as HTMLInputElement).value).toBe('Клапан');
-    expect(fetch).toHaveBeenCalledTimes(1);
-    expect(sessionStorage.getItem('gk80.browser.session')).toBe(proof);
+    expect(fetch).not.toHaveBeenCalled();
   });
 
-  it('restores the session after refresh without pairing again', async () => {
-    sessionStorage.setItem('gk80.browser.session', proof);
+  it('shows an occupied profile without automatically taking it over', async () => {
     render(<BrowserApp />);
     await waitFor(() => expect(Socket.instances).toHaveLength(1));
-    Socket.instances[0]?.accept();
+    Socket.instances[0]?.receive({ busy: true });
+    expect((await screen.findByRole('alert')).textContent).toContain('уже открыта');
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(Socket.instances).toHaveLength(1);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('waits for a previous connection to finish closing', async () => {
+    render(<BrowserApp />);
+    await waitFor(() => expect(Socket.instances).toHaveLength(1));
+    Socket.instances[0]?.receive({ retry: true });
+    await waitFor(() => expect(Socket.instances).toHaveLength(2));
+    Socket.instances[1]?.receive({ channel: generation });
     expect(await screen.findByText('Рабочий экран')).toBeTruthy();
-    expect(fetch).not.toHaveBeenCalled();
   });
 
-  it('does not connect another tab when the lock is occupied', async () => {
-    Object.defineProperty(navigator, 'locks', {
-      configurable: true,
-      value: {
-        request: (_name: string, _options: object, callback: (lock: null) => Promise<void>) =>
-          callback(null),
-      },
-    });
-    sessionStorage.setItem('gk80.browser.session', proof);
-    render(<BrowserApp />);
-    expect((await screen.findByRole('alert')).textContent).toContain('закройте другую вкладку');
-    expect(Socket.instances).toHaveLength(0);
-    expect(fetch).not.toHaveBeenCalled();
-    expect(sessionStorage.getItem('gk80.browser.session')).toBeNull();
-    expect(sessionStorage.getItem('gk80.browser.denied')).toBe('1');
-  });
-
-  it('does not repeat a pairing request whose response is unknown', async () => {
-    vi.mocked(fetch).mockRejectedValue(new Error('connection lost'));
-    render(<BrowserApp />);
-    fireEvent.change(await screen.findByLabelText('Код из окна запуска'), {
-      target: { value: code },
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Подключить' }));
-    expect((await screen.findByRole('alert')).textContent).toContain('перезапустите демонстрацию');
-    expect(fetch).toHaveBeenCalledTimes(1);
-    expect(Socket.instances).toHaveLength(0);
-  });
-
-  it('aborts pairing before releasing the tab on unmount', async () => {
-    vi.mocked(fetch).mockImplementation(() => new Promise(() => {}));
-    const view = render(<BrowserApp />);
-    fireEvent.change(await screen.findByLabelText('Код из окна запуска'), {
-      target: { value: code },
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Подключить' }));
-    const request = vi.mocked(fetch).mock.calls[0]?.[1];
-    expect(request?.signal?.aborted).toBe(false);
-    view.unmount();
-    expect(request?.signal?.aborted).toBe(true);
-  });
-
-  it('stops repeated short-lived channels instead of reconnecting indefinitely', async () => {
-    sessionStorage.setItem('gk80.browser.session', proof);
+  it('stops retrying if a previous connection does not finish closing', async () => {
     render(<BrowserApp />);
     for (let index = 0; index < 5; index++) {
       await waitFor(() => expect(Socket.instances).toHaveLength(index + 1));
-      Socket.instances[index]?.accept();
+      Socket.instances[index]?.receive({ retry: true });
+    }
+    expect((await screen.findByRole('alert')).textContent).toContain('уже открыта');
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(Socket.instances).toHaveLength(5);
+  });
+
+  it('retries a briefly busy channel after losing its own connection', async () => {
+    render(<BrowserApp />);
+    await waitFor(() => expect(Socket.instances).toHaveLength(1));
+    Socket.instances[0]?.receive({ channel: generation });
+    expect(await screen.findByText('Рабочий экран')).toBeTruthy();
+    Socket.instances[0]?.close();
+    await waitFor(() => expect(Socket.instances).toHaveLength(2));
+    Socket.instances[1]?.receive({ busy: true, channel: generation });
+    await waitFor(() => expect(Socket.instances).toHaveLength(3));
+    Socket.instances[2]?.receive({ channel: generation });
+    expect(await screen.findByText('Рабочий экран')).toBeTruthy();
+  });
+
+  it('retries a closing previous connection on page refresh', async () => {
+    const entry = {
+      name: '',
+      entryType: 'navigation',
+      startTime: 0,
+      duration: 0,
+      type: 'reload',
+      toJSON: () => ({}),
+    };
+    vi.spyOn(performance, 'getEntriesByType').mockReturnValue([entry]);
+    render(<BrowserApp />);
+    await waitFor(() => expect(Socket.instances).toHaveLength(1));
+    Socket.instances[0]?.receive({ busy: true, channel: generation });
+    await waitFor(() => expect(Socket.instances).toHaveLength(2));
+    Socket.instances[1]?.receive({ channel: generation });
+    expect(await screen.findByText('Рабочий экран')).toBeTruthy();
+  });
+
+  it('recreates the screen only when the host instance changes', async () => {
+    render(<BrowserApp />);
+    await waitFor(() => expect(Socket.instances).toHaveLength(1));
+    Socket.instances[0]?.receive({ channel: generation });
+    const input = await screen.findByLabelText('Черновик');
+    fireEvent.change(input, { target: { value: 'Клапан' } });
+    Socket.instances[0]?.close();
+    await waitFor(() => expect(Socket.instances).toHaveLength(2));
+    Socket.instances[1]?.receive({ channel: '22222222-2222-4222-8222-222222222222:1' });
+    await waitFor(() => expect(screen.getByLabelText('Черновик')).not.toBe(input));
+    const replacement = screen.getByLabelText('Черновик');
+    expect(replacement).not.toBe(input);
+    expect((replacement as HTMLInputElement).value).toBe('');
+  });
+
+  it('bounds repeated short-lived channels', async () => {
+    render(<BrowserApp />);
+    for (let index = 0; index < 5; index++) {
+      await waitFor(() => expect(Socket.instances).toHaveLength(index + 1));
+      Socket.instances[index]?.receive({ channel: generation });
       Socket.instances[index]?.close();
     }
     expect((await screen.findByRole('alert')).textContent).toContain('не подтверждено');
