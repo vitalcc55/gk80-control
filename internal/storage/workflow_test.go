@@ -5,12 +5,86 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/vitalcc55/gk80-control/internal/contract"
 )
+
+func TestExactStopLookupDistinguishesUnknownConflictAndReopen(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialStore := store
+	t.Cleanup(func() { _ = initialStore.Close() })
+	create := createCommand()
+	created, err := store.Create(ctx, create)
+	if err != nil || created.TestId == nil {
+		t.Fatalf("create: %+v %v", created, err)
+	}
+	record, err := store.Test(ctx, *created.TestId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.LookupStopExact(ctx, record.TestId, record.StopCommandId)
+	if err != nil || result.Status != contract.CommandStatusStatusUnknown {
+		t.Fatalf("reserved: %+v %v", result, err)
+	}
+	missing := uuid.New()
+	if _, err := store.LookupStopExact(ctx, record.TestId, missing); !errors.Is(err, ErrCommandNotFound) {
+		t.Fatalf("missing: %v", err)
+	}
+	if _, err := store.LookupStop(ctx, record.TestId, missing); !errors.Is(err, ErrCommandConflict) {
+		t.Fatalf("existing Stop semantics changed: %v", err)
+	}
+	if _, err := store.LookupStopExact(ctx, record.TestId, create.CommandId); !errors.Is(err, ErrCommandConflict) {
+		t.Fatalf("other operation: %v", err)
+	}
+	if _, err := store.LookupStopExact(ctx, uuid.New(), record.StopCommandId); !errors.Is(err, ErrCommandConflict) {
+		t.Fatalf("other test: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE commands SET test_id = NULL WHERE id = ?`, record.StopCommandId.String()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.LookupStopExact(ctx, record.TestId, record.StopCommandId); err == nil || errors.Is(err, ErrCommandConflict) {
+		t.Fatalf("unlinked Stop falsely reports conflict: %v", err)
+	}
+	if _, err := store.LookupStop(ctx, record.TestId, record.StopCommandId); !errors.Is(err, ErrCommandConflict) {
+		t.Fatalf("existing unlinked Stop semantics changed: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE commands SET test_id = ? WHERE id = ?`, record.TestId.String(), record.StopCommandId.String()); err != nil {
+		t.Fatal(err)
+	}
+	result, err = store.FinishStop(ctx, record.TestId, record.StopCommandId, StopDetails{Actor: "demo-operator", Reason: "operator", AcceptedAt: time.Now()})
+	if err != nil || result.Status != contract.CommandStatusStatusCompleted {
+		t.Fatalf("stop: %+v %v", result, err)
+	}
+	before, err := store.AuditPage(ctx, record.TestId, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	result, err = store.LookupStopExact(ctx, record.TestId, record.StopCommandId)
+	if err != nil || result.Status != contract.CommandStatusStatusCompleted || result.TestId == nil || *result.TestId != record.TestId {
+		t.Fatalf("reopened stop: %+v %v", result, err)
+	}
+	after, err := store.AuditPage(ctx, record.TestId, 0, 100)
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatalf("read changed audit: %v", err)
+	}
+}
 
 func TestFailedStopReasonSurvivesReopenAndReplay(t *testing.T) {
 	ctx := context.Background()

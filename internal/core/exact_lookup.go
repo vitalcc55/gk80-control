@@ -16,7 +16,7 @@ import (
 
 func (h *coreHTTP) lookupAction(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/v1/commands/lookup/"), "/")
-	if (len(parts) != 2 || parts[0] != "start") && (len(parts) != 3 || parts[0] != "confirm") {
+	if (len(parts) != 2 || (parts[0] != "start" && parts[0] != "stop")) && (len(parts) != 3 || parts[0] != "confirm") {
 		w.Header().Set("Connection", "close")
 		_ = http.NewResponseController(w).SetReadDeadline(time.Now())
 		writeAPIError(w, http.StatusBadRequest, "invalid_request", "Invalid request")
@@ -83,7 +83,11 @@ func (h *coreHTTP) lookupCommand(w http.ResponseWriter, r *http.Request, kind st
 		writeAPIError(w, http.StatusConflict, "database_mismatch", "Database does not match")
 		return
 	}
-	if !h.beginWorker() {
+	beginWorker, endWorker := h.beginWorker, h.endWorker
+	if kind == "stop" {
+		beginWorker, endWorker = h.beginStopLookupWorker, h.endStopLookupWorker
+	}
+	if !beginWorker() {
 		closeUnread()
 		writeAPIError(w, http.StatusServiceUnavailable, "state_unavailable", "State is not yet confirmed")
 		return
@@ -93,7 +97,7 @@ func (h *coreHTTP) lookupCommand(w http.ResponseWriter, r *http.Request, kind st
 	defer func() {
 		close(responseDone)
 		if !workerStarted {
-			h.endWorker()
+			endWorker()
 		}
 	}()
 	ctx, cancel := h.readContext(r, owner)
@@ -160,6 +164,13 @@ func (h *coreHTTP) lookupCommand(w http.ResponseWriter, r *http.Request, kind st
 		lookup = func(ctx context.Context) (contract.CommandStatus, error) {
 			return h.exact.LookupConfirm(ctx, testID, actionID, command)
 		}
+	case "stop":
+		var command contract.StopTestCommand
+		_, inspectErr = h.validator.Inspect("StopTestCommand", body, &command)
+		commandID = command.CommandId
+		lookup = func(ctx context.Context) (contract.CommandStatus, error) {
+			return h.exact.LookupStopExact(ctx, testID, commandID)
+		}
 	default:
 		inspectErr = contract.ErrInvalidInput
 	}
@@ -183,7 +194,7 @@ func (h *coreHTTP) lookupCommand(w http.ResponseWriter, r *http.Request, kind st
 	done := make(chan result, 1)
 	workerStarted = true
 	go func() {
-		defer h.endWorker()
+		defer endWorker()
 		status, err := lookup(ctx)
 		done <- result{status: status, err: err}
 		<-responseDone

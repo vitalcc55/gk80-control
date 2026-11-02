@@ -747,6 +747,11 @@ type LookupStartExactParams struct {
 	XGK80DatabaseId LookupDatabaseId `json:"X-GK80-Database-Id"`
 }
 
+// LookupStopExactParams defines parameters for LookupStopExact.
+type LookupStopExactParams struct {
+	XGK80DatabaseId LookupDatabaseId `json:"X-GK80-Database-Id"`
+}
+
 // ListTestsParams defines parameters for ListTests.
 type ListTestsParams struct {
 	// After Последний прочитанный UUID; порядок по UUID, не по времени.
@@ -782,6 +787,9 @@ type LookupCreateExactJSONRequestBody = CreateTestLookupInput
 
 // LookupStartExactJSONRequestBody defines body for LookupStartExact for application/json ContentType.
 type LookupStartExactJSONRequestBody = StartTestLookupInput
+
+// LookupStopExactJSONRequestBody defines body for LookupStopExact for application/json ContentType.
+type LookupStopExactJSONRequestBody = StopTestCommand
 
 // CreateTestJSONRequestBody defines body for CreateTest for application/json ContentType.
 type CreateTestJSONRequestBody = CreateTestCommand

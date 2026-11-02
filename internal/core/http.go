@@ -29,37 +29,60 @@ type exactCommandReader interface {
 	LookupCreateExact(context.Context, contract.CreateTestCommand, []byte) (contract.CommandStatus, error)
 	LookupStart(context.Context, uuid.UUID, contract.StartTestCommand) (contract.CommandStatus, error)
 	LookupConfirm(context.Context, uuid.UUID, uuid.UUID, contract.ConfirmActionCommand) (contract.CommandStatus, error)
+	LookupStopExact(context.Context, uuid.UUID, uuid.UUID) (contract.CommandStatus, error)
 }
 
 type coreHTTP struct {
-	secret         string
-	handshake      http.Handler
-	validator      *contract.InputValidator
-	leases         *uiLeases
-	feed           *eventFeed
-	engine         *demo.Engine
-	store          commandReader
-	exact          exactCommandReader
-	history        historyReader
-	streams        *streamGroup
-	logger         *slog.Logger
-	leaseGate      sync.Mutex
-	leaseReadGate  sync.Mutex
-	pendingMu      sync.Mutex
-	pending        map[*commandAttempt]struct{}
-	pendingVersion uint64
-	recoveryMu     sync.Mutex
-	recovering     bool
-	workerMu       sync.Mutex
-	workers        int
-	workersClosing bool
-	workersDone    chan struct{}
+	secret            string
+	handshake         http.Handler
+	validator         *contract.InputValidator
+	leases            *uiLeases
+	feed              *eventFeed
+	engine            *demo.Engine
+	store             commandReader
+	exact             exactCommandReader
+	history           historyReader
+	streams           *streamGroup
+	logger            *slog.Logger
+	leaseGate         sync.Mutex
+	leaseReadGate     sync.Mutex
+	pendingMu         sync.Mutex
+	pending           map[*commandAttempt]struct{}
+	pendingVersion    uint64
+	recoveryMu        sync.Mutex
+	recovering        bool
+	workerMu          sync.Mutex
+	workers           int
+	stopLookupWorkers int
+	workersClosing    bool
+	workersDone       chan struct{}
+}
+
+func (h *coreHTTP) beginStopLookupWorker() bool {
+	h.workerMu.Lock()
+	defer h.workerMu.Unlock()
+	if h.workersClosing || h.stopLookupWorkers >= 2 {
+		return false
+	}
+	h.stopLookupWorkers++
+	h.workers++
+	return true
+}
+
+func (h *coreHTTP) endStopLookupWorker() {
+	h.workerMu.Lock()
+	defer h.workerMu.Unlock()
+	h.stopLookupWorkers--
+	h.workers--
+	if h.workersClosing && h.workers == 0 {
+		close(h.workersDone)
+	}
 }
 
 func (h *coreHTTP) beginWorker() bool {
 	h.workerMu.Lock()
 	defer h.workerMu.Unlock()
-	if h.workersClosing || h.workers >= 32 {
+	if h.workersClosing || h.workers-h.stopLookupWorkers >= 32 {
 		return false
 	}
 	h.workers++

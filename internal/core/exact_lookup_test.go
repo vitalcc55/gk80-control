@@ -70,6 +70,9 @@ func (blockedExactCreate) LookupStart(context.Context, uuid.UUID, contract.Start
 func (blockedExactCreate) LookupConfirm(context.Context, uuid.UUID, uuid.UUID, contract.ConfirmActionCommand) (contract.CommandStatus, error) {
 	return contract.CommandStatus{}, storage.ErrCommandNotFound
 }
+func (blockedExactCreate) LookupStopExact(context.Context, uuid.UUID, uuid.UUID) (contract.CommandStatus, error) {
+	return contract.CommandStatus{}, storage.ErrCommandNotFound
+}
 
 func TestExactCreateLookupMatchesStoredIdentityWithoutExecuting(t *testing.T) {
 	store, err := storage.Open(t.TempDir())

@@ -800,16 +800,37 @@ func (s *Store) CompleteStart(ctx context.Context, testID, commandID uuid.UUID) 
 	return nil
 }
 
+var errStopLinkUnavailable = errors.New("stop command has no valid linked test")
+
 // LookupStop never invokes the simulator. A reserved command has no durable outcome.
 func (s *Store) LookupStop(ctx context.Context, testID, commandID uuid.UUID) (contract.CommandStatus, error) {
+	result, err := s.LookupStopExact(ctx, testID, commandID)
+	if errors.Is(err, ErrCommandNotFound) || errors.Is(err, errStopLinkUnavailable) {
+		return contract.CommandStatus{}, ErrCommandConflict
+	}
+	return result, err
+}
+
+// LookupStopExact distinguishes an absent command from an occupied identifier.
+func (s *Store) LookupStopExact(ctx context.Context, testID, commandID uuid.UUID) (contract.CommandStatus, error) {
 	var operation, state string
 	var linked, reason sql.NullString
 	err := s.db.QueryRowContext(ctx, `SELECT operation, status, test_id, reason FROM commands WHERE id = ?`, commandID.String()).Scan(&operation, &state, &linked, &reason)
-	if errors.Is(err, sql.ErrNoRows) || (err == nil && (operation != "stop" || !linked.Valid || linked.String != testID.String())) {
+	if errors.Is(err, sql.ErrNoRows) {
+		return contract.CommandStatus{}, ErrCommandNotFound
+	}
+	if err == nil && operation != "stop" {
 		return contract.CommandStatus{}, ErrCommandConflict
 	}
 	if err != nil {
 		return contract.CommandStatus{}, err
+	}
+	linkedID, parseErr := uuid.Parse(linked.String)
+	if !linked.Valid || parseErr != nil || linkedID == uuid.Nil || linkedID.String() != linked.String {
+		return contract.CommandStatus{}, errStopLinkUnavailable
+	}
+	if linkedID != testID {
+		return contract.CommandStatus{}, ErrCommandConflict
 	}
 	if state == "reserved" {
 		state = "unknown"

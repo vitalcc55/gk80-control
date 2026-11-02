@@ -64,6 +64,31 @@ paths:
                 $ref: "#/components/schemas/CommandStatus"
         default:
           $ref: "#/components/responses/Error"
+  /v1/commands/lookup/stop/{testId}:
+    post:
+      operationId: lookupStopExact
+      description: >-
+        Сверяет Stop по идентификаторам команды, испытания и базы без повторной
+        остановки. Отсутствие записи или зарезервированный ID означает unknown
+        и не подтверждает отсутствие выполняющейся остановки.
+      parameters:
+        - $ref: "#/components/parameters/LookupDatabaseId"
+        - $ref: "#/components/parameters/LookupTestId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StopTestCommand"
+      responses:
+        "200":
+          description: Совпавшее сохранённое состояние либо unknown, если запись ещё не подтверждена.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandStatus"
+        default:
+          $ref: "#/components/responses/Error"
   /v1/commands/lookup/confirm/{testId}/{actionId}:
     post:
       operationId: lookupConfirmExact
