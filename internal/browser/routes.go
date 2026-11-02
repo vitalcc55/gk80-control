@@ -6,6 +6,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"path"
 	"time"
 
 	"github.com/google/uuid"
@@ -147,5 +148,15 @@ func newRoutes(s *browserSession, service sessionOperations) http.Handler {
 		}
 		s.reply(w, r, http.StatusOK, status)
 	})))
-	return mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if path.Clean(r.URL.Path) != r.URL.Path {
+			closeUnreadRequest(w)
+			http.Error(w, "invalid path", http.StatusBadRequest)
+			return
+		}
+		if _, pattern := mux.Handler(r); pattern == "" {
+			closeUnreadRequest(w)
+		}
+		mux.ServeHTTP(w, r)
+	})
 }

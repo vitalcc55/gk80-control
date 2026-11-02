@@ -185,19 +185,27 @@ func (s *browserSession) protect(next http.Handler) http.Handler {
 	return s.protectClass(ordinaryRequest, next)
 }
 
+func closeUnreadRequest(w http.ResponseWriter) {
+	w.Header().Set("Connection", "close")
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now())
+}
+
 func (s *browserSession) protectClass(class requestClass, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Host != s.host || (r.Header.Get("Origin") != "" && r.Header.Get("Origin") != "http://"+s.host) || (r.Method != http.MethodGet && r.Method != http.MethodHead && r.Header.Get("Origin") != "http://"+s.host) {
+			closeUnreadRequest(w)
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
 		ctx, cancel, status := s.admitClass(r, class)
 		if status != 0 {
+			closeUnreadRequest(w)
 			http.Error(w, "session unavailable", status)
 			return
 		}
 		defer cancel()
 		if ctx.Err() != nil {
+			closeUnreadRequest(w)
 			http.Error(w, "request cancelled", http.StatusRequestTimeout)
 			return
 		}

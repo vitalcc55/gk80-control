@@ -258,3 +258,78 @@ func TestRevocationDuringBodyReadDoesNotCallService(t *testing.T) {
 		})
 	}
 }
+
+func TestRejectedIncompletePostDoesNotHoldConnection(t *testing.T) {
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodPost, "/api/session/heartbeat"},
+		{http.MethodPost, "/api/unknown"},
+		{http.MethodPost, "/api//session/heartbeat"},
+		{http.MethodGet, "/api/session/heartbeat"},
+	} {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			fake := &routeService{ticket: uuid.NewString()}
+			var router http.Handler
+			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { router.ServeHTTP(w, r) }))
+			defer server.Close()
+			s, _, err := newSession(server.Listener.Addr().String(), time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			router = newRoutes(s, fake)
+			server.Start()
+			conn, err := net.DialTimeout("tcp", server.Listener.Addr().String(), time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = conn.Close() }()
+			_, err = fmt.Fprintf(conn, "%s %s HTTP/1.1\r\nHost: %s\r\nOrigin: http://%s\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{", tc.method, tc.path, s.host, s.host)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			_, err = io.ReadAll(conn)
+			if e, ok := err.(net.Error); ok && e.Timeout() {
+				t.Fatal("rejected request held connection open")
+			}
+		})
+	}
+}
+
+func TestCancelledAdmissionDoesNotHoldIncompletePost(t *testing.T) {
+	fake := &routeService{ticket: uuid.NewString()}
+	var router http.Handler
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithCancel(r.Context())
+		cancel()
+		router.ServeHTTP(w, r.WithContext(ctx))
+	}))
+	defer server.Close()
+	s, code, err := newSession(server.Listener.Addr().String(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie, proof, err := s.pair(code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router = newRoutes(s, fake)
+	server.Start()
+	conn, err := net.DialTimeout("tcp", server.Listener.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	_, err = fmt.Fprintf(conn, "POST /api/session/heartbeat HTTP/1.1\r\nHost: %s\r\nOrigin: http://%s\r\nCookie: %s=%s\r\nX-GK80-Session: %s\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{", s.host, s.host, cookie.Name, cookie.Value, proof)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	_, err = io.ReadAll(conn)
+	if e, ok := err.(net.Error); ok && e.Timeout() {
+		t.Fatal("cancelled request held connection open")
+	}
+}
