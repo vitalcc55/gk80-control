@@ -87,9 +87,14 @@ export function DesktopApp({
   useEffect(() => {
     generation.current += 1;
     let subscribed = true;
-    const unsubscribe = bridge.subscribe((next) => {
-      if (subscribed) apply(next);
-    });
+    const unsubscribe = bridge.subscribe(
+      (next, polled) => {
+        if (subscribed) apply(next, polled ? current.current : undefined);
+      },
+      () => {
+        if (subscribed && current.current.status?.status !== 'ready') fail(current.current);
+      },
+    );
     const baseline = current.current;
     void bridge.status().then(
       (next) => {

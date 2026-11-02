@@ -30,6 +30,45 @@ function status(revision: number, state: DesktopStatusStatus): DesktopStatus {
   };
 }
 
+it('recovers a browser status poll after a temporary startup error at the same revision', async () => {
+  let notify: (value: DesktopStatus, polled?: boolean) => void = () => {};
+  let fail: () => void = () => {};
+  const starting = status(1, DesktopStatusStatus.DesktopStatusStatusStarting);
+  const bridge: DesktopBridge = {
+    status: async () => starting,
+    verify: async () => starting,
+    subscribe: (callback, onError) => {
+      notify = callback;
+      fail = onError ?? (() => {});
+      return () => {};
+    },
+  };
+  render(<DesktopApp bridge={bridge} />);
+  await screen.findByText('Запуск ядра');
+  act(() => fail());
+  expect(screen.getByRole('button', { name: 'Повторить связь' })).toBeTruthy();
+  act(() => notify(starting, true));
+  expect(screen.getByText('Запуск ядра')).toBeTruthy();
+});
+
+it('does not replace a ready desktop with a transient browser status error', async () => {
+  let fail: () => void = () => {};
+  const ready = status(1, DesktopStatusStatus.DesktopStatusStatusReady);
+  const bridge: DesktopBridge = {
+    status: async () => ready,
+    verify: async () => ready,
+    subscribe: (_callback, onError) => {
+      fail = onError ?? (() => {});
+      return () => {};
+    },
+  };
+  render(<DesktopApp bridge={bridge} />);
+  await screen.findByText('При запуске ядро ответило');
+  act(() => fail());
+  expect(screen.getByText('При запуске ядро ответило')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Повторить связь' })).toBeNull();
+});
+
 it('does not let an old verification reply restore a core that exited', async () => {
   let notify: (value: DesktopStatus) => void = () => {};
   let finish: (value: DesktopStatus) => void = () => {};

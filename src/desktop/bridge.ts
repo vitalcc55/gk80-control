@@ -9,7 +9,10 @@ import type {
 export interface DesktopBridge {
   status(): Promise<DesktopStatus>;
   verify(): Promise<DesktopStatus>;
-  subscribe(callback: (status: DesktopStatus) => void): () => void;
+  subscribe(
+    callback: (status: DesktopStatus, polled?: boolean) => void,
+    onError?: () => void,
+  ): () => void;
 }
 
 export interface SessionBridge {
