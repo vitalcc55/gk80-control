@@ -194,6 +194,7 @@ func registerDomainRoutes(mux *http.ServeMux, s *browserSession, service domainO
 		actionID, actionOK := singleHeader(r, "X-GK80-Action", false)
 		validPath := kind == "create" && testID == "" && actionID == "" ||
 			kind == "start" && validID(testID) && actionID == "" ||
+			kind == "stop" && validID(testID) && actionID == "" ||
 			kind == "confirm" && validID(testID) && validID(actionID)
 		if !validID(id) || !dbOK || !validID(database) || !kindOK || !testOK || !actionOK || !validPath || r.URL.RawQuery != "" || r.URL.ForceQuery {
 			invalid(w, r)
@@ -216,6 +217,10 @@ func registerDomainRoutes(mux *http.ServeMux, s *browserSession, service domainO
 			commandID = input.CommandId
 		case "confirm":
 			var input desktop.ConfirmCommandInput
+			err = json.Unmarshal(body, &input)
+			commandID = input.CommandId
+		case "stop":
+			var input desktop.StopCommandInput
 			err = json.Unmarshal(body, &input)
 			commandID = input.CommandId
 		}

@@ -29,6 +29,7 @@ func TestExactLookupRoutePreservesAttemptsAndRejectsInvalidRequests(t *testing.T
 	body := `{"commandId":"` + command + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`
 	start := `{"commandId":"` + command + `","expectedRevision":0,"valveClosed":true,"connectionConfirmed":true}`
 	confirm := `{"commandId":"` + command + `","expectedRevision":0}`
+	stop := `{ "commandId" : "` + command + `" }`
 	var expectedKind, expectedTest, expectedAction, expectedBody string
 	var calls int
 	var mu sync.Mutex
@@ -104,6 +105,10 @@ func TestExactLookupRoutePreservesAttemptsAndRejectsInvalidRequests(t *testing.T
 		{"create", "", "", body, contract.ExactLookupResultOutcomeMatch},
 		{"start", testID, "", start, contract.ExactLookupResultOutcomeUnknown},
 		{"confirm", testID, action, confirm, contract.ExactLookupResultOutcomeConflict},
+		{"stop", testID, "", stop, contract.ExactLookupResultOutcomeMatch},
+		{"stop", testID, "", stop, contract.ExactLookupResultOutcomeUnknown},
+		{"stop", testID, "", stop, contract.ExactLookupResultOutcomeConflict},
+		{"stop", testID, "", stop, contract.ExactLookupResultOutcomeDatabaseMismatch},
 		{"create", "", "", body, contract.ExactLookupResultOutcomeDatabaseMismatch},
 	} {
 		mu.Lock()
@@ -133,6 +138,11 @@ func TestExactLookupRoutePreservesAttemptsAndRejectsInvalidRequests(t *testing.T
 		{"create", "", "", body, func(r *http.Request) { r.Header.Add("X-GK80-Database", database) }},
 		{"create", testID, "", body, nil},
 		{"confirm", testID, "", confirm, nil},
+		{"stop", "", "", stop, nil},
+		{"stop", "invalid", "", stop, nil},
+		{"stop", testID, action, stop, nil},
+		{"stop", testID, "", `{}`, nil},
+		{"stop", testID, "", strings.Replace(stop, command, uuid.NewString(), 1), nil},
 		{"start", testID, "", `{}`, nil},
 		{"create", "", "", strings.Replace(body, command, uuid.NewString(), 1), nil},
 		{"create", "", "", body + strings.Repeat(" ", 8193-len(body)), nil},

@@ -391,7 +391,12 @@ func TestBrowserRoutesRunAndReopenCore(t *testing.T) {
 		t.Fatalf("measurement: %+v", view.Snapshot.Measurements[0])
 	}
 	stopID := view.Snapshot.ActiveTest.StopCommandId
-	processRequest(t, p, http.MethodPost, "/api/tests/"+id+"/stop", contract.StopTestCommand{CommandId: stopID}, &command, http.StatusOK)
+	stop := contract.StopTestCommand{CommandId: stopID}
+	stopJSON, err := json.Marshal(stop)
+	if err != nil {
+		t.Fatal(err)
+	}
+	processRequest(t, p, http.MethodPost, "/api/tests/"+id+"/stop", stop, &command, http.StatusOK)
 	if command.Status != contract.CommandStatusStatusAccepted && command.Status != contract.CommandStatusStatusCompleted {
 		t.Fatalf("stop: %+v", command)
 	}
@@ -410,6 +415,14 @@ func TestBrowserRoutesRunAndReopenCore(t *testing.T) {
 	if record.Outcome != "interrupted" || record.DataQuality != "incomplete" || record.Parameters != create.Parameters || !record.Demo || record.OperatorId != "demo-operator" {
 		t.Fatalf("saved record: %+v", record)
 	}
+	lookup, err = p.exact(handshake.DatabaseId.String(), "stop", id, "", stopID.String(), stopJSON)
+	if err != nil || lookup.Outcome != contract.ExactLookupResultOutcomeMatch || lookup.Command == nil || lookup.Command.Status != contract.CommandStatusStatusCompleted {
+		t.Fatalf("exact stop: %+v %v", lookup, err)
+	}
+	lookup, err = p.exact(handshake.DatabaseId.String(), "stop", uuid.NewString(), "", stopID.String(), stopJSON)
+	if err != nil || lookup.Outcome != contract.ExactLookupResultOutcomeConflict {
+		t.Fatalf("exact stop wrong test: %+v %v", lookup, err)
+	}
 	if count := p.creates.Load(); count != 1 {
 		t.Fatalf("create POST count before shutdown: %d", count)
 	}
@@ -422,6 +435,10 @@ func TestBrowserRoutesRunAndReopenCore(t *testing.T) {
 		t.Fatalf("reopened handshake: %+v", status.Handshake)
 	}
 	waitProcessView(t, p, "reopened live", func(v contract.SessionView) bool { return v.Connection.Status == contract.Live && v.Snapshot != nil })
+	lookup, err = p.exact(handshake.DatabaseId.String(), "stop", id, "", stopID.String(), stopJSON)
+	if err != nil || lookup.Outcome != contract.ExactLookupResultOutcomeMatch || lookup.Command == nil || lookup.Command.Status != contract.CommandStatusStatusCompleted {
+		t.Fatalf("exact stop after reopen: %+v %v", lookup, err)
+	}
 	lookup, err = p.exact(handshake.DatabaseId.String(), "create", "", "", create.CommandId.String(), createBody)
 	if err != nil || lookup.Outcome != contract.ExactLookupResultOutcomeMatch || lookup.Command == nil || lookup.Command.TestId == nil || lookup.Command.TestId.String() != id {
 		t.Fatalf("exact after reopen: %+v %v", lookup, err)
@@ -479,8 +496,8 @@ func TestBrowserRoutesRunAndReopenCore(t *testing.T) {
 		}
 	}
 	processRequest(t, p, http.MethodGet, "/api/commands/"+stopID.String(), nil, &command, http.StatusOK)
-	if command.Status != contract.CommandStatusStatusCompleted {
-		t.Fatalf("reopened stop: %+v", command)
+	if command.Status != contract.CommandStatusStatusUnknown {
+		t.Fatalf("generic lookup must not identify reopened Stop: %+v", command)
 	}
 	// An explicit historical replay may remain unconfirmed at the owner boundary.
 	// It must never be interpreted as a new, successful stop.
