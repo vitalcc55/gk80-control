@@ -12,6 +12,39 @@ security:
   - coreSecret: []
     uiLease: []
 paths:
+  /v1/commands/lookup/create:
+    post:
+      operationId: lookupCreateExact
+      description: >-
+        Сверяет исходное содержимое Create с сохранённой командой без повторного
+        действия. Отсутствие записи возвращает unknown и не подтверждает отсутствие
+        выполняющейся команды. Идентификатор базы должен совпадать с handshake.
+        Передавайте сохранённое исходное JSON-тело без преобразования чисел через
+        float64 или JavaScript number: такое преобразование может изменить идентичность.
+        Размер исходного тела не должен превышать 8192 байта.
+      parameters:
+        - name: X-GK80-Database-Id
+          in: header
+          required: true
+          schema:
+            type: string
+            format: uuid
+            not: { const: "00000000-0000-0000-0000-000000000000" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTestLookupInput"
+      responses:
+        "200":
+          description: Совпавшее сохранённое состояние либо unknown, если запись пока не найдена.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandStatus"
+        default:
+          $ref: "#/components/responses/Error"
   /v1/handshake:
     get:
       operationId: getHandshake
@@ -416,6 +449,27 @@ components:
           description: Для нового demo-испытания максимум 3600 секунд; точный повтор ранее принятой команды сохраняет прежний результат.
         direction: { type: string, enum: [pressure] }
         actuator: { type: boolean, const: false, x-go-type: bool }
+    CreateTestLookupInput:
+      type: object
+      additionalProperties: false
+      required: [commandId, expectedRevision, parameters]
+      properties:
+        commandId:
+          type: string
+          format: uuid
+          not: { const: "00000000-0000-0000-0000-000000000000" }
+        expectedRevision: { type: integer, format: int64 }
+        parameters:
+          type: object
+          additionalProperties: false
+          required: [valve, areaM2, pmaxPa, measurementSeconds, direction, actuator]
+          properties:
+            valve: { type: string }
+            areaM2: { type: number, format: double }
+            pmaxPa: { type: number, format: double }
+            measurementSeconds: { type: number, format: double }
+            direction: { type: string }
+            actuator: { type: boolean }
     CreateTestCommand:
       type: object
       additionalProperties: false

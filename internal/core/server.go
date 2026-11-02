@@ -211,7 +211,7 @@ func run(ctx context.Context, input io.Reader, output io.Writer, fallback io.Wri
 	if err != nil {
 		return errors.New("core listener unavailable")
 	}
-	handler = &coreHTTP{secret: bootstrap.Secret, handshake: handshakeHandler(bootstrap.Secret, runID, store.DatabaseID()), validator: validator, leases: leases, feed: feed, engine: engine, store: store, history: store, streams: newStreamGroup(), logger: logger.Application(diagnostics.ComponentCore)}
+	handler = &coreHTTP{secret: bootstrap.Secret, handshake: handshakeHandler(bootstrap.Secret, runID, store.DatabaseID()), validator: validator, leases: leases, feed: feed, engine: engine, store: store, exact: store, history: store, streams: newStreamGroup(), logger: logger.Application(diagnostics.ComponentCore)}
 	stopCommandLogging, commandLogDone = startCommandLogging(engine, handler, logger)
 	server = &http.Server{
 		Handler:           handler,

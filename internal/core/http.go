@@ -24,6 +24,11 @@ type commandReader interface {
 	Command(context.Context, uuid.UUID) (contract.CommandStatus, error)
 }
 
+type exactCreateReader interface {
+	DatabaseID() uuid.UUID
+	LookupCreateExact(context.Context, contract.CreateTestCommand, []byte) (contract.CommandStatus, error)
+}
+
 type coreHTTP struct {
 	secret         string
 	handshake      http.Handler
@@ -32,6 +37,7 @@ type coreHTTP struct {
 	feed           *eventFeed
 	engine         *demo.Engine
 	store          commandReader
+	exact          exactCreateReader
 	history        historyReader
 	streams        *streamGroup
 	logger         *slog.Logger
@@ -96,6 +102,8 @@ func (h *coreHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.lease(w, r)
 	case "/v1/events":
 		h.events(w, r)
+	case "/v1/commands/lookup/create":
+		h.lookupCreate(w, r)
 	case "/v1/snapshot":
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", "GET")

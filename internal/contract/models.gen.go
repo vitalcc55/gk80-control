@@ -453,6 +453,20 @@ type CreateTestCommand struct {
 	Parameters       TestParameters     `json:"parameters"`
 }
 
+// CreateTestLookupInput defines model for CreateTestLookupInput.
+type CreateTestLookupInput struct {
+	CommandId        openapi_types.UUID `json:"commandId"`
+	ExpectedRevision int64              `json:"expectedRevision"`
+	Parameters       struct {
+		Actuator           bool    `json:"actuator"`
+		AreaM2             float64 `json:"areaM2"`
+		Direction          string  `json:"direction"`
+		MeasurementSeconds float64 `json:"measurementSeconds"`
+		PmaxPa             float64 `json:"pmaxPa"`
+		Valve              string  `json:"valve"`
+	} `json:"parameters"`
+}
+
 // DesktopStatus defines model for DesktopStatus.
 type DesktopStatus struct {
 	// ConnectionRevision Ревизия проверки связи; обновление одной диагностики её не меняет.
@@ -665,6 +679,11 @@ type CommandResult = CommandStatus
 // Error defines model for Error.
 type Error = ApiError
 
+// LookupCreateExactParams defines parameters for LookupCreateExact.
+type LookupCreateExactParams struct {
+	XGK80DatabaseId openapi_types.UUID `json:"X-GK80-Database-Id"`
+}
+
 // ListTestsParams defines parameters for ListTests.
 type ListTestsParams struct {
 	// After Последний прочитанный UUID; порядок по UUID, не по времени.
@@ -691,6 +710,9 @@ type AcquireUiLeaseParams struct {
 	// XGK80UILease Ранее выданное право для восстановления того же клиента.
 	XGK80UILease *openapi_types.UUID `json:"X-GK80-UI-Lease,omitempty"`
 }
+
+// LookupCreateExactJSONRequestBody defines body for LookupCreateExact for application/json ContentType.
+type LookupCreateExactJSONRequestBody = CreateTestLookupInput
 
 // CreateTestJSONRequestBody defines body for CreateTest for application/json ContentType.
 type CreateTestJSONRequestBody = CreateTestCommand

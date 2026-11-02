@@ -50,6 +50,21 @@ func validateJSON(t *testing.T, schema *jsonschema.Schema, value any, valid bool
 	}
 }
 
+func TestCreateLookupAcceptsHistoricalValuesButRequiresFullStructure(t *testing.T) {
+	value := map[string]any{
+		"commandId": uuid.NewString(), "expectedRevision": 0,
+		"parameters": map[string]any{"valve": "V", "areaM2": 0, "pmaxPa": 1000, "measurementSeconds": 1, "direction": "pressure", "actuator": false},
+	}
+	validateJSON(t, schemaFor(t, "CreateTestCommand"), value, false)
+	lookup := schemaFor(t, "CreateTestLookupInput")
+	validateJSON(t, lookup, value, true)
+	value["commandId"] = uuid.Nil.String()
+	validateJSON(t, lookup, value, false)
+	value["commandId"] = uuid.NewString()
+	delete(value, "expectedRevision")
+	validateJSON(t, lookup, value, false)
+}
+
 func TestMeasurementContractPreservesNullAndRejectsInvalidData(t *testing.T) {
 	schema := schemaFor(t, "Measurement")
 	measurement := Measurement{
