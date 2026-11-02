@@ -154,12 +154,15 @@ function desktopStatus(value: unknown): boolean {
 // The proof belongs to the browser session. The core secret never leaves Go.
 export function createBrowserBridge(
   proof: string,
+  channel: Readonly<{ capability: string; signal: AbortSignal }>,
   fetcher: typeof fetch = fetch,
 ): {
   bridge: DesktopBridge;
   session: SessionBridge;
   service: DemoService;
 } {
+  const { capability, signal: channelSignal } = channel;
+  if (!proof || !capability) throw new Error('browser session unavailable');
   type RequestOptions = {
     method?: 'GET' | 'POST';
     body?: string;
@@ -175,12 +178,20 @@ export function createBrowserBridge(
   ): Promise<unknown> {
     const controller = new AbortController();
     const abort = () => controller.abort();
-    if (options.signal?.aborted) abort();
-    else options.signal?.addEventListener('abort', abort, { once: true });
+    if (channelSignal.aborted || options.signal?.aborted)
+      throw new Error('browser channel unavailable');
+    channelSignal.addEventListener('abort', abort, { once: true });
+    options.signal?.addEventListener('abort', abort, { once: true });
     const timeout = setTimeout(abort, 3500);
+    const ensureActive = () => {
+      if (controller.signal.aborted || channelSignal.aborted)
+        throw new Error('browser channel unavailable');
+    };
     try {
+      ensureActive();
       const headers = new Headers(options.headers);
       headers.set('X-GK80-Session', proof);
+      headers.set('X-GK80-Channel', capability);
       if (options.body !== undefined) headers.set('Content-Type', 'application/json');
       const response = await fetcher(path, {
         method: options.method ?? 'GET',
@@ -191,9 +202,11 @@ export function createBrowserBridge(
         ...(options.body === undefined ? {} : { body: options.body }),
         signal: controller.signal,
       });
+      ensureActive();
       if (!response.ok) {
         if (response.status === 409) {
           const failure = await response.text().catch(() => '');
+          ensureActive();
           if (failure.trim() === '{"error":"command_conflict"}') throw new CommandConflictError();
         }
         throw new Error('browser request unavailable');
@@ -204,6 +217,7 @@ export function createBrowserBridge(
       }
       if (response.status === 204) throw new Error('invalid browser response');
       const result: unknown = await response.json();
+      ensureActive();
       if (typeof result !== 'object' || result === null || Array.isArray(result))
         throw new Error('invalid browser response');
       if (options.validate && !options.validate(result))
@@ -212,6 +226,7 @@ export function createBrowserBridge(
     } finally {
       clearTimeout(timeout);
       options.signal?.removeEventListener('abort', abort);
+      channelSignal.removeEventListener('abort', abort);
     }
   }
 
@@ -249,17 +264,37 @@ export function createBrowserBridge(
             '/api/status',
             { signal: controller.signal, validate: desktopStatus },
           );
-          if (!controller.signal.aborted && generation === statusGeneration) callback(status, true);
+          if (
+            !controller.signal.aborted &&
+            !channelSignal.aborted &&
+            generation === statusGeneration
+          )
+            callback(status, true);
         } catch {
-          if (!controller.signal.aborted && generation === statusGeneration) onError?.();
+          if (
+            !controller.signal.aborted &&
+            !channelSignal.aborted &&
+            generation === statusGeneration
+          )
+            onError?.();
         }
-        if (!controller.signal.aborted) timer = setTimeout(poll, 1500);
+        if (!controller.signal.aborted && !channelSignal.aborted) timer = setTimeout(poll, 1500);
       };
-      timer = setTimeout(poll, 1500);
-      return () => {
+      const dispose = () => {
         controller.abort();
         if (timer) clearTimeout(timer);
+        channelSignal.removeEventListener('abort', channelClosed);
       };
+      const channelClosed = () => {
+        if (controller.signal.aborted) return;
+        dispose();
+        onError?.();
+      };
+      if (!channelSignal.aborted) {
+        channelSignal.addEventListener('abort', channelClosed, { once: true });
+        timer = setTimeout(poll, 1500);
+      } else queueMicrotask(channelClosed);
+      return dispose;
     },
   };
   const session: SessionBridge = {
