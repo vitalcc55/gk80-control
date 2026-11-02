@@ -15,6 +15,7 @@ import (
 	"reflect"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,6 +35,33 @@ type processBrowser struct {
 	done    chan error
 	once    sync.Once
 	err     error
+	creates atomic.Int32
+	lost    chan error
+}
+
+// lostResponseWriter closes one response after the real service returns and
+// before its headers reach the client. It is used only by this process test.
+type lostResponseWriter struct {
+	http.ResponseWriter
+	result chan<- error
+}
+
+func (w *lostResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+func (w *lostResponseWriter) FlushError() error {
+	return http.NewResponseController(w.ResponseWriter).Flush()
+}
+func (w *lostResponseWriter) WriteHeader(status int) {
+	if status != http.StatusOK {
+		w.result <- fmt.Errorf("unexpected create HTTP status: %d", status)
+		w.ResponseWriter.WriteHeader(status)
+		return
+	}
+	conn, _, err := http.NewResponseController(w.ResponseWriter).Hijack()
+	if err == nil {
+		err = conn.Close()
+	}
+	w.result <- err
+	panic(http.ErrAbortHandler)
 }
 
 func (p *processBrowser) request(method, path string, body any) (int, []byte, error) {
@@ -106,7 +134,7 @@ func (p *processBrowser) close() error {
 	return p.err
 }
 
-func startProcessBrowser(t *testing.T, executable, profile string) *processBrowser {
+func startProcessBrowser(t *testing.T, executable, profile string, loseCreate bool) *processBrowser {
 	t.Helper()
 	p := &processBrowser{owner: desktop.NewOwner(uuid.New(), executable, profile, "test", "0.1.0", slog.New(slog.NewTextHandler(io.Discard, nil)), nil, false, func(contract.DesktopStatus) {})}
 	t.Cleanup(func() {
@@ -127,7 +155,17 @@ func startProcessBrowser(t *testing.T, executable, profile string) *processBrows
 		time.Sleep(20 * time.Millisecond)
 	}
 	var handler http.Handler
-	p.server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { handler.ServeHTTP(w, r) }))
+	if loseCreate {
+		p.lost = make(chan error, 1)
+	}
+	p.server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/api/tests" {
+			if p.creates.Add(1) == 1 && p.lost != nil {
+				w = &lostResponseWriter{ResponseWriter: w, result: p.lost}
+			}
+		}
+		handler.ServeHTTP(w, r)
+	}))
 	var code string
 	var err error
 	p.session, code, err = newSession(p.server.Listener.Addr().String(), 5*time.Minute)
@@ -215,7 +253,7 @@ func TestBrowserRoutesRunAndReopenCore(t *testing.T) {
 		t.Fatalf("build core: %v %s", err, output)
 	}
 	profile := t.TempDir()
-	p := startProcessBrowser(t, executable, profile)
+	p := startProcessBrowser(t, executable, profile, true)
 	var status contract.DesktopStatus
 	processRequest(t, p, http.MethodGet, "/api/status", nil, &status, http.StatusOK)
 	if status.Handshake == nil {
@@ -224,15 +262,29 @@ func TestBrowserRoutesRunAndReopenCore(t *testing.T) {
 	handshake := *status.Handshake
 	view := waitProcessView(t, p, "initial live", func(v contract.SessionView) bool { return v.Connection.Status == contract.Live && v.Snapshot != nil })
 	create := contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: view.Snapshot.Revision, Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}}
-	var created contract.CommandDispatch
-	processRequest(t, p, http.MethodPost, "/api/tests", create, &created, http.StatusOK)
-	if created.Delivery != contract.Response || created.Command == nil || created.Command.Status != contract.CommandStatusStatusCompleted || created.Command.TestId == nil {
-		t.Fatalf("create: %+v", created)
+	statusCode, _, requestErr := p.request(http.MethodPost, "/api/tests", create)
+	if requestErr == nil || statusCode != 0 {
+		t.Fatalf("create response was not lost: status=%d error=%v", statusCode, requestErr)
 	}
-	id := created.Command.TestId.String()
+	select {
+	case err := <-p.lost:
+		if err != nil {
+			t.Fatalf("drop create response: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("create response was not intercepted")
+	}
+	var command contract.CommandStatus
+	processRequest(t, p, http.MethodGet, "/api/commands/"+create.CommandId.String(), nil, &command, http.StatusOK)
+	if command.CommandId != create.CommandId || command.Status != contract.CommandStatusStatusCompleted || command.TestId == nil {
+		t.Fatalf("created command after lost response: %+v", command)
+	}
+	id := command.TestId.String()
+	if count := p.creates.Load(); count != 1 {
+		t.Fatalf("create POST count after recovery: %d", count)
+	}
 	var record contract.TestRecord
 	processRequest(t, p, http.MethodGet, "/api/tests/"+id, nil, &record, http.StatusOK)
-	var command contract.CommandStatus
 	processRequest(t, p, http.MethodGet, "/api/commands/"+record.StopCommandId.String(), nil, &command, http.StatusOK)
 	if command.Status != contract.CommandStatusStatusUnknown {
 		t.Fatalf("reserved stop: %+v", command)
@@ -286,10 +338,13 @@ func TestBrowserRoutesRunAndReopenCore(t *testing.T) {
 	if record.Outcome != "interrupted" || record.DataQuality != "incomplete" || record.Parameters != create.Parameters || !record.Demo || record.OperatorId != "demo-operator" {
 		t.Fatalf("saved record: %+v", record)
 	}
+	if count := p.creates.Load(); count != 1 {
+		t.Fatalf("create POST count before shutdown: %d", count)
+	}
 	if err := p.close(); err != nil {
 		t.Fatalf("first core exit: %v", err)
 	}
-	p = startProcessBrowser(t, executable, profile)
+	p = startProcessBrowser(t, executable, profile, false)
 	processRequest(t, p, http.MethodGet, "/api/status", nil, &status, http.StatusOK)
 	if status.Handshake == nil || status.Handshake.DatabaseId != handshake.DatabaseId || status.Handshake.BackendRunId == handshake.BackendRunId {
 		t.Fatalf("reopened handshake: %+v", status.Handshake)
@@ -302,6 +357,7 @@ func TestBrowserRoutesRunAndReopenCore(t *testing.T) {
 	if conflict["error"] != "command_conflict" {
 		t.Fatalf("conflict: %+v", conflict)
 	}
+	var created contract.CommandDispatch
 	processRequest(t, p, http.MethodPost, "/api/tests", create, &created, http.StatusOK)
 	if created.Delivery != contract.Response || created.Command == nil || created.Command.CommandId != create.CommandId || created.Command.Status != contract.CommandStatusStatusCompleted || created.Command.TestId == nil || created.Command.TestId.String() != id {
 		t.Fatalf("replay: %+v", created)
