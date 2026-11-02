@@ -39,6 +39,72 @@ type routeService struct {
 	after, sequence              int64
 	waitFunc                     func(context.Context) (contract.ConnectionNotice, error)
 	createFunc                   func(context.Context) (contract.CommandDispatch, error)
+	history                      []historyCall
+	historyErr                   error
+	testFunc                     func(context.Context, string) (contract.TestRecord, error)
+}
+
+type historyCall struct {
+	name, id, cursor string
+	after            int64
+	limit            int
+}
+
+func (f *routeService) ListTests(_ context.Context, params contract.ListTestsParams) (contract.TestList, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	call := historyCall{name: "list", limit: 100}
+	if params.Limit != nil {
+		call.limit = *params.Limit
+	}
+	if params.After != nil {
+		call.cursor = params.After.String()
+	}
+	f.history = append(f.history, call)
+	if f.historyErr != nil {
+		return contract.TestList{}, f.historyErr
+	}
+	first := uuid.MustParse("00000000-0000-4000-8000-000000000001")
+	second := uuid.MustParse("00000000-0000-4000-8000-000000000002")
+	if params.After == nil {
+		if call.limit > 1 {
+			return contract.TestList{Items: []contract.TestRecord{{TestId: first}, {TestId: second}}}, nil
+		}
+		return contract.TestList{Items: []contract.TestRecord{{TestId: first}}, NextAfter: &first}, nil
+	}
+	return contract.TestList{Items: []contract.TestRecord{{TestId: second}}}, nil
+}
+func (f *routeService) Test(ctx context.Context, id string) (contract.TestRecord, error) {
+	f.mu.Lock()
+	f.history = append(f.history, historyCall{name: "test", id: id})
+	fn, err := f.testFunc, f.historyErr
+	f.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, id)
+	}
+	parsed, _ := uuid.Parse(id)
+	return contract.TestRecord{TestId: parsed}, err
+}
+func (f *routeService) Readiness(_ context.Context, id string) (contract.Readiness, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.history = append(f.history, historyCall{name: "readiness", id: id})
+	parsed, _ := uuid.Parse(id)
+	return contract.Readiness{TestId: parsed, Revision: 321}, f.historyErr
+}
+func (f *routeService) Measurements(_ context.Context, id string, after int64, limit int) (contract.MeasurementPage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.history = append(f.history, historyCall{name: "measurements", id: id, after: after, limit: limit})
+	next := after + 1
+	return contract.MeasurementPage{Items: []contract.Measurement{{Sequence: next}}, NextAfter: &next}, f.historyErr
+}
+func (f *routeService) Audit(_ context.Context, id string, after int64, limit int) (contract.AuditPage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.history = append(f.history, historyCall{name: "audit", id: id, after: after, limit: limit})
+	next := after + 2
+	return contract.AuditPage{Items: []contract.AuditEvent{{Sequence: next}}, NextAfter: &next}, f.historyErr
 }
 
 func (f *routeService) Status() contract.DesktopStatus { return contract.DesktopStatus{Revision: 101} }
@@ -501,6 +567,164 @@ func TestDomainRouteRevocationCancelsCallAndSuppressesLateResult(t *testing.T) {
 				t.Fatal("HTTP request did not finish")
 			}
 		})
+	}
+}
+
+func TestHistoryRoutesUseServiceAndValidateCursors(t *testing.T) {
+	fake := &routeService{ticket: uuid.NewString()}
+	var router http.Handler
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { router.ServeHTTP(w, r) }))
+	defer server.Close()
+	s, code, err := newSession(server.Listener.Addr().String(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie, proof, err := s.pair(code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router = newRoutes(s, fake, fake)
+	server.Start()
+	request := func(path string, authenticated bool) (int, string) {
+		r, err := http.NewRequest(http.MethodGet, server.URL+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if authenticated {
+			r.AddCookie(cookie)
+			r.Header.Set("X-GK80-Session", proof)
+		}
+		resp, err := server.Client().Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		data, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp.StatusCode, string(data)
+	}
+	first, second := "00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"
+	if status, body := request("/api/tests", true); status != http.StatusOK || !strings.Contains(body, first) || !strings.Contains(body, second) || !strings.Contains(body, `"nextAfter":null`) {
+		t.Fatalf("default page: %d %s", status, body)
+	}
+	if status, _ := request("/api/tests", false); status != http.StatusUnauthorized {
+		t.Fatalf("unprotected list: %d", status)
+	}
+	if status, body := request("/api/tests?limit=1", true); status != http.StatusOK || !strings.Contains(body, `"nextAfter":"`+first+`"`) || strings.Contains(body, second) {
+		t.Fatalf("first page: %d %s", status, body)
+	}
+	if status, body := request("/api/tests?after="+first+"&limit=1", true); status != http.StatusOK || !strings.Contains(body, second) || !strings.Contains(body, `"nextAfter":null`) {
+		t.Fatalf("second page: %d %s", status, body)
+	}
+	for _, item := range []struct{ path, marker string }{
+		{"/api/tests/" + first, first},
+		{"/api/tests/" + first + "/readiness", `"revision":321`},
+		{"/api/tests/" + first + "/measurements?after=3&limit=500", `"nextAfter":4`},
+		{"/api/tests/" + first + "/audit", `"nextAfter":2`},
+	} {
+		if status, body := request(item.path, true); status != http.StatusOK || !strings.Contains(body, item.marker) {
+			t.Fatalf("history %s: %d %s", item.path, status, body)
+		}
+		if status, _ := request(item.path, false); status != http.StatusUnauthorized {
+			t.Fatalf("unprotected %s: %d", item.path, status)
+		}
+	}
+	for _, path := range []string{
+		"/api/tests?limit=0", "/api/tests?limit=501", "/api/tests?limit=1&limit=2", "/api/tests?after=", "/api/tests?unknown=1",
+		"/api/tests/" + first + "?after=1", "/api/tests/" + first + "/measurements?after=-1", "/api/tests/" + first + "/audit?after=9223372036854775808",
+		"/api/tests/00000000-0000-0000-0000-000000000000", "/api/tests/" + strings.ReplaceAll(first, "-", "") + "/readiness",
+	} {
+		if status, _ := request(path, true); status != http.StatusBadRequest {
+			t.Fatalf("invalid history path %s: %d", path, status)
+		}
+	}
+	fake.mu.Lock()
+	calls := append([]historyCall(nil), fake.history...)
+	fake.mu.Unlock()
+	if len(calls) != 7 || calls[0] != (historyCall{name: "list", limit: 100}) || calls[1] != (historyCall{name: "list", limit: 1}) || calls[2] != (historyCall{name: "list", cursor: first, limit: 1}) || calls[3] != (historyCall{name: "test", id: first}) || calls[4] != (historyCall{name: "readiness", id: first}) || calls[5] != (historyCall{name: "measurements", id: first, after: 3, limit: 500}) || calls[6] != (historyCall{name: "audit", id: first, limit: 100}) {
+		t.Fatalf("history calls: %+v", calls)
+	}
+	fake.mu.Lock()
+	fake.historyErr = errors.New("read failed")
+	fake.mu.Unlock()
+	if status, _ := request("/api/tests/"+first, true); status != http.StatusServiceUnavailable {
+		t.Fatalf("history failure: %d", status)
+	}
+}
+
+func TestHistoryReadRevocationSuppressesLateResult(t *testing.T) {
+	entered := make(chan context.Context, 1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	fake := &routeService{ticket: uuid.NewString()}
+	fake.testFunc = func(ctx context.Context, id string) (contract.TestRecord, error) {
+		entered <- ctx
+		<-release
+		parsed, _ := uuid.Parse(id)
+		return contract.TestRecord{TestId: parsed}, nil
+	}
+	var router http.Handler
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { router.ServeHTTP(w, r) }))
+	defer server.Close()
+	defer releaseOnce.Do(func() { close(release) })
+	s, code, err := newSession(server.Listener.Addr().String(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie, proof, err := s.pair(code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router = newRoutes(s, fake, fake)
+	server.Start()
+	testID := uuid.NewString()
+	r, err := http.NewRequest(http.MethodGet, server.URL+"/api/tests/"+testID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.AddCookie(cookie)
+	r.Header.Set("X-GK80-Session", proof)
+	type response struct {
+		status int
+		body   string
+	}
+	result := make(chan response, 1)
+	go func() {
+		resp, err := server.Client().Do(r)
+		if err != nil {
+			result <- response{}
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, _ := io.ReadAll(resp.Body)
+		result <- response{status: resp.StatusCode, body: string(body)}
+	}()
+	var ctx context.Context
+	select {
+	case ctx = <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("history service not reached")
+	}
+	revoked := make(chan struct{})
+	go func() { s.revoke(); close(revoked) }()
+	select {
+	case <-revoked:
+	case <-time.After(3 * time.Second):
+		t.Fatal("revocation waited for history read")
+	}
+	if ctx.Err() == nil {
+		t.Fatal("history context not cancelled")
+	}
+	releaseOnce.Do(func() { close(release) })
+	select {
+	case got := <-result:
+		if (got.status >= 200 && got.status < 300) || strings.Contains(got.body, testID) {
+			t.Fatalf("late history delivered: %+v", got)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("HTTP request did not finish")
 	}
 }
 

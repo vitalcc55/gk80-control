@@ -23,6 +23,7 @@ type sessionOperations interface {
 type browserOperations interface {
 	sessionOperations
 	domainOperations
+	historyOperations
 }
 
 type bootstrapOperations interface {
@@ -82,6 +83,7 @@ func (s *browserSession) reply(w http.ResponseWriter, r *http.Request, status in
 func newRoutes(s *browserSession, service browserOperations, bootstrap bootstrapOperations) http.Handler {
 	mux := http.NewServeMux()
 	registerDomainRoutes(mux, s, service, bootstrap)
+	registerHistoryRoutes(mux, s, service)
 	mux.Handle("POST /api/session/check", s.protectClass(heartbeatRequest, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.ContentLength != 0 {
 			s.reply(w, r, http.StatusBadRequest, map[string]string{"error": "invalid request"})
