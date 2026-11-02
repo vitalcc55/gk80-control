@@ -104,17 +104,43 @@ func TestNativeClientRunsAndReopensDemo(t *testing.T) {
 	if err != nil || !ready.Ready {
 		t.Fatalf("readiness: %+v %v", ready, err)
 	}
-	started, err := client.StartTest(ctx, lease.LeaseId, id, contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: ready.Revision, ValveClosed: true, ConnectionConfirmed: true})
+	startCommand := contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: ready.Revision, ValveClosed: true, ConnectionConfirmed: true}
+	started, err := client.StartTest(ctx, lease.LeaseId, id, startCommand)
 	if err != nil || started.Status != "accepted" {
 		t.Fatalf("start: %+v %v", started, err)
+	}
+	startBody, err := json.Marshal(startCommand)
+	if err != nil {
+		t.Fatal(err)
+	}
+	startLookup, err := client.LookupStartExact(ctx, lease.LeaseId, handshake.DatabaseId, id, startCommand.CommandId, startBody)
+	if err != nil || startLookup.CommandId != startCommand.CommandId || startLookup.Status != contract.CommandStatusStatusAccepted || startLookup.TestId == nil || *startLookup.TestId != id {
+		t.Fatalf("start lookup: %+v %v", startLookup, err)
+	}
+	_, err = client.LookupStartExact(ctx, lease.LeaseId, handshake.DatabaseId, uuid.New(), startCommand.CommandId, startBody)
+	if !errors.As(err, &conflict) || conflict.Status != http.StatusConflict || conflict.Code != "command_conflict" {
+		t.Fatalf("start path conflict: %v", err)
 	}
 	snapshot, err := client.Snapshot(ctx, lease.LeaseId)
 	if err != nil || snapshot.BackendRunId != handshake.BackendRunId || snapshot.PendingAction == nil || snapshot.ActiveTest == nil {
 		t.Fatalf("snapshot: %+v %v", snapshot, err)
 	}
-	confirmed, err := client.ConfirmAction(ctx, lease.LeaseId, id, snapshot.PendingAction.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: snapshot.Revision})
+	confirmCommand := contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: snapshot.Revision}
+	confirmed, err := client.ConfirmAction(ctx, lease.LeaseId, id, snapshot.PendingAction.ActionId, confirmCommand)
 	if err != nil || confirmed.Status != "completed" {
 		t.Fatalf("confirm: %+v %v", confirmed, err)
+	}
+	confirmBody, err := json.Marshal(confirmCommand)
+	if err != nil {
+		t.Fatal(err)
+	}
+	confirmLookup, err := client.LookupConfirmExact(ctx, lease.LeaseId, handshake.DatabaseId, id, snapshot.PendingAction.ActionId, confirmCommand.CommandId, confirmBody)
+	if err != nil || confirmLookup.Status != "completed" || confirmLookup.TestId == nil || *confirmLookup.TestId != id {
+		t.Fatalf("confirm lookup: %+v %v", confirmLookup, err)
+	}
+	_, err = client.LookupConfirmExact(ctx, lease.LeaseId, handshake.DatabaseId, id, uuid.New(), confirmCommand.CommandId, confirmBody)
+	if !errors.As(err, &conflict) || conflict.Status != http.StatusConflict || conflict.Code != "command_conflict" {
+		t.Fatalf("confirm path conflict: %v", err)
 	}
 	deadline := time.Now().Add(8 * time.Second)
 	for {

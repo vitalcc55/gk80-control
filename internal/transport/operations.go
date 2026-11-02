@@ -43,7 +43,6 @@ func validateResponse(name string, body []byte, target any) error {
 func invalidRequest() *RequestError { return &RequestError{Code: "invalid_request"} }
 
 func (c *Client) exchange(ctx context.Context, method, path string, lease uuid.UUID, payload any) (int, []byte, *RequestError) {
-	mutating := method != http.MethodGet
 	var body []byte
 	var err error
 	if payload != nil {
@@ -52,6 +51,10 @@ func (c *Client) exchange(ctx context.Context, method, path string, lease uuid.U
 			return 0, nil, invalidRequest()
 		}
 	}
+	return c.exchangeBytes(ctx, method, path, lease, uuid.Nil, body, payload != nil, method != http.MethodGet)
+}
+
+func (c *Client) exchangeBytes(ctx context.Context, method, path string, lease, database uuid.UUID, body []byte, hasBody, mutating bool) (int, []byte, *RequestError) {
 	req, err := http.NewRequestWithContext(ctx, method, c.endpoint+path, bytes.NewReader(body))
 	if err != nil {
 		return 0, nil, invalidRequest()
@@ -60,7 +63,10 @@ func (c *Client) exchange(ctx context.Context, method, path string, lease uuid.U
 	if lease != uuid.Nil {
 		req.Header.Set("X-GK80-UI-Lease", lease.String())
 	}
-	if payload != nil {
+	if database != uuid.Nil {
+		req.Header.Set("X-GK80-Database-Id", database.String())
+	}
+	if hasBody {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	response, err := c.http.Do(req)
