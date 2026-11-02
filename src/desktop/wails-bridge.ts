@@ -15,6 +15,7 @@ import {
   EnableConnectionEvents,
   KeepAlive,
   ListTests,
+  LookupCommandExact,
   Measurements,
   ObserveSession,
   Readiness,
@@ -47,13 +48,13 @@ export const desktopBridge: DesktopBridge = {
 };
 
 export const desktopDemoService: DemoService = {
-  requireCommandReceipt: false,
   createTest: CreateTest,
   readiness: Readiness,
   startTest: StartTest,
   confirmAction: ConfirmAction,
   stopTest: StopTest,
   command: Command,
+  lookupCommandExact: LookupCommandExact,
   listTests: ListTests,
   test: Test,
   measurements: Measurements,

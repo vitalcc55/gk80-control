@@ -41,6 +41,7 @@ const api = vi.hoisted(() => ({
   confirm: vi.fn(),
   stop: vi.fn(),
   command: vi.fn(),
+  exact: vi.fn(),
   list: vi.fn(),
   test: vi.fn(),
   measurements: vi.fn(),
@@ -76,6 +77,7 @@ vi.mock(
     ConfirmAction: api.confirm,
     StopTest: api.stop,
     Command: api.command,
+    LookupCommandExact: api.exact,
     ListTests: api.list,
     Test: api.test,
     Measurements: api.measurements,
@@ -99,6 +101,40 @@ const pendingKey = `gk80.demo.pending-command.v1:${database}`;
 const testId = '33333333-3333-4333-8333-333333333333';
 const actionId = '44444444-4444-4444-8444-444444444444';
 const stopId = '55555555-5555-4555-8555-555555555555';
+function savedAttempt(
+  id: string,
+  kind: 'create' | 'start' | 'confirm',
+  savedTestId: string | null,
+  retired: boolean,
+) {
+  const action = kind === 'confirm' ? actionId : null;
+  const body =
+    kind === 'create'
+      ? {
+          commandId: id,
+          expectedRevision: 0,
+          parameters: {
+            valve: 'V',
+            areaM2: 1,
+            pmaxPa: 1000,
+            measurementSeconds: 10,
+            direction: 'pressure',
+            actuator: false,
+          },
+        }
+      : kind === 'start'
+        ? { commandId: id, expectedRevision: 0, valveClosed: true, connectionConfirmed: true }
+        : { commandId: id, expectedRevision: 0 };
+  return {
+    schema: 2,
+    id,
+    kind,
+    testId: savedTestId,
+    actionId: action,
+    originalJSON: JSON.stringify(body),
+    retired,
+  };
+}
 const record = {
   testId,
   stopCommandId: stopId,
@@ -122,6 +158,17 @@ const record = {
 beforeEach(() => {
   sessionStorage.clear();
   vi.resetAllMocks();
+  api.exact.mockImplementation(
+    async (_database: string, _kind: string, target: string, _action: string, id: string) => {
+      const command: CommandStatus = await api.command(id);
+      return command.status === 'unknown'
+        ? { outcome: 'unknown', command: null }
+        : {
+            outcome: 'match',
+            command: { ...command, testId: command.testId ?? (target || testId) },
+          };
+    },
+  );
 });
 
 it('does not attribute an unbound legacy command to the confirmed database', async () => {
@@ -179,6 +226,61 @@ it('does not attribute an unbound legacy command to the confirmed database', asy
   expect(api.command).not.toHaveBeenCalledWith('legacy');
   expect(sessionStorage.getItem('gk80.demo.pending-command')).toBe(legacy);
 });
+
+it.each([false, true])(
+  'keeps a restored command without its original content unknown (receiptRequired=%s)',
+  async (receiptRequired) => {
+    const id = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    sessionStorage.setItem(
+      pendingKey,
+      JSON.stringify([{ id, kind: 'create', testId: null, retired: false, receiptRequired }]),
+    );
+    const bridge: SessionBridge = {
+      beginSessionCheck: async () => 'ticket',
+      keepAlive: async () => {},
+      sessionView: async () => ({
+        connection: {
+          hostRunId: host,
+          revision: 1,
+          status: ConnectionStateStatus.Live,
+          linkValid: true,
+          leaseAcquireUnknown: false,
+          streamGeneration: 0,
+        },
+        snapshot: {
+          apiVersion: 'v1',
+          backendRunId: backend,
+          revision: 0,
+          lastEventSequence: 0,
+          activeTest: null,
+          pendingAction: null,
+          measurements: [],
+        },
+        validForMs: 6000,
+        linkValidForMs: 6000,
+      }),
+    };
+    api.list.mockResolvedValue({ items: [], nextAfter: null });
+    api.command.mockResolvedValue({
+      commandId: id,
+      status: CommandStatusStatus.CommandStatusStatusCompleted,
+    });
+    render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+    await screen.findByText(new RegExp(`исход неизвестен.*${id}`));
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Проверить состояние' }));
+    expect(api.command).not.toHaveBeenCalledWith(id);
+    expect(screen.getByRole('button', { name: 'Новое испытание' }).hasAttribute('disabled')).toBe(
+      true,
+    );
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Я проверил эту команду' }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Новое испытание' }).hasAttribute('disabled')).toBe(
+        false,
+      ),
+    );
+    expect(screen.getByText(new RegExp(`исход неизвестен.*${id}`))).toBeTruthy();
+  },
+);
 
 it('keeps Stop available when the legacy command list cannot be read', async () => {
   const originalGet = Storage.prototype.getItem;
@@ -240,7 +342,7 @@ it('keeps Stop available when the legacy command list cannot be read', async () 
 it('isolates pending commands and late lookups across databases', async () => {
   const otherDatabase = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
   const commandId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
-  const item = JSON.stringify([{ id: commandId, kind: 'create', testId: null, retired: false }]);
+  const item = JSON.stringify([savedAttempt(commandId, 'create', null, false)]);
   const otherKey = `gk80.demo.pending-command.v1:${otherDatabase}`;
   sessionStorage.setItem(pendingKey, item);
   sessionStorage.setItem(otherKey, item);
@@ -293,7 +395,9 @@ it('isolates pending commands and late lookups across databases', async () => {
   });
   expect(screen.getByText(/принята; завершение команды не подтверждено/)).toBeTruthy();
   expect(sessionStorage.getItem(pendingKey)).toBe(item);
-  expect(sessionStorage.getItem(otherKey)).toBe(item);
+  expect(JSON.parse(sessionStorage.getItem(otherKey) ?? '[]')).toEqual([
+    expect.objectContaining(savedAttempt(commandId, 'create', null, false)),
+  ]);
   expect(api.create).not.toHaveBeenCalled();
 });
 
@@ -924,6 +1028,17 @@ it('uses core confirmation and measurements for the operator path', async () => 
   api.list.mockResolvedValue({ items: [], nextAfter: null });
   api.command.mockImplementation(async (id: string) => commands.get(id));
   api.create.mockImplementation(async (input: CreateCommandInput) => {
+    expect(JSON.parse(sessionStorage.getItem(pendingKey) ?? '[]')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: input.commandId,
+          kind: 'create',
+          schema: 2,
+          actionId: null,
+          originalJSON: JSON.stringify(input),
+        }),
+      ]),
+    );
     lastCommand = {
       commandId: input.commandId,
       status: CommandStatusStatus.CommandStatusStatusCompleted,
@@ -948,6 +1063,18 @@ it('uses core confirmation and measurements for the operator path', async () => 
     ],
   });
   api.start.mockImplementation(async (_id: string, input: { commandId: string }) => {
+    expect(JSON.parse(sessionStorage.getItem(pendingKey) ?? '[]')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: input.commandId,
+          kind: 'start',
+          testId,
+          schema: 2,
+          actionId: null,
+          originalJSON: JSON.stringify(input),
+        }),
+      ]),
+    );
     startId = input.commandId;
     lastCommand = {
       commandId: input.commandId,
@@ -966,6 +1093,18 @@ it('uses core confirmation and measurements for the operator path', async () => 
   });
   api.confirm.mockImplementation(
     async (_id: string, _action: string, input: { commandId: string }) => {
+      expect(JSON.parse(sessionStorage.getItem(pendingKey) ?? '[]')).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: input.commandId,
+            kind: 'confirm',
+            testId,
+            schema: 2,
+            actionId,
+            originalJSON: JSON.stringify(input),
+          }),
+        ]),
+      );
       lastCommand = {
         commandId: input.commandId,
         status: CommandStatusStatus.CommandStatusStatusCompleted,
@@ -1126,7 +1265,8 @@ it('does not attribute a previous command to a conflicting browser creation', as
     testId,
     status: CommandStatusStatus.CommandStatusStatusCompleted,
   }));
-  const browser = { ...desktopDemoService, requireCommandReceipt: true };
+  api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
+  const browser = { ...desktopDemoService };
   render(<LiveApp session={bridge} service={browser} hostRunId={host} backendRunId={backend} />);
   const user = userEvent.setup();
   const newTest = await screen.findByRole('button', { name: 'Новое испытание' });
@@ -1184,7 +1324,8 @@ it('keeps a browser creation unknown after a lost response and service replaceme
     testId,
     status: CommandStatusStatus.CommandStatusStatusCompleted,
   }));
-  const browser = { ...desktopDemoService, requireCommandReceipt: true };
+  api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
+  const browser = { ...desktopDemoService };
   const mounted = render(
     <LiveApp session={bridge} service={browser} hostRunId={host} backendRunId={backend} />,
   );
@@ -1211,7 +1352,557 @@ it('keeps a browser creation unknown after a lost response and service replaceme
   expect(screen.queryByText(/Команда: выполнена/)).toBeNull();
   expect(api.command).not.toHaveBeenCalled();
   expect(api.create).toHaveBeenCalledOnce();
+  const sent = api.create.mock.calls[0]?.[0];
+  if (!sent) throw new Error('create was not sent');
+  expect(api.exact).toHaveBeenCalledWith(
+    database,
+    'create',
+    '',
+    '',
+    sent.commandId,
+    JSON.stringify(sent),
+  );
+  const commandId: string = sent.commandId;
+  api.exact.mockResolvedValue({
+    outcome: 'match',
+    command: { commandId, testId, status: 'completed' },
+  });
+  await user.click(screen.getByRole('button', { name: 'Проверить состояние' }));
+  await screen.findByText(/Команда: выполнена/);
+  expect(api.create).toHaveBeenCalledOnce();
 }, 10000);
+
+it.each([
+  'conflict',
+  'unknown',
+  'databaseMismatch',
+  'wrongId',
+  'badTestId',
+  'badReason',
+  'badEnvelope',
+])('keeps exact lookup outcome %s separate from another command', async (outcome) => {
+  const id = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const attempt = savedAttempt(id, 'create', null, false);
+  sessionStorage.setItem(pendingKey, JSON.stringify([attempt]));
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 0,
+        lastEventSequence: 0,
+        activeTest: null,
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.list.mockResolvedValue({ items: [], nextAfter: null });
+  api.exact.mockResolvedValue(
+    outcome === 'wrongId'
+      ? { outcome: 'match', command: { commandId: 'other', testId, status: 'completed' } }
+      : outcome === 'badTestId'
+        ? { outcome: 'match', command: { commandId: id, testId: {}, status: 'completed' } }
+        : outcome === 'badReason'
+          ? {
+              outcome: 'match',
+              command: { commandId: id, testId, status: 'completed', reason: {} },
+            }
+          : outcome === 'badEnvelope'
+            ? { outcome: 'conflict', command: null, extra: true }
+            : { outcome, command: null },
+  );
+  render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  await waitFor(() =>
+    expect(api.exact).toHaveBeenCalledWith(database, 'create', '', '', id, attempt.originalJSON),
+  );
+  if (outcome === 'conflict') await screen.findByText(/Идентификатор принадлежит другой команде/);
+  else await screen.findByText(/Команда: исход неизвестен/);
+  expect(screen.queryByText(/Команда: выполнена/)).toBeNull();
+  expect(api.command).not.toHaveBeenCalledWith(id);
+  expect(api.create).not.toHaveBeenCalled();
+});
+
+it('does not replace a confirmed command with a late unknown exact lookup', async () => {
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 0,
+        lastEventSequence: 0,
+        activeTest: null,
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  let finishCreate: (value: CommandDispatch) => void = () => {};
+  let finishLookup: (value: { outcome: string; command: null }) => void = () => {};
+  const createResponse = new Promise<CommandDispatch>((resolve) => {
+    finishCreate = resolve;
+  });
+  const lookupResponse = new Promise<{ outcome: string; command: null }>((resolve) => {
+    finishLookup = resolve;
+  });
+  api.list.mockResolvedValue({ items: [], nextAfter: null });
+  api.create.mockReturnValue(createResponse);
+  api.exact.mockReturnValue(lookupResponse);
+  render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  const user = userEvent.setup();
+  const newTest = await screen.findByRole('button', { name: 'Новое испытание' });
+  await waitFor(() => expect(newTest.hasAttribute('disabled')).toBe(false));
+  await user.click(newTest);
+  await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
+  await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
+  await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+  await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
+  await waitFor(() => expect(api.exact).toHaveBeenCalled());
+  const sent = api.create.mock.calls[0]?.[0];
+  if (!sent) throw new Error('create was not sent');
+  await act(async () => {
+    finishCreate({
+      delivery: CommandDispatchDelivery.Response,
+      command: {
+        commandId: sent.commandId,
+        testId,
+        status: CommandStatusStatus.CommandStatusStatusCompleted,
+      },
+    });
+    await createResponse;
+  });
+  await screen.findByText(/Действие подтверждено ядром/);
+  await act(async () => {
+    finishLookup({ outcome: 'unknown', command: null });
+    await lookupResponse;
+  });
+  expect(screen.queryByText(/Исход команды пока неизвестен/)).toBeNull();
+  expect(screen.getByText(/Действие подтверждено ядром/)).toBeTruthy();
+  expect(api.create).toHaveBeenCalledOnce();
+}, 10000);
+
+it.each(['failure', 'invalid'])(
+  'keeps exact acceptance after a late %s send response',
+  async (mode) => {
+    const bridge: SessionBridge = {
+      beginSessionCheck: async () => 'ticket',
+      keepAlive: async () => {},
+      sessionView: async () => ({
+        connection: {
+          hostRunId: host,
+          revision: 1,
+          status: ConnectionStateStatus.Live,
+          linkValid: true,
+          leaseAcquireUnknown: false,
+          streamGeneration: 0,
+        },
+        snapshot: {
+          apiVersion: 'v1',
+          backendRunId: backend,
+          revision: 0,
+          lastEventSequence: 0,
+          activeTest: null,
+          pendingAction: null,
+          measurements: [],
+        },
+        validForMs: 6000,
+        linkValidForMs: 6000,
+      }),
+    };
+    let finish: (value: unknown) => void = () => {};
+    let fail: (value: Error) => void = () => {};
+    const sent = new Promise((resolve, reject) => {
+      finish = resolve;
+      fail = reject;
+    });
+    api.list.mockResolvedValue({ items: [], nextAfter: null });
+    api.create.mockReturnValue(sent);
+    api.exact.mockImplementation(
+      async (_db: string, _kind: string, _test: string, _action: string, id: string) => ({
+        outcome: 'match',
+        command: { commandId: id, testId, status: 'accepted' },
+      }),
+    );
+    render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+    const user = userEvent.setup();
+    const newTest = await screen.findByRole('button', { name: 'Новое испытание' });
+    await waitFor(() => expect(newTest.hasAttribute('disabled')).toBe(false));
+    await user.click(newTest);
+    await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
+    await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
+    await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+    await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
+    await screen.findByText(/Команда: принята; завершение команды не подтверждено/);
+    await act(async () => {
+      if (mode === 'failure') fail(new Error('lost'));
+      else finish({ delivery: 'response', command: null });
+      await sent.catch(() => {});
+    });
+    expect(screen.queryByText(/Исход команды пока неизвестен/)).toBeNull();
+    expect(screen.getByText(/Команда: принята; завершение команды не подтверждено/)).toBeTruthy();
+  },
+  10000,
+);
+
+it('accepts a valid direct receipt without testId', async () => {
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 0,
+        lastEventSequence: 0,
+        activeTest: null,
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.list.mockResolvedValue({ items: [], nextAfter: null });
+  api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
+  api.create.mockImplementation(async (input: CreateCommandInput) => ({
+    delivery: 'response',
+    command: { commandId: input.commandId, status: 'accepted' },
+  }));
+  render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  const user = userEvent.setup();
+  const newTest = await screen.findByRole('button', { name: 'Новое испытание' });
+  await waitFor(() => expect(newTest.hasAttribute('disabled')).toBe(false));
+  await user.click(newTest);
+  await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
+  await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
+  await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+  await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
+  await screen.findByText(/Команда: принята; завершение команды не подтверждено/);
+  expect(screen.queryByText(/Исход команды пока неизвестен/)).toBeNull();
+});
+
+it('links a completed Create without testId to its exact result and snapshot', async () => {
+  let activeTest: Snapshot['activeTest'] = null;
+  let revision = 0;
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: revision + 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision,
+        lastEventSequence: revision,
+        activeTest,
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.list.mockResolvedValue({ items: [], nextAfter: null });
+  api.readiness.mockResolvedValue({ testId, revision: 1, ready: true, checks: [] });
+  api.create.mockImplementation(async (input: CreateCommandInput) => ({
+    delivery: 'response',
+    command: { commandId: input.commandId, status: 'completed' },
+  }));
+  let finishExact: (value: {
+    outcome: string;
+    command: { commandId: string; testId: string; status: string };
+  }) => void = () => {};
+  const exactResponse = new Promise<{
+    outcome: string;
+    command: { commandId: string; testId: string; status: string };
+  }>((resolve) => {
+    finishExact = resolve;
+  });
+  api.exact.mockReturnValue(exactResponse);
+  render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  const user = userEvent.setup();
+  const newTest = await screen.findByRole('button', { name: 'Новое испытание' });
+  await waitFor(() => expect(newTest.hasAttribute('disabled')).toBe(false));
+  await user.click(newTest);
+  await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
+  await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
+  await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+  await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
+  await waitFor(() => expect(api.exact).toHaveBeenCalled());
+  await screen.findByText(/Команда: выполнена/);
+  const sent = api.create.mock.calls[0]?.[0];
+  if (!sent) throw new Error('create was not sent');
+  await act(async () => {
+    finishExact({
+      outcome: 'match',
+      command: { commandId: sent.commandId, testId, status: 'completed' },
+    });
+    await exactResponse;
+  });
+  activeTest = record;
+  revision = 1;
+  await screen.findByText('Проверки демонстрационного ядра', {}, { timeout: 8000 });
+  await waitFor(() => expect(screen.queryByText(/Команда: выполнена/)).toBeNull(), {
+    timeout: 8000,
+  });
+  expect(api.create).toHaveBeenCalledOnce();
+}, 10000);
+
+it('checks an exact ordinary attempt even when its ID is reserved for Stop', async () => {
+  const oldTest = '77777777-7777-4777-8777-777777777777';
+  const attempt = savedAttempt(stopId, 'start', oldTest, false);
+  sessionStorage.setItem(pendingKey, JSON.stringify([attempt]));
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 2,
+        lastEventSequence: 2,
+        activeTest: { ...record, stage: TestRecordStage.Running },
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.list.mockResolvedValue({ items: [], nextAfter: null });
+  api.exact.mockResolvedValue({ outcome: 'conflict', command: null });
+  api.stop.mockResolvedValue({ commandId: stopId, testId, status: 'completed' });
+  render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  await screen.findByText(/Идентификатор принадлежит другой команде/);
+  expect(api.exact).toHaveBeenCalledWith(
+    database,
+    'start',
+    oldTest,
+    '',
+    stopId,
+    attempt.originalJSON,
+  );
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Остановить испытание' }));
+  await screen.findByText('Остановка подтверждена ядром.');
+  expect(api.stop).toHaveBeenCalledOnce();
+});
+
+it('can confirm Stop while an exact lookup with the same ID is waiting', async () => {
+  const attempt = savedAttempt(stopId, 'start', testId, false);
+  sessionStorage.setItem(pendingKey, JSON.stringify([attempt]));
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 2,
+        lastEventSequence: 2,
+        activeTest: { ...record, stage: TestRecordStage.Running },
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  let finish: (value: { outcome: string; command: null }) => void = () => {};
+  const held = new Promise<{ outcome: string; command: null }>((resolve) => {
+    finish = resolve;
+  });
+  api.exact.mockReturnValue(held);
+  api.command.mockResolvedValue({ commandId: stopId, testId, status: 'completed' });
+  api.stop.mockResolvedValue({ commandId: stopId, testId, status: 'accepted' });
+  const view = render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  await waitFor(() => expect(api.exact).toHaveBeenCalled());
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Остановить испытание' }));
+  await screen.findByText('Остановка подтверждена ядром.');
+  expect(api.command).toHaveBeenCalledWith(stopId);
+  expect(api.stop).toHaveBeenCalledOnce();
+  view.unmount();
+  await act(async () => {
+    finish({ outcome: 'unknown', command: null });
+    await held;
+  });
+});
+
+it('allows an explicitly reviewed legacy observation to be removed from a full list', async () => {
+  const old = Array.from({ length: 64 }, (_, index) => ({
+    id: `old-${index}`,
+    kind: 'create',
+    testId: null,
+    retired: true,
+    legacyReviewed: true,
+  }));
+  sessionStorage.setItem(pendingKey, JSON.stringify(old));
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 0,
+        lastEventSequence: 0,
+        activeTest: null,
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.list.mockResolvedValue({ items: [], nextAfter: null });
+  render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  const remove = (await screen.findAllByRole('button', { name: 'Удалить запись наблюдения' }))[0];
+  if (!remove) throw new Error('reviewed observation is missing');
+  await userEvent.setup().click(remove);
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: 'Новое испытание' }).hasAttribute('disabled')).toBe(
+      false,
+    ),
+  );
+  expect(JSON.parse(sessionStorage.getItem(pendingKey) ?? '[]')).toHaveLength(63);
+  expect(api.command).not.toHaveBeenCalled();
+});
+
+it.each(['start', 'confirm'] as const)(
+  'uses the original %s attempt and path after remount without sending it again',
+  async (kind) => {
+    const id = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const attempt = savedAttempt(id, kind, testId, false);
+    sessionStorage.setItem(pendingKey, JSON.stringify([attempt]));
+    const bridge: SessionBridge = {
+      beginSessionCheck: async () => 'ticket',
+      keepAlive: async () => {},
+      sessionView: async () => ({
+        connection: {
+          hostRunId: host,
+          revision: 1,
+          status: ConnectionStateStatus.Live,
+          linkValid: true,
+          leaseAcquireUnknown: false,
+          streamGeneration: 0,
+        },
+        snapshot: {
+          apiVersion: 'v1',
+          backendRunId: backend,
+          revision: 2,
+          lastEventSequence: 2,
+          activeTest: { ...record, stage: TestRecordStage.Running },
+          pendingAction: { testId, actionId, instruction: 'Подтвердите измерение' },
+          measurements: [],
+        },
+        validForMs: 6000,
+        linkValidForMs: 6000,
+      }),
+    };
+    api.list.mockResolvedValue({ items: [], nextAfter: null });
+    api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
+    const view = render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+    await waitFor(() =>
+      expect(api.exact).toHaveBeenCalledWith(
+        database,
+        kind,
+        testId,
+        kind === 'confirm' ? actionId : '',
+        id,
+        attempt.originalJSON,
+      ),
+    );
+    view.unmount();
+    api.exact.mockClear();
+    api.exact.mockResolvedValue({
+      outcome: 'match',
+      command: { commandId: id, testId, status: 'completed' },
+    });
+    render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+    await waitFor(() =>
+      expect(api.exact).toHaveBeenCalledWith(
+        database,
+        kind,
+        testId,
+        kind === 'confirm' ? actionId : '',
+        id,
+        attempt.originalJSON,
+      ),
+    );
+    if (kind === 'start') {
+      await waitFor(() => expect(screen.queryByText(new RegExp(`Команда:.*${id}`))).toBeNull());
+      await waitFor(() =>
+        expect(
+          screen.getByRole('button', { name: 'Подтвердить действие' }).hasAttribute('disabled'),
+        ).toBe(false),
+      );
+    } else await screen.findByText(/Команда: выполнена/);
+    expect(api.start).not.toHaveBeenCalled();
+    expect(api.confirm).not.toHaveBeenCalled();
+  },
+);
 
 it('does not report an unpersisted Stop when an ordinary browser receipt cannot be saved', async () => {
   sessionStorage.setItem(
@@ -1263,7 +1954,7 @@ it('does not report an unpersisted Stop when an ordinary browser receipt cannot 
     },
   }));
   api.command.mockRejectedValue(new Error('status unavailable'));
-  const browser = { ...desktopDemoService, requireCommandReceipt: true };
+  const browser = { ...desktopDemoService };
   render(<LiveApp session={bridge} service={browser} hostRunId={host} backendRunId={backend} />);
   const user = userEvent.setup();
   const newTest = await screen.findByRole('button', { name: 'Новое испытание' });
@@ -1369,7 +2060,7 @@ it('does not restore an unknown message after a later successful lookup', async 
   const createId = '66666666-6666-4666-8666-666666666666';
   sessionStorage.setItem(
     pendingKey,
-    JSON.stringify([{ id: createId, kind: 'create', testId: null, retired: false }]),
+    JSON.stringify([savedAttempt(createId, 'create', null, false)]),
   );
   const bridge: SessionBridge = {
     beginSessionCheck: async () => 'ticket',
@@ -1425,7 +2116,7 @@ it('keeps an unknown stop message when a different command is confirmed', async 
     pendingKey,
     JSON.stringify([
       { id: stopId, kind: 'stop', testId, retired: false },
-      { id: createId, kind: 'create', testId: null, retired: false },
+      savedAttempt(createId, 'create', null, false),
     ]),
   );
   let snapshot: Snapshot = {
@@ -1483,7 +2174,7 @@ it('keeps another command unknown when an earlier command fails', async () => {
     pendingKey,
     JSON.stringify([
       { id: stopId, kind: 'stop', testId, retired: true },
-      { id: createId, kind: 'create', testId: null, retired: false },
+      savedAttempt(createId, 'create', null, false),
     ]),
   );
   const bridge: SessionBridge = {
@@ -1714,7 +2405,7 @@ it('keeps an earlier test command failure when creating an unrelated test', asyn
   const oldTestId = '77777777-7777-4777-8777-777777777777';
   sessionStorage.setItem(
     pendingKey,
-    JSON.stringify([{ id: oldStartId, kind: 'start', testId: oldTestId, retired: true }]),
+    JSON.stringify([savedAttempt(oldStartId, 'start', oldTestId, true)]),
   );
   let snapshot: Snapshot = {
     apiVersion: 'v1',
@@ -1796,7 +2487,7 @@ it('brings a repeated readiness error back into view after another notice', asyn
   const oldTestId = '77777777-7777-4777-8777-777777777777';
   sessionStorage.setItem(
     pendingKey,
-    JSON.stringify([{ id: oldStartId, kind: 'start', testId: oldTestId, retired: true }]),
+    JSON.stringify([savedAttempt(oldStartId, 'start', oldTestId, true)]),
   );
   const snapshot: Snapshot = {
     apiVersion: 'v1',
@@ -2125,10 +2816,7 @@ it('keeps a storage warning when stop fails', async () => {
 
 it('clears an unknown stop when the separate stop check confirms it', async () => {
   const oldId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
-  sessionStorage.setItem(
-    pendingKey,
-    JSON.stringify([{ id: oldId, kind: 'start', testId, retired: true }]),
-  );
+  sessionStorage.setItem(pendingKey, JSON.stringify([savedAttempt(oldId, 'start', testId, true)]));
   let snapshot: Snapshot = {
     apiVersion: 'v1',
     backendRunId: backend,
@@ -2221,7 +2909,7 @@ it('explains when a pending start was canceled by stop', async () => {
   const startId = '66666666-6666-4666-8666-666666666666';
   sessionStorage.setItem(
     pendingKey,
-    JSON.stringify([{ id: startId, kind: 'start', testId, retired: false }]),
+    JSON.stringify([savedAttempt(startId, 'start', testId, false)]),
   );
   const bridge: SessionBridge = {
     beginSessionCheck: async () => 'ticket',

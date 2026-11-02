@@ -52,12 +52,22 @@ type Pending = {
   status: CommandStatus | null;
   retired: boolean;
   receiptRequired: boolean;
+  legacyUnverifiable: boolean;
+  legacyReviewed: boolean;
+  originalJSON: string | null;
+  actionId: string | null;
 };
 function samePending(left: Pending, right: Pending): boolean {
-  return left.id === right.id && left.kind === right.kind && left.testId === right.testId;
+  return (
+    left.id === right.id &&
+    left.kind === right.kind &&
+    left.testId === right.testId &&
+    left.actionId === right.actionId &&
+    left.originalJSON === right.originalJSON
+  );
 }
 function pendingKey(item: Pending): string {
-  return JSON.stringify([item.id, item.kind, item.testId]);
+  return JSON.stringify([item.id, item.kind, item.testId, item.actionId, item.originalJSON]);
 }
 function stopNoticeKey(id: string, testId: string | null): string {
   return JSON.stringify([id, 'stop', testId]);
@@ -228,7 +238,9 @@ function mergeStatus(previous: CommandStatus | null, next: CommandStatus): Comma
       previous.status === 'rejected' ||
       previous.status === 'failed')
   )
-    return previous;
+    return !previous.testId && next.testId && previous.status === next.status
+      ? { ...previous, testId: next.testId }
+      : previous;
   if (previous?.status === 'accepted' && next.status === 'unknown') return previous;
   return next;
 }
@@ -236,6 +248,65 @@ function mergeStatus(previous: CommandStatus | null, next: CommandStatus): Comma
 function terminalStatus(status: CommandStatus | null): boolean {
   return (
     status?.status === 'completed' || status?.status === 'rejected' || status?.status === 'failed'
+  );
+}
+
+function validUUID(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value) &&
+    value !== '00000000-0000-0000-0000-000000000000'
+  );
+}
+
+function confirmedCommandStatus(
+  value: unknown,
+  id: string,
+  testId: string | null,
+  requireTest = true,
+): value is CommandStatus {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('commandId' in value) ||
+    !('status' in value) ||
+    value.commandId !== id ||
+    typeof value.status !== 'string' ||
+    !['accepted', 'completed', 'rejected', 'failed'].includes(value.status) ||
+    Object.keys(value).some((key) => !['commandId', 'status', 'testId', 'reason'].includes(key))
+  )
+    return false;
+  const resultTest = 'testId' in value ? value.testId : null;
+  const reason = 'reason' in value ? value.reason : null;
+  if (reason !== null && typeof reason !== 'string') return false;
+  if (resultTest !== null && !validUUID(resultTest)) return false;
+  if (requireTest && value.status !== 'rejected' && resultTest === null) return false;
+  return (
+    testId === null ||
+    resultTest === testId ||
+    (resultTest === null && (!requireTest || value.status === 'rejected'))
+  );
+}
+
+function validExactEnvelope(value: unknown): value is { outcome: string; command: unknown } {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'outcome' in value &&
+    typeof value.outcome === 'string' &&
+    'command' in value &&
+    Object.keys(value).every((key) => key === 'outcome' || key === 'command')
+  );
+}
+
+function validDispatchEnvelope(value: unknown): value is { delivery: string; command: unknown } {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'delivery' in value &&
+    typeof value.delivery === 'string' &&
+    'command' in value &&
+    Object.keys(value).every((key) => key === 'delivery' || key === 'command')
   );
 }
 
@@ -264,7 +335,7 @@ function commandsBlock(
   );
 }
 
-function parsePending(raw: unknown): Pending | null {
+function parsePending(raw: unknown, scoped = true): Pending | null {
   if (
     typeof raw !== 'object' ||
     raw === null ||
@@ -282,16 +353,58 @@ function parsePending(raw: unknown): Pending | null {
       raw.kind !== 'stop') ||
     (typeof raw.testId !== 'string' && raw.testId !== null) ||
     typeof raw.retired !== 'boolean' ||
-    ('receiptRequired' in raw && typeof raw.receiptRequired !== 'boolean')
+    ('receiptRequired' in raw && typeof raw.receiptRequired !== 'boolean') ||
+    ('legacyReviewed' in raw && typeof raw.legacyReviewed !== 'boolean')
   )
     return null;
+  let originalJSON: string | null = null;
+  let actionId: string | null = null;
+  if ('schema' in raw && raw.schema === 2 && raw.kind !== 'stop') {
+    if (
+      !('originalJSON' in raw) ||
+      typeof raw.originalJSON !== 'string' ||
+      new TextEncoder().encode(raw.originalJSON).length > 8192 ||
+      !('actionId' in raw) ||
+      (raw.actionId !== null && typeof raw.actionId !== 'string')
+    )
+      return null;
+    try {
+      const body: unknown = JSON.parse(raw.originalJSON);
+      if (
+        typeof body !== 'object' ||
+        body === null ||
+        !('commandId' in body) ||
+        body.commandId !== raw.id
+      )
+        return null;
+    } catch {
+      return null;
+    }
+    if (
+      (raw.kind === 'create' && (raw.testId !== null || raw.actionId !== null)) ||
+      (raw.kind === 'start' && (typeof raw.testId !== 'string' || raw.actionId !== null)) ||
+      (raw.kind === 'confirm' &&
+        (typeof raw.testId !== 'string' || typeof raw.actionId !== 'string'))
+    )
+      return null;
+    originalJSON = raw.originalJSON;
+    actionId = raw.actionId;
+  }
+  const legacyUnverifiable = scoped && raw.kind !== 'stop' && originalJSON === null;
   return {
     id: raw.id,
     kind: raw.kind,
     testId: raw.testId,
-    retired: raw.retired,
+    retired:
+      raw.kind === 'stop' || !scoped || !legacyUnverifiable
+        ? raw.retired
+        : 'legacyReviewed' in raw && raw.legacyReviewed === true,
     status: null,
-    receiptRequired: 'receiptRequired' in raw && raw.receiptRequired === true,
+    receiptRequired: scoped && raw.kind !== 'stop',
+    legacyUnverifiable,
+    legacyReviewed: 'legacyReviewed' in raw && raw.legacyReviewed === true,
+    originalJSON,
+    actionId,
   };
 }
 function readStoredPending(storageKey: string): Pending[] | null {
@@ -310,10 +423,23 @@ function readStoredPending(storageKey: string): Pending[] | null {
   }
 }
 function restorePending(storageKey: string, memory: PendingMemory): Pending[] | null {
-  if (memory.volatile) return memory.storageUnknown ? null : [...memory.volatile];
+  if (memory.volatile) return memory.storageUnknown ? null : restoredMemory(memory.volatile);
   const stored = readStoredPending(storageKey);
   if (stored === null) memory.storageUnknown = true;
   return memory.storageUnknown ? null : stored;
+}
+
+function restoredMemory(items: Pending[]): Pending[] {
+  return items.map((item) =>
+    item.kind === 'stop'
+      ? item
+      : {
+          ...item,
+          status: null,
+          receiptRequired: true,
+          legacyUnverifiable: item.originalJSON === null,
+        },
+  );
 }
 
 function readLegacyPending(): { items: Pending[]; unreadable: boolean } {
@@ -324,7 +450,7 @@ function readLegacyPending(): { items: Pending[]; unreadable: boolean } {
     if (!Array.isArray(values) || values.length > 65) return { items: [], unreadable: true };
     const items: Pending[] = [];
     for (const value of values) {
-      const item = parsePending(value);
+      const item = parsePending(value, false);
       if (!item) return { items: [], unreadable: true };
       items.push(item);
     }
@@ -407,7 +533,9 @@ function ActiveLiveApp({
   const [storageUnconfirmed, setStorageUnconfirmed] = useState(
     restored === null || memory.storageUnknown,
   );
-  const [pending, setPending] = useState<Pending[]>(restored ?? memory.volatile ?? []);
+  const [pending, setPending] = useState<Pending[]>(
+    restored ?? (memory.volatile ? restoredMemory(memory.volatile) : []),
+  );
   const pendingRef = useRef(pending);
   const [message, setMessage] = useState('');
   const [commandFailure, setCommandFailure] = useState<CommandFailure | null>(null);
@@ -579,13 +707,26 @@ function ActiveLiveApp({
         sessionStorage.setItem(
           storageKey,
           JSON.stringify(
-            values.map(({ id, kind, testId, retired, receiptRequired }) => ({
-              id,
-              kind,
-              testId,
-              retired,
-              receiptRequired,
-            })),
+            values.map(
+              ({
+                id,
+                kind,
+                testId,
+                retired,
+                receiptRequired,
+                legacyReviewed,
+                originalJSON,
+                actionId,
+              }) => ({
+                id,
+                kind,
+                testId,
+                retired,
+                receiptRequired,
+                legacyReviewed,
+                ...(originalJSON === null ? {} : { schema: 2, originalJSON, actionId }),
+              }),
+            ),
           ),
         );
         pendingRef.current = values;
@@ -640,14 +781,7 @@ function ActiveLiveApp({
   }, []);
   const lookup = useCallback(
     async (item: Pending, manual = false) => {
-      if (
-        item.receiptRequired ||
-        (item.kind !== 'stop' &&
-          (item.id === currentRecord.current?.stopCommandId ||
-            pendingRef.current.some(
-              (current) => current.kind === 'stop' && current.id === item.id,
-            )))
-      ) {
+      if (item.kind !== 'stop' && item.originalJSON === null) {
         if (manual)
           setCommandMessage(
             item.id,
@@ -656,26 +790,69 @@ function ActiveLiveApp({
         return;
       }
       const lookupKey = commandLookupKey(hostRunId, backendRunId, databaseId, item.id);
-      if (!beginCall('lookup', lookupKey, manual ? 2 : 1)) {
+      const lookupKind = item.kind === 'stop' ? 'stopLookup' : 'lookup';
+      if (!beginCall(lookupKind, lookupKey, manual ? 2 : 1)) {
         if (manual) showMessage('Ожидаем завершения предыдущих проверок состояния команды.');
         return;
       }
       const generation = lifecycle.current;
       try {
-        const status = await service.command(item.id);
+        let status: CommandStatus;
+        if (item.kind === 'stop') {
+          status = await service.command(item.id);
+        } else {
+          if (item.originalJSON === null) return;
+          const result = await service.lookupCommandExact(
+            databaseId,
+            item.kind,
+            item.testId ?? '',
+            item.actionId ?? '',
+            item.id,
+            item.originalJSON,
+          );
+          if (
+            lifecycle.current !== generation ||
+            !pendingRef.current.some((current) => samePending(current, item))
+          )
+            return;
+          const current = pendingRef.current.find((pendingItem) => samePending(pendingItem, item));
+          const alreadyConfirmed = current?.status && current.status.status !== 'unknown';
+          if (!validExactEnvelope(result)) {
+            if (!alreadyConfirmed) unknownMessage(item.id);
+            return;
+          }
+          if (result.outcome === 'conflict' && result.command === null) {
+            if (alreadyConfirmed) return;
+            showCommandFailure({
+              id: item.id,
+              kind: item.kind,
+              testId: item.testId,
+              text: 'Идентификатор принадлежит другой команде. Эта попытка отклонена.',
+            });
+            forget(item);
+            return;
+          }
+          if (
+            result.outcome !== 'match' ||
+            !confirmedCommandStatus(result.command, item.id, item.testId)
+          ) {
+            if (!alreadyConfirmed) unknownMessage(item.id);
+            return;
+          }
+          status = result.command;
+        }
         if (lifecycle.current !== generation || status.commandId !== item.id) return;
         const existing = pendingRef.current.find((current) => samePending(current, item));
-        if (
-          !existing ||
-          existing.receiptRequired ||
-          (item.kind !== 'stop' &&
-            (item.id === currentRecord.current?.stopCommandId ||
-              pendingRef.current.some(
-                (current) => current.kind === 'stop' && current.id === item.id,
-              )))
-        )
-          return;
+        if (!existing || (existing.kind !== 'stop' && existing.originalJSON === null)) return;
         let merged = mergeStatus(existing.status, status);
+        if (existing.kind !== 'stop' && existing.receiptRequired && status.status !== 'unknown') {
+          savePending(
+            pendingRef.current.map((current) =>
+              samePending(current, item) ? { ...current, receiptRequired: false } : current,
+            ),
+            true,
+          );
+        }
         if (item.kind === 'stop') {
           const stopStatus = mergeStatus(stopStatuses.current.get(item.id) ?? null, merged);
           stopStatuses.current.set(item.id, stopStatus);
@@ -734,7 +911,9 @@ function ActiveLiveApp({
         if (
           lifecycle.current === generation &&
           current &&
-          !terminalStatus(current.status) &&
+          (item.kind === 'stop'
+            ? !terminalStatus(current.status)
+            : !current.status || current.status.status === 'unknown') &&
           !terminalStatus(knownStop)
         )
           unknownMessage(
@@ -742,7 +921,7 @@ function ActiveLiveApp({
             item.kind === 'stop' ? stopNoticeKey(item.id, item.testId) : item.id,
           );
       } finally {
-        endCall('lookup', lookupKey);
+        endCall(lookupKind, lookupKey);
       }
     },
     [
@@ -763,25 +942,6 @@ function ActiveLiveApp({
     if (!fresh || (!pending.length && !pendingRef.current.length)) return;
     const tracked = pendingRef.current;
     if (!tracked.length) return;
-    const conflicts = tracked.filter(
-      (item) =>
-        item.kind !== 'stop' &&
-        !item.receiptRequired &&
-        (item.id === record?.stopCommandId ||
-          tracked.some((current) => current.kind === 'stop' && current.id === item.id)),
-    );
-    if (conflicts.length) {
-      for (const item of conflicts) unknownMessage(item.id);
-      savePending(
-        tracked.map((item) =>
-          conflicts.some((current) => samePending(current, item))
-            ? { ...item, receiptRequired: true, status: null }
-            : item,
-        ),
-        true,
-      );
-      return;
-    }
     for (const item of tracked) {
       const expected = item.status?.testId ?? item.testId;
       if (
@@ -823,15 +983,26 @@ function ActiveLiveApp({
     }
     if (
       record?.stage === 'finished' &&
-      tracked.some((item) => !item.retired && item.testId === record.testId)
+      tracked.some(
+        (item) => !item.retired && !item.receiptRequired && item.testId === record.testId,
+      )
     ) {
       savePending(
-        tracked.map((item) => (item.testId === record.testId ? { ...item, retired: true } : item)),
+        tracked.map((item) =>
+          item.testId === record.testId && !item.receiptRequired
+            ? { ...item, retired: true }
+            : item,
+        ),
         true,
       );
       return;
     }
-    const unresolved = tracked.filter((item) => !terminalStatus(item.status));
+    const unresolved = tracked.filter(
+      (item) =>
+        (item.kind === 'stop' || item.originalJSON !== null) &&
+        (!terminalStatus(item.status) ||
+          (item.kind === 'create' && item.status?.status === 'completed' && !item.status.testId)),
+    );
     const item = unresolved[lookupIndex.current++ % unresolved.length];
     if (item) void lookup(item);
   }, [
@@ -845,7 +1016,6 @@ function ActiveLiveApp({
     setShowForm,
     setDraft,
     setDraftAvailable,
-    unknownMessage,
   ]);
 
   useEffect(() => {
@@ -858,7 +1028,7 @@ function ActiveLiveApp({
     if (record.stage === 'finished' && record.outcome === 'interrupted')
       setStopMessage(stopPendingMessage(record));
     const lookupKey = commandLookupKey(hostRunId, backendRunId, databaseId, id);
-    if (!beginCall('lookup', lookupKey, 1)) return;
+    if (!beginCall('stopLookup', lookupKey, 1)) return;
     void service
       .command(id)
       .then(
@@ -882,7 +1052,7 @@ function ActiveLiveApp({
         () => {},
       )
       .finally(() => {
-        endCall('lookup', lookupKey);
+        endCall('stopLookup', lookupKey);
       });
   }, [
     backendRunId,
@@ -900,7 +1070,8 @@ function ActiveLiveApp({
   async function submit(
     kind: Exclude<Pending['kind'], 'stop'>,
     testId: string | null,
-    send: (id: string) => Promise<CommandDispatch>,
+    actionId: string | null,
+    prepare: (id: string) => { originalJSON: string; send: () => Promise<CommandDispatch> },
   ) {
     if (
       !fresh ||
@@ -925,13 +1096,27 @@ function ActiveLiveApp({
       });
       return;
     }
+    const attempt = prepare(id);
+    if (new TextEncoder().encode(attempt.originalJSON).length > 8192) {
+      showCommandFailure({
+        id,
+        kind,
+        testId,
+        text: 'Параметры команды слишком велики. Команда не отправлена.',
+      });
+      return;
+    }
     const item: Pending = {
       id,
       kind,
       testId,
       status: null,
       retired: false,
-      receiptRequired: service.requireCommandReceipt === true,
+      receiptRequired: true,
+      legacyUnverifiable: false,
+      legacyReviewed: false,
+      originalJSON: attempt.originalJSON,
+      actionId,
     };
     if (!savePending([...pendingRef.current, item])) {
       showCommandFailure({
@@ -947,12 +1132,18 @@ function ActiveLiveApp({
     );
     setCommandMessage(item.id, 'Команда отправлена. Ожидаем подтверждения ядра.');
     try {
-      const dispatch = await send(item.id);
+      const dispatch = await attempt.send();
       if (
         lifecycle.current !== generation ||
         !pendingRef.current.some((current) => samePending(current, item))
       )
         return;
+      if (!validDispatchEnvelope(dispatch)) {
+        const current = pendingRef.current.find((pendingItem) => samePending(pendingItem, item));
+        if (current && (!current.status || current.status.status === 'unknown'))
+          unknownMessage(item.id);
+        return;
+      }
       if (dispatch.delivery === 'notSent' && dispatch.command === null) {
         const existing = pendingRef.current.find((current) => samePending(current, item));
         if (existing?.status && existing.status.status !== 'unknown') {
@@ -973,9 +1164,13 @@ function ActiveLiveApp({
         return;
       }
       const result = dispatch.command;
-      if (dispatch.delivery !== 'response' || !result || result.commandId !== item.id) {
+      if (
+        dispatch.delivery !== 'response' ||
+        !confirmedCommandStatus(result, item.id, item.testId, false)
+      ) {
         const current = pendingRef.current.find((pendingItem) => samePending(pendingItem, item));
-        if (current && !terminalStatus(current.status)) unknownMessage(item.id);
+        if (current && (!current.status || current.status.status === 'unknown'))
+          unknownMessage(item.id);
         return;
       }
       const existing = pendingRef.current.find((current) => samePending(current, item));
@@ -1022,7 +1217,11 @@ function ActiveLiveApp({
         forget(item);
         return;
       }
-      if (lifecycle.current === generation && current && !terminalStatus(current.status))
+      if (
+        lifecycle.current === generation &&
+        current &&
+        (!current.status || current.status.status === 'unknown')
+      )
         unknownMessage(item.id);
     }
   }
@@ -1050,6 +1249,10 @@ function ActiveLiveApp({
           status: null,
           retired: false,
           receiptRequired: false,
+          legacyUnverifiable: false,
+          legacyReviewed: false,
+          originalJSON: null,
+          actionId: null,
         },
       ];
       savePending(values, true);
@@ -1264,6 +1467,8 @@ function ActiveLiveApp({
                   Команда: {commandStatusLabel(item.status?.status)}. ID {item.id}.{' '}
                   {item.kind === 'stop' && `Остановка испытания ${item.testId ?? 'неизвестно'}. `}
                   {item.kind === 'stop' && 'Безопасное давление не подтверждено. '}
+                  {item.legacyUnverifiable &&
+                    'Исходное содержимое команды не сохранилось; её исход нельзя установить по идентификатору. Подтверждение проверки не устанавливает исход. '}
                   <button
                     type="button"
                     onClick={() => {
@@ -1272,9 +1477,27 @@ function ActiveLiveApp({
                   >
                     Проверить состояние
                   </button>
+                  {item.legacyUnverifiable && !item.retired && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        savePending(
+                          pendingRef.current.map((current) =>
+                            samePending(current, item)
+                              ? { ...current, retired: true, legacyReviewed: true }
+                              : current,
+                          ),
+                        );
+                      }}
+                    >
+                      Я проверил эту команду
+                    </button>
+                  )}
                   {item.retired && (
                     <button type="button" onClick={() => forget(item)}>
-                      Скрыть наблюдение команды
+                      {item.legacyUnverifiable
+                        ? 'Удалить запись наблюдения'
+                        : 'Скрыть наблюдение команды'}
                     </button>
                   )}
                 </p>
@@ -1335,8 +1558,8 @@ function ActiveLiveApp({
               }}
               onContinue={(parameters) => {
                 if (!snapshot) return;
-                void submit('create', null, (commandId) =>
-                  service.createTest({
+                void submit('create', null, null, (commandId) => {
+                  const command = {
                     commandId,
                     expectedRevision: snapshot.revision,
                     parameters: {
@@ -1347,8 +1570,12 @@ function ActiveLiveApp({
                       direction: TestParametersDirection.TestParametersDirectionPressure,
                       actuator: false,
                     },
-                  }),
-                );
+                  };
+                  return {
+                    originalJSON: JSON.stringify(command),
+                    send: () => service.createTest(command),
+                  };
+                });
               }}
             />
           )}
@@ -1378,13 +1605,17 @@ function ActiveLiveApp({
                 onBack={() => setShowSavedParameters(true)}
                 onStart={(checks) => {
                   if (snapshot)
-                    void submit('start', record.testId, (commandId) =>
-                      service.startTest(record.testId, {
+                    void submit('start', record.testId, null, (commandId) => {
+                      const command = {
                         commandId,
                         expectedRevision: snapshot.revision,
                         ...checks,
-                      }),
-                    );
+                      };
+                      return {
+                        originalJSON: JSON.stringify(command),
+                        send: () => service.startTest(record.testId, command),
+                      };
+                    });
                 }}
               />
             )}
@@ -1415,12 +1646,16 @@ function ActiveLiveApp({
               onConfirm={() => {
                 const action = snapshot.pendingAction;
                 if (action)
-                  void submit('confirm', record.testId, (commandId) =>
-                    service.confirmAction(record.testId, action.actionId, {
+                  void submit('confirm', record.testId, action.actionId, (commandId) => {
+                    const command = {
                       commandId,
                       expectedRevision: snapshot.revision,
-                    }),
-                  );
+                    };
+                    return {
+                      originalJSON: JSON.stringify(command),
+                      send: () => service.confirmAction(record.testId, action.actionId, command),
+                    };
+                  });
               }}
             />
           )}

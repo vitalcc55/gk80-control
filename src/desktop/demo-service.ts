@@ -2,6 +2,7 @@ import type {
   AuditPage,
   CommandDispatch,
   CommandStatus,
+  ExactLookupResult,
   ListTestsParams,
   MeasurementPage,
   Readiness,
@@ -26,8 +27,6 @@ export class CommandConflictError extends Error {
 // Replacements within one host/backend session must address the same demo profile and core.
 // The caller must preserve that profile binding when reconciling unresolved commands.
 export interface DemoService {
-  // Until an exact comparison is available, a browser attempt requires its own response.
-  readonly requireCommandReceipt: boolean;
   createTest(command: CreateCommandInput): Promise<CommandDispatch>;
   readiness(testId: string): Promise<Readiness>;
   startTest(testId: string, command: StartCommandInput): Promise<CommandDispatch>;
@@ -38,6 +37,14 @@ export interface DemoService {
   ): Promise<CommandDispatch>;
   stopTest(testId: string, command: StopCommandInput): Promise<CommandStatus>;
   command(commandId: string): Promise<CommandStatus>;
+  lookupCommandExact(
+    databaseId: string,
+    kind: 'create' | 'start' | 'confirm',
+    testId: string,
+    actionId: string,
+    commandId: string,
+    originalJSON: string,
+  ): Promise<ExactLookupResult>;
   listTests(params: ListTestsParams): Promise<TestList>;
   test(testId: string): Promise<TestRecord>;
   measurements(testId: string, after: number, limit: number): Promise<MeasurementPage>;

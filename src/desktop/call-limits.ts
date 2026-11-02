@@ -1,9 +1,10 @@
 import { useSyncExternalStore } from 'react';
 
-type Kind = 'stop' | 'lookup';
+type Kind = 'stop' | 'lookup' | 'stopLookup';
 const calls: Record<Kind, Map<string, number>> = {
   stop: new Map(),
   lookup: new Map(),
+  stopLookup: new Map(),
 };
 const listeners = new Set<() => void>();
 let revision = 0;
