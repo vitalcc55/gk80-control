@@ -46,6 +46,10 @@ func newBoundRoutes(s *browserSession, service browserOperations, bootstrap boot
 	s.mu.Unlock()
 	app := newRoutes(s, service, bootstrap)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/session/pair" {
+			s.pairHTTP(w, r)
+			return
+		}
 		if r.URL.Path == "/api/session/stream" {
 			s.openChannel(w, r)
 			return

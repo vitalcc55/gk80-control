@@ -38,6 +38,7 @@ type browserSession struct {
 	bound     bool
 	channel   *browserChannel
 	revoking  chan struct{}
+	pairing   chan struct{}
 }
 
 type requestClass uint8
@@ -99,7 +100,7 @@ func newSession(host string, validFor time.Duration) (*browserSession, string, e
 	if err != nil {
 		return nil, "", err
 	}
-	return &browserSession{host: host, code: code, codeUntil: time.Now().Add(validFor), validFor: validFor}, code, nil
+	return &browserSession{host: host, code: code, codeUntil: time.Now().Add(validFor), validFor: validFor, pairing: make(chan struct{}, 2)}, code, nil
 }
 
 // admitClass registers cancellation under the same lock used to revoke a session.
