@@ -1499,8 +1499,8 @@ func TestDemoSessionReconcilesPendingWithoutBlockingStop(t *testing.T) {
 	if err != nil || called || status.Status != contract.CommandStatusStatusCompleted {
 		t.Fatalf("command was repeated: %+v %v", status, err)
 	}
-	if _, err := session.command(context.Background(), id, "different", false, nil); err == nil {
-		t.Fatal("identifier was accepted with different content")
+	if _, err := session.command(context.Background(), id, "different", false, nil); !errors.Is(err, ErrCommandConflict) {
+		t.Fatalf("identifier conflict was not distinguished: %v", err)
 	}
 }
 
@@ -1568,8 +1568,8 @@ func TestDemoSessionDoesNotAttributeOldCommandToConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	close(release)
-	if err := <-done; err == nil {
-		t.Fatal("different command reused a previous result")
+	if _, err := dispatch(contract.CommandStatus{}, <-done); !errors.Is(err, ErrCommandConflict) {
+		t.Fatalf("core conflict was not distinguished: %v", err)
 	}
 	session.mu.Lock()
 	_, retained := session.commands[id]
@@ -1877,6 +1877,42 @@ func TestOwnerStopUsesPreviouslyReadRecordWithoutSnapshot(t *testing.T) {
 	status, err := owner.StopTest(context.Background(), testID.String(), contract.StopTestCommand{CommandId: stopID})
 	if err != nil || status.Status != contract.CommandStatusStatusAccepted {
 		t.Fatalf("stop was blocked by stale snapshot or ordinary command: %+v %v", status, err)
+	}
+}
+
+func TestKnownStopIdentifierRejectsOtherCommands(t *testing.T) {
+	testID, stopID := uuid.New(), uuid.New()
+	session := newDemoSession(context.Background(), &testSessionClient{}, uuid.New(), uuid.New())
+	defer session.close()
+	session.mu.Lock()
+	session.rememberStopLocked(contract.TestRecord{TestId: testID, StopCommandId: stopID, Stage: "finished"})
+	session.mu.Unlock()
+	if _, err := session.command(context.Background(), stopID, "create", false, nil); !errors.Is(err, ErrCommandConflict) {
+		t.Fatalf("reserved stop identifier: %v", err)
+	}
+	owner := &Owner{session: session, status: contract.DesktopStatus{Status: contract.DesktopStatusStatusReady}}
+	if _, err := owner.StopTest(context.Background(), uuid.NewString(), contract.StopTestCommand{CommandId: stopID}); !errors.Is(err, ErrCommandConflict) {
+		t.Fatalf("stop identifier for another test: %v", err)
+	}
+	session.mu.Lock()
+	delete(session.knownStops, stopID)
+	session.activeTestID, session.activeStopID = testID, stopID
+	session.mu.Unlock()
+	if _, err := session.command(context.Background(), stopID, "create", false, nil); !errors.Is(err, ErrCommandConflict) {
+		t.Fatalf("active stop identifier after eviction: %v", err)
+	}
+	if _, err := owner.StopTest(context.Background(), uuid.NewString(), contract.StopTestCommand{CommandId: stopID}); !errors.Is(err, ErrCommandConflict) {
+		t.Fatalf("active stop identifier for another test after eviction: %v", err)
+	}
+	session.mu.Lock()
+	session.activeTestID, session.activeStopID = uuid.Nil, uuid.Nil
+	session.snapshot = &contract.Snapshot{ActiveTest: &contract.TestRecord{TestId: testID, StopCommandId: stopID}}
+	session.mu.Unlock()
+	if _, err := session.command(context.Background(), stopID, "create", false, nil); !errors.Is(err, ErrCommandConflict) {
+		t.Fatalf("snapshot stop identifier after eviction: %v", err)
+	}
+	if _, err := owner.StopTest(context.Background(), uuid.NewString(), contract.StopTestCommand{CommandId: stopID}); !errors.Is(err, ErrCommandConflict) {
+		t.Fatalf("snapshot stop identifier for another test after eviction: %v", err)
 	}
 }
 

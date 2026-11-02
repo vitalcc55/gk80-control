@@ -9,8 +9,12 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/vitalcc55/gk80-control/internal/contract"
+	"github.com/vitalcc55/gk80-control/internal/transport"
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
+
+// ErrCommandConflict means that the identifier belongs to different command content.
+var ErrCommandConflict = errors.New("command identifier already used with different content")
 
 // Core is implemented by the authenticated native client, not by the frontend.
 type Core interface {
@@ -147,9 +151,17 @@ func dispatch(result contract.CommandStatus, err error) (contract.CommandDispatc
 		return contract.CommandDispatch{Delivery: contract.NotSent}, nil
 	}
 	if err != nil {
-		return contract.CommandDispatch{}, err
+		return contract.CommandDispatch{}, commandError(err)
 	}
 	return contract.CommandDispatch{Delivery: contract.Response, Command: &result}, nil
+}
+
+func commandError(err error) error {
+	var failure *transport.RequestError
+	if errors.As(err, &failure) && failure.Status == 409 && failure.Code == "command_conflict" && !failure.OutcomeUnknown {
+		return errors.Join(ErrCommandConflict, err)
+	}
+	return err
 }
 
 func (s *Service) CreateTest(ctx context.Context, command CreateCommandInput) (contract.CommandDispatch, error) {
@@ -169,7 +181,8 @@ func (s *Service) StartTest(ctx context.Context, testID string, command StartCom
 }
 
 func (s *Service) StopTest(ctx context.Context, testID string, command StopCommandInput) (contract.CommandStatus, error) {
-	return s.core.StopTestInput(ctx, testID, command)
+	result, err := s.core.StopTestInput(ctx, testID, command)
+	return result, commandError(err)
 }
 
 func (s *Service) ConfirmAction(ctx context.Context, testID, actionID string, command ConfirmCommandInput) (contract.CommandDispatch, error) {

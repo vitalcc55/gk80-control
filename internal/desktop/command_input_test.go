@@ -234,6 +234,25 @@ func TestWailsActionInputsRequireOriginalFields(t *testing.T) {
 	}
 }
 
+func TestDispatchDistinguishesConfirmedConflictFromUnknownOutcome(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		failure  *transport.RequestError
+		conflict bool
+	}{
+		{"confirmed", &transport.RequestError{Status: 409, Code: "command_conflict"}, true},
+		{"unknown", &transport.RequestError{Status: 409, Code: "command_conflict", OutcomeUnknown: true}, false},
+		{"other conflict", &transport.RequestError{Status: 409, Code: "busy"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := dispatch(contract.CommandStatus{}, tc.failure)
+			if err == nil || errors.Is(err, ErrCommandConflict) != tc.conflict {
+				t.Fatalf("classification: %v", err)
+			}
+		})
+	}
+}
+
 func TestForwardCommandLogsSafeRejectionReasons(t *testing.T) {
 	dir, hostID, runID, commandID := t.TempDir(), uuid.New(), uuid.New(), uuid.New()
 	logger, err := diagnostics.Open(dir, diagnostics.RoleDesktop, hostID, io.Discard, diagnostics.Config{QueueSize: 32, MaxBytes: 1 << 20, AppVersion: "0.1.0", ProfileID: "test"})

@@ -428,10 +428,14 @@ func (o *Owner) stopSessionCommand(ctx context.Context, id, commandID uuid.UUID,
 	valid := (active != nil && active.Stage != "finished" && active.TestId == id && active.StopCommandId == commandID) || (session.activeTestID == id && session.activeStopID == commandID)
 	previous, tracked := session.commands[commandID]
 	knownRepeat := tracked && session.commandPayloads[commandID] == identity
+	reservedTest, reserved := session.reservedStopTestLocked(commandID)
 	session.mu.Unlock()
 	if !valid {
 		if knownRepeat {
 			return previous, nil
+		}
+		if reserved && reservedTest != id {
+			return contract.CommandStatus{}, ErrCommandConflict
 		}
 		return contract.CommandStatus{}, errSessionUnavailable
 	}

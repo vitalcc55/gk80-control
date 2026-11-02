@@ -793,6 +793,20 @@ func (s *demoSession) rememberStopPairLocked(record contract.TestRecord) {
 	s.knownStops[record.StopCommandId] = record.TestId
 }
 
+func (s *demoSession) reservedStopTestLocked(id uuid.UUID) (uuid.UUID, bool) {
+	if id != uuid.Nil && id == s.activeStopID && s.activeTestID != uuid.Nil {
+		return s.activeTestID, true
+	}
+	if s.snapshot != nil && s.snapshot.ActiveTest != nil {
+		record := s.snapshot.ActiveTest
+		if id != uuid.Nil && id == record.StopCommandId && record.TestId != uuid.Nil {
+			return record.TestId, true
+		}
+	}
+	testID, exists := s.knownStops[id]
+	return testID, exists
+}
+
 func (s *demoSession) commandAllowedLocked(stop bool) bool {
 	now := time.Now()
 	valid := !s.closed && !s.closing && s.leaseID != uuid.Nil
@@ -865,16 +879,16 @@ func (s *demoSession) command(ctx context.Context, id uuid.UUID, identity string
 	}
 	s.mu.Lock()
 	if !stop {
-		if _, reserved := s.knownStops[id]; reserved {
+		if _, reserved := s.reservedStopTestLocked(id); reserved {
 			s.mu.Unlock()
-			return contract.CommandStatus{}, errors.New("command identifier is reserved for stopping")
+			return contract.CommandStatus{}, ErrCommandConflict
 		}
 	}
 	if existing, ok := s.commands[id]; ok {
 		if s.commandPayloads[id] != identity {
 			if !stop {
 				s.mu.Unlock()
-				return contract.CommandStatus{}, errors.New("command identifier already used with different content")
+				return contract.CommandStatus{}, ErrCommandConflict
 			}
 			if !s.commandAllowedLocked(true) {
 				s.mu.Unlock()

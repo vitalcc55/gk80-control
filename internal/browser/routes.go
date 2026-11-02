@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"mime"
 	"net/http"
@@ -159,6 +160,10 @@ func newRoutes(s *browserSession, service browserOperations, bootstrap bootstrap
 		}
 		status, err := service.StopTest(r.Context(), r.PathValue("testId"), input)
 		if err != nil {
+			if errors.Is(err, desktop.ErrCommandConflict) {
+				s.reply(w, r, http.StatusConflict, map[string]string{"error": "command_conflict"})
+				return
+			}
 			s.reply(w, r, http.StatusServiceUnavailable, map[string]string{"error": "command outcome unavailable"})
 			return
 		}

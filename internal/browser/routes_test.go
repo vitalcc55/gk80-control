@@ -32,6 +32,7 @@ type routeService struct {
 	creates                      int
 	dispatch                     contract.CommandDispatch
 	dispatchErr                  error
+	stopErr                      error
 	starts, confirms, waits      int
 	startInput                   desktop.StartCommandInput
 	confirmInput                 desktop.ConfirmCommandInput
@@ -179,7 +180,7 @@ func (f *routeService) StopTest(_ context.Context, id string, input desktop.Stop
 	f.stops++
 	f.testID = id
 	f.commandID = input.CommandId
-	return contract.CommandStatus{CommandId: input.CommandId, Status: contract.CommandStatusStatusAccepted}, nil
+	return contract.CommandStatus{CommandId: input.CommandId, Status: contract.CommandStatusStatusAccepted}, f.stopErr
 }
 
 func TestHeartbeatAndStopUseProtectedFixedRoutes(t *testing.T) {
@@ -318,6 +319,12 @@ func TestHeartbeatAndStopUseProtectedFixedRoutes(t *testing.T) {
 	if stops != 1 {
 		t.Fatal("invalid command reached service")
 	}
+	fake.mu.Lock()
+	fake.stopErr = desktop.ErrCommandConflict
+	fake.mu.Unlock()
+	if status, body := request("/api/tests/"+testID+"/stop", `{"commandId":"`+commandID.String()+`"}`, true); status != http.StatusConflict || !strings.Contains(body, `"command_conflict"`) {
+		t.Fatalf("stop conflict not distinguished: %d %s", status, body)
+	}
 }
 
 func TestCreateRoutePreservesInputAndDelivery(t *testing.T) {
@@ -380,6 +387,13 @@ func TestCreateRoutePreservesInputAndDelivery(t *testing.T) {
 	status, response = request(body)
 	if status != http.StatusServiceUnavailable || strings.Contains(response, `"notSent"`) {
 		t.Fatalf("error misreported: %d %s", status, response)
+	}
+	fake.mu.Lock()
+	fake.dispatchErr = desktop.ErrCommandConflict
+	fake.mu.Unlock()
+	status, response = request(body)
+	if status != http.StatusConflict || !strings.Contains(response, `"command_conflict"`) {
+		t.Fatalf("confirmed conflict not distinguished: %d %s", status, response)
 	}
 }
 
