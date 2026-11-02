@@ -10,6 +10,7 @@ import { desktopDemoService } from '../src/desktop/wails-bridge';
 import {
   type CommandDispatch,
   CommandDispatchDelivery,
+  type CommandStatus,
   CommandStatusStatus,
   ConnectionStateStatus,
   type DesktopStatus,
@@ -49,11 +50,18 @@ function DesktopApp(props: ComponentProps<typeof RealDesktopApp>) {
 }
 
 function LiveApp(
-  props: Omit<ComponentProps<typeof RealLiveApp>, 'service'> & {
+  props: Omit<ComponentProps<typeof RealLiveApp>, 'service' | 'databaseId'> & {
     service?: ComponentProps<typeof RealLiveApp>['service'];
+    databaseId?: string;
   },
 ) {
-  return <RealLiveApp {...props} service={props.service ?? desktopDemoService} />;
+  return (
+    <RealLiveApp
+      {...props}
+      databaseId={props.databaseId ?? database}
+      service={props.service ?? desktopDemoService}
+    />
+  );
 }
 vi.mock('../src/components/MeasurementChart', () => ({
   MeasurementChart: () => <div role="img" aria-label="График показаний симулятора" />,
@@ -85,6 +93,8 @@ vi.mock(
 
 const host = '11111111-1111-4111-8111-111111111111';
 const backend = '22222222-2222-4222-8222-222222222222';
+const database = '99999999-9999-4999-8999-999999999999';
+const pendingKey = `gk80.demo.pending-command.v1:${database}`;
 const testId = '33333333-3333-4333-8333-333333333333';
 const actionId = '44444444-4444-4444-8444-444444444444';
 const stopId = '55555555-5555-4555-8555-555555555555';
@@ -111,6 +121,179 @@ const record = {
 beforeEach(() => {
   sessionStorage.clear();
   vi.resetAllMocks();
+});
+
+it('does not attribute an unbound legacy command to the confirmed database', async () => {
+  const legacy = JSON.stringify([
+    { id: 'legacy', kind: 'create', testId: null, retired: false },
+    { id: 'legacy-stop', kind: 'stop', testId, retired: false },
+  ]);
+  sessionStorage.setItem('gk80.demo.pending-command', legacy);
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 0,
+        lastEventSequence: 0,
+        activeTest: null,
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.list.mockResolvedValue({ items: [], nextAfter: null });
+  render(
+    <LiveApp session={bridge} hostRunId={host} backendRunId={backend} databaseId={database} />,
+  );
+  await screen.findByText(/прежние команды с неизвестной принадлежностью/i);
+  expect(screen.getByRole('button', { name: 'Новое испытание' }).hasAttribute('disabled')).toBe(
+    true,
+  );
+  expect(api.command).not.toHaveBeenCalledWith('legacy');
+  expect(api.create).not.toHaveBeenCalled();
+  expect(sessionStorage.getItem('gk80.demo.pending-command')).toBe(legacy);
+  expect(screen.getByText(/Прежняя команда: создание испытания, ID legacy/)).toBeTruthy();
+  expect(
+    screen.getByText(/Прежняя команда: остановка испытания, ID legacy-stop/).textContent,
+  ).toContain('Безопасное давление не подтверждено');
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Я проверил прежние команды' }));
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: 'Новое испытание' }).hasAttribute('disabled')).toBe(
+      false,
+    ),
+  );
+  expect(api.command).not.toHaveBeenCalledWith('legacy');
+  expect(sessionStorage.getItem('gk80.demo.pending-command')).toBe(legacy);
+});
+
+it('keeps Stop available when the legacy command list cannot be read', async () => {
+  const originalGet = Storage.prototype.getItem;
+  const getItem = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (
+    this: Storage,
+    key: string,
+  ) {
+    if (key === 'gk80.demo.pending-command') throw new Error('legacy list unavailable');
+    return originalGet.call(this, key);
+  });
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 2,
+        lastEventSequence: 2,
+        activeTest: { ...record, stage: TestRecordStage.Running },
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.command.mockResolvedValue({
+    commandId: stopId,
+    status: CommandStatusStatus.CommandStatusStatusUnknown,
+  });
+  api.stop.mockResolvedValue({
+    commandId: stopId,
+    testId,
+    status: CommandStatusStatus.CommandStatusStatusAccepted,
+  });
+  render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  await screen.findByText(/Не удалось прочитать прежний список команд/i);
+  await userEvent
+    .setup()
+    .click(await screen.findByRole('button', { name: 'Остановить испытание' }));
+  expect(api.stop).toHaveBeenCalledOnce();
+  expect(api.create).not.toHaveBeenCalled();
+  getItem.mockRestore();
+  await userEvent
+    .setup()
+    .click(screen.getByRole('button', { name: 'Повторить чтение прежних команд' }));
+  expect(screen.queryByText(/Не удалось прочитать прежний список команд/i)).toBeNull();
+});
+
+it('isolates pending commands and late lookups across databases', async () => {
+  const otherDatabase = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const commandId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const item = JSON.stringify([{ id: commandId, kind: 'create', testId: null, retired: false }]);
+  const otherKey = `gk80.demo.pending-command.v1:${otherDatabase}`;
+  sessionStorage.setItem(pendingKey, item);
+  sessionStorage.setItem(otherKey, item);
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 0,
+        lastEventSequence: 0,
+        activeTest: null,
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  let finishOld: (value: CommandStatus) => void = () => {};
+  const old = new Promise<CommandStatus>((resolve) => {
+    finishOld = resolve;
+  });
+  api.list.mockResolvedValue({ items: [], nextAfter: null });
+  api.command.mockReturnValueOnce(old).mockResolvedValue({
+    commandId,
+    status: CommandStatusStatus.CommandStatusStatusAccepted,
+  });
+  const view = render(
+    <LiveApp session={bridge} hostRunId={host} backendRunId={backend} databaseId={database} />,
+  );
+  await waitFor(() => expect(api.command).toHaveBeenCalledTimes(1));
+  view.rerender(
+    <LiveApp session={bridge} hostRunId={host} backendRunId={backend} databaseId={otherDatabase} />,
+  );
+  await waitFor(() => expect(api.command.mock.calls.length).toBeGreaterThanOrEqual(2));
+  await screen.findByText(/принята; завершение команды не подтверждено/);
+  await act(async () => {
+    finishOld({ commandId, status: CommandStatusStatus.CommandStatusStatusFailed });
+    await old;
+  });
+  expect(screen.getByText(/принята; завершение команды не подтверждено/)).toBeTruthy();
+  expect(sessionStorage.getItem(pendingKey)).toBe(item);
+  expect(sessionStorage.getItem(otherKey)).toBe(item);
+  expect(api.create).not.toHaveBeenCalled();
 });
 
 it('shows diagnostics already degraded when the live session opens', async () => {
@@ -862,7 +1045,7 @@ it.each(['rejected response', 'not sent response'] as const)(
 it('does not restore an unknown message after a later successful lookup', async () => {
   const createId = '66666666-6666-4666-8666-666666666666';
   sessionStorage.setItem(
-    'gk80.demo.pending-command',
+    pendingKey,
     JSON.stringify([{ id: createId, kind: 'create', testId: null, retired: false }]),
   );
   const bridge: SessionBridge = {
@@ -916,7 +1099,7 @@ it('does not restore an unknown message after a later successful lookup', async 
 it('keeps an unknown stop message when a different command is confirmed', async () => {
   const createId = '66666666-6666-4666-8666-666666666666';
   sessionStorage.setItem(
-    'gk80.demo.pending-command',
+    pendingKey,
     JSON.stringify([
       { id: stopId, kind: 'stop', testId, retired: false },
       { id: createId, kind: 'create', testId: null, retired: false },
@@ -974,7 +1157,7 @@ it('keeps an unknown stop message when a different command is confirmed', async 
 it('keeps another command unknown when an earlier command fails', async () => {
   const createId = '66666666-6666-4666-8666-666666666666';
   sessionStorage.setItem(
-    'gk80.demo.pending-command',
+    pendingKey,
     JSON.stringify([
       { id: stopId, kind: 'stop', testId, retired: true },
       { id: createId, kind: 'create', testId: null, retired: false },
@@ -1048,7 +1231,7 @@ it('keeps separate failed stop results visible until the operator hides them', a
     { id: '88888888-8888-4888-8888-888888888888', testId: '99999999-9999-4999-8999-999999999999' },
   ];
   sessionStorage.setItem(
-    'gk80.demo.pending-command',
+    pendingKey,
     JSON.stringify(stops.map((item) => ({ ...item, kind: 'stop', retired: true }))),
   );
   const bridge: SessionBridge = {
@@ -1207,7 +1390,7 @@ it('keeps an earlier test command failure when creating an unrelated test', asyn
   const oldStartId = '66666666-6666-4666-8666-666666666666';
   const oldTestId = '77777777-7777-4777-8777-777777777777';
   sessionStorage.setItem(
-    'gk80.demo.pending-command',
+    pendingKey,
     JSON.stringify([{ id: oldStartId, kind: 'start', testId: oldTestId, retired: true }]),
   );
   let snapshot: Snapshot = {
@@ -1289,7 +1472,7 @@ it('brings a repeated readiness error back into view after another notice', asyn
   const oldStartId = '66666666-6666-4666-8666-666666666666';
   const oldTestId = '77777777-7777-4777-8777-777777777777';
   sessionStorage.setItem(
-    'gk80.demo.pending-command',
+    pendingKey,
     JSON.stringify([{ id: oldStartId, kind: 'start', testId: oldTestId, retired: true }]),
   );
   const snapshot: Snapshot = {
@@ -1438,7 +1621,7 @@ it('keeps a confirmed not-sent result when the service wrapper changes', async (
 it('allows stopping while another command is unresolved and reports a confirmed failure', async () => {
   const startId = '66666666-6666-4666-8666-666666666666';
   sessionStorage.setItem(
-    'gk80.demo.pending-command',
+    pendingKey,
     JSON.stringify([{ id: startId, kind: 'start', testId, retired: false }]),
   );
   const snapshot: Snapshot = {
@@ -1620,7 +1803,7 @@ it('keeps a storage warning when stop fails', async () => {
 it('clears an unknown stop when the separate stop check confirms it', async () => {
   const oldId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
   sessionStorage.setItem(
-    'gk80.demo.pending-command',
+    pendingKey,
     JSON.stringify([{ id: oldId, kind: 'start', testId, retired: true }]),
   );
   let snapshot: Snapshot = {
@@ -1714,7 +1897,7 @@ it('clears an unknown stop when the separate stop check confirms it', async () =
 it('explains when a pending start was canceled by stop', async () => {
   const startId = '66666666-6666-4666-8666-666666666666';
   sessionStorage.setItem(
-    'gk80.demo.pending-command',
+    pendingKey,
     JSON.stringify([{ id: startId, kind: 'start', testId, retired: false }]),
   );
   const bridge: SessionBridge = {
@@ -1932,7 +2115,7 @@ it('keeps an earlier unknown Stop observable when stopping a later test', async 
   const nextTest = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
   const nextStop = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
   sessionStorage.setItem(
-    'gk80.demo.pending-command',
+    pendingKey,
     JSON.stringify([{ id: oldStop, kind: 'stop', testId, retired: true }]),
   );
   const snapshot: Snapshot = {
@@ -1975,9 +2158,7 @@ it('keeps an earlier unknown Stop observable when stopping a later test', async 
   await userEvent
     .setup()
     .click(await screen.findByRole('button', { name: 'Остановить испытание' }));
-  const saved: { id: string }[] = JSON.parse(
-    sessionStorage.getItem('gk80.demo.pending-command') ?? '[]',
-  );
+  const saved: { id: string }[] = JSON.parse(sessionStorage.getItem(pendingKey) ?? '[]');
   expect(saved.map((item) => item.id)).toEqual(expect.arrayContaining([oldStop, nextStop]));
   expect(api.stop).toHaveBeenCalledWith(nextTest, { commandId: nextStop });
 });
@@ -1989,7 +2170,7 @@ it('keeps Stop available and reserves its identifier when the command list is fu
     testId: null,
     retired: true,
   }));
-  sessionStorage.setItem('gk80.demo.pending-command', JSON.stringify(old));
+  sessionStorage.setItem(pendingKey, JSON.stringify(old));
   const snapshot: Snapshot = {
     apiVersion: 'v1',
     backendRunId: backend,
@@ -2026,9 +2207,7 @@ it('keeps Stop available and reserves its identifier when the command list is fu
   await userEvent
     .setup()
     .click(await screen.findByRole('button', { name: 'Остановить испытание' }));
-  const saved: { id: string }[] = JSON.parse(
-    sessionStorage.getItem('gk80.demo.pending-command') ?? '[]',
-  );
+  const saved: { id: string }[] = JSON.parse(sessionStorage.getItem(pendingKey) ?? '[]');
   expect(saved).toHaveLength(65);
   expect(saved.some((item) => item.id === stopId)).toBe(true);
   expect(api.stop).toHaveBeenCalledTimes(1);
@@ -2094,7 +2273,7 @@ it('keeps an unpersisted Stop observable across remount when session storage fai
 it('merges the previously unread command list before storing an emergency Stop', async () => {
   const oldId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
   sessionStorage.setItem(
-    'gk80.demo.pending-command',
+    pendingKey,
     JSON.stringify([{ id: oldId, kind: 'create', testId: null, retired: false }]),
   );
   const originalGet = Storage.prototype.getItem;
@@ -2147,9 +2326,7 @@ it('merges the previously unread command list before storing an emergency Stop',
     .setup()
     .click(await screen.findByRole('button', { name: 'Остановить испытание' }));
   getItem.mockRestore();
-  const saved: { id: string }[] = JSON.parse(
-    sessionStorage.getItem('gk80.demo.pending-command') ?? '[]',
-  );
+  const saved: { id: string }[] = JSON.parse(sessionStorage.getItem(pendingKey) ?? '[]');
   expect(saved.map((item) => item.id)).toEqual(expect.arrayContaining([oldId, stopId]));
   expect(api.stop).toHaveBeenCalledTimes(1);
 });
@@ -2157,7 +2334,7 @@ it('merges the previously unread command list before storing an emergency Stop',
 it('can retry reading an unavailable command list without sending a command', async () => {
   const oldId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
   sessionStorage.setItem(
-    'gk80.demo.pending-command',
+    pendingKey,
     JSON.stringify([{ id: oldId, kind: 'start', testId, retired: false }]),
   );
   const originalGet = Storage.prototype.getItem;

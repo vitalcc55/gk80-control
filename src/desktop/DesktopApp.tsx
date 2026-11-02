@@ -133,6 +133,7 @@ export function DesktopApp({
         service={service}
         hostRunId={status.hostRunId}
         backendRunId={status.handshake.backendRunId}
+        databaseId={status.handshake.databaseId}
         diagnosticsDegraded={status.diagnosticsDegraded}
       />
     );

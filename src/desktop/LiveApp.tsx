@@ -58,6 +58,12 @@ type CommandFailure = {
   testId: string | null;
   text: string;
 };
+const legacyCommandLabels: Record<Pending['kind'], string> = {
+  create: 'создание испытания',
+  start: 'запуск испытания',
+  confirm: 'подтверждение действия',
+  stop: 'остановка испытания',
+};
 
 function commandStatusLabel(status: CommandStatus['status'] | undefined): string {
   switch (status) {
@@ -74,9 +80,20 @@ function commandStatusLabel(status: CommandStatus['status'] | undefined): string
   }
 }
 
-const storageKey = 'gk80.demo.pending-command';
-let volatilePending: Pending[] | null = null;
-let pendingStorageUnknown = false;
+const legacyStorageKey = 'gk80.demo.pending-command';
+type PendingMemory = { volatile: Pending[] | null; storageUnknown: boolean };
+const pendingMemory = new Map<string, PendingMemory>();
+function memoryFor(databaseId: string): PendingMemory {
+  let memory = pendingMemory.get(databaseId);
+  if (!memory) {
+    memory = { volatile: null, storageUnknown: false };
+    pendingMemory.set(databaseId, memory);
+  }
+  return memory;
+}
+function commandLookupKey(host: string, backend: string, database: string, id: string): string {
+  return JSON.stringify([host, backend, database, id]);
+}
 type ReadinessRead = {
   listeners: Set<(value: Readiness | null) => void>;
   inFlight: number;
@@ -253,7 +270,7 @@ function parsePending(raw: unknown): Pending | null {
     return null;
   return { id: raw.id, kind: raw.kind, testId: raw.testId, retired: raw.retired, status: null };
 }
-function readStoredPending(): Pending[] | null {
+function readStoredPending(storageKey: string): Pending[] | null {
   try {
     const raw: unknown = JSON.parse(sessionStorage.getItem(storageKey) ?? '[]');
     if (!Array.isArray(raw) || raw.length > 65) return null;
@@ -268,11 +285,29 @@ function readStoredPending(): Pending[] | null {
     return null;
   }
 }
-function restorePending(): Pending[] | null {
-  if (volatilePending) return pendingStorageUnknown ? null : [...volatilePending];
-  const stored = readStoredPending();
-  if (stored === null) pendingStorageUnknown = true;
-  return pendingStorageUnknown ? null : stored;
+function restorePending(storageKey: string, memory: PendingMemory): Pending[] | null {
+  if (memory.volatile) return memory.storageUnknown ? null : [...memory.volatile];
+  const stored = readStoredPending(storageKey);
+  if (stored === null) memory.storageUnknown = true;
+  return memory.storageUnknown ? null : stored;
+}
+
+function readLegacyPending(): { items: Pending[]; unreadable: boolean } {
+  try {
+    const raw = sessionStorage.getItem(legacyStorageKey);
+    if (raw === null) return { items: [], unreadable: false };
+    const values: unknown = JSON.parse(raw);
+    if (!Array.isArray(values) || values.length > 65) return { items: [], unreadable: true };
+    const items: Pending[] = [];
+    for (const value of values) {
+      const item = parsePending(value);
+      if (!item) return { items: [], unreadable: true };
+      items.push(item);
+    }
+    return { items, unreadable: false };
+  } catch {
+    return { items: [], unreadable: true };
+  }
 }
 
 type LiveAppProps = {
@@ -280,6 +315,7 @@ type LiveAppProps = {
   service: DemoService;
   hostRunId: string;
   backendRunId: string;
+  databaseId: string;
   diagnosticsDegraded?: boolean;
 };
 
@@ -290,7 +326,7 @@ export function LiveApp(props: LiveAppProps) {
   const [showHistory, setShowHistory] = useState(false);
   return (
     <ActiveLiveApp
-      key={`${props.hostRunId}:${props.backendRunId}`}
+      key={`${props.hostRunId}:${props.backendRunId}:${props.databaseId}`}
       {...props}
       draft={draft}
       setDraft={setDraft}
@@ -309,6 +345,7 @@ function ActiveLiveApp({
   service,
   hostRunId,
   backendRunId,
+  databaseId,
   diagnosticsDegraded = false,
   draft,
   setDraft,
@@ -335,11 +372,18 @@ function ActiveLiveApp({
   const [showSavedParameters, setShowSavedParameters] = useState(false);
   const [readiness, setReadiness] = useState<Readiness | null>(null);
   const [readinessConfirmed, setReadinessConfirmed] = useState(false);
-  const [restored] = useState(restorePending);
+  const storageKey = `gk80.demo.pending-command.v1:${databaseId}`;
+  const [memory] = useState(() => memoryFor(databaseId));
+  const [restored] = useState(() => restorePending(storageKey, memory));
+  const [legacy, setLegacy] = useState(readLegacyPending);
+  const [legacyReviewed, setLegacyReviewed] = useState(false);
+  const legacyBlocks =
+    legacy.unreadable ||
+    (!legacyReviewed && legacy.items.some((item) => !item.retired && item.kind !== 'stop'));
   const [storageUnconfirmed, setStorageUnconfirmed] = useState(
-    restored === null || pendingStorageUnknown,
+    restored === null || memory.storageUnknown,
   );
-  const [pending, setPending] = useState<Pending[]>(restored ?? volatilePending ?? []);
+  const [pending, setPending] = useState<Pending[]>(restored ?? memory.volatile ?? []);
   const pendingRef = useRef(pending);
   const [message, setMessage] = useState('');
   const [commandFailure, setCommandFailure] = useState<CommandFailure | null>(null);
@@ -383,7 +427,7 @@ function ActiveLiveApp({
     stopMessageValue.current = value;
     setStopMessageValue(value);
   }, []);
-  const [volatileStopTracking, setVolatileStopTracking] = useState(() => volatilePending !== null);
+  const [volatileStopTracking, setVolatileStopTracking] = useState(() => memory.volatile !== null);
   const lastStopId = useRef<string | null>(null);
   const [gapVersion, setGapVersion] = useState(0);
   const onGap = useCallback(() => setGapVersion((value) => value + 1), []);
@@ -465,6 +509,7 @@ function ActiveLiveApp({
     Number.isSafeInteger(snapshot.revision) &&
     Number.isSafeInteger(snapshot.lastEventSequence);
   const blocking =
+    legacyBlocks ||
     storageUnconfirmed ||
     pending.length >= 64 ||
     totalStops >= 63 ||
@@ -486,48 +531,51 @@ function ActiveLiveApp({
     return undefined;
   }, [fresh, activeId, stage, revision, service, hostRunId, backendRunId, showMessage]);
 
-  const savePending = useCallback((values: Pending[], allowVolatile = false): boolean => {
-    try {
-      if (pendingStorageUnknown) {
-        const stored = readStoredPending();
-        if (!stored) throw new Error('pending storage not restored');
-        const merged = new Map(stored.map((item) => [item.id, item]));
-        for (const item of values) {
-          const previous = merged.get(item.id);
-          if (previous && (previous.kind !== item.kind || previous.testId !== item.testId))
-            throw new Error('conflicting pending command');
-          merged.set(item.id, item);
+  const savePending = useCallback(
+    (values: Pending[], allowVolatile = false): boolean => {
+      try {
+        if (memory.storageUnknown) {
+          const stored = readStoredPending(storageKey);
+          if (!stored) throw new Error('pending storage not restored');
+          const merged = new Map(stored.map((item) => [item.id, item]));
+          for (const item of values) {
+            const previous = merged.get(item.id);
+            if (previous && (previous.kind !== item.kind || previous.testId !== item.testId))
+              throw new Error('conflicting pending command');
+            merged.set(item.id, item);
+          }
+          values = [...merged.values()];
+          if (values.length > 65) throw new Error('pending list full');
         }
-        values = [...merged.values()];
-        if (values.length > 65) throw new Error('pending list full');
-      }
-      sessionStorage.setItem(
-        storageKey,
-        JSON.stringify(
-          values.map(({ id, kind, testId, retired }) => ({ id, kind, testId, retired })),
-        ),
-      );
-      pendingRef.current = values;
-      setPending(values);
-      volatilePending = null;
-      pendingStorageUnknown = false;
-      setStorageUnconfirmed(false);
-      setVolatileStopTracking(false);
-      setStorageMessage('');
-      return true;
-    } catch {
-      if (allowVolatile) {
-        volatilePending = values;
+        sessionStorage.setItem(
+          storageKey,
+          JSON.stringify(
+            values.map(({ id, kind, testId, retired }) => ({ id, kind, testId, retired })),
+          ),
+        );
         pendingRef.current = values;
         setPending(values);
-        setVolatileStopTracking(true);
+        memory.volatile = null;
+        memory.storageUnknown = false;
+        setStorageUnconfirmed(false);
+        setVolatileStopTracking(false);
+        setStorageMessage('');
+        return true;
+      } catch {
+        if (allowVolatile) {
+          memory.volatile = values;
+          pendingRef.current = values;
+          setPending(values);
+          setVolatileStopTracking(true);
+        }
+        setStorageMessage(
+          'Не удалось обновить список команд в интерфейсе; проверьте их состояние перед продолжением.',
+        );
+        return false;
       }
-      setStorageMessage(
-        'Не удалось обновить список команд в интерфейсе; проверьте их состояние перед продолжением.',
-      );
-      return false;
-    }
-  }, []);
+    },
+    [memory, storageKey],
+  );
   const forget = useCallback(
     (id: string) => {
       if (pendingRef.current.some((item) => item.id === id))
@@ -551,7 +599,8 @@ function ActiveLiveApp({
   }, []);
   const lookup = useCallback(
     async (item: Pending, manual = false) => {
-      if (!beginCall('lookup', item.id, manual ? 2 : 1)) {
+      const lookupKey = commandLookupKey(hostRunId, backendRunId, databaseId, item.id);
+      if (!beginCall('lookup', lookupKey, manual ? 2 : 1)) {
         if (manual) showMessage('Ожидаем завершения предыдущих проверок состояния команды.');
         return;
       }
@@ -624,11 +673,14 @@ function ActiveLiveApp({
         )
           unknownMessage(item.id);
       } finally {
-        endCall('lookup', item.id);
+        endCall('lookup', lookupKey);
       }
     },
     [
+      backendRunId,
+      databaseId,
       forget,
+      hostRunId,
       savePending,
       setCommandMessage,
       setStopMessage,
@@ -715,7 +767,8 @@ function ActiveLiveApp({
       return;
     if (record.stage === 'finished' && record.outcome === 'interrupted')
       setStopMessage(stopPendingMessage(record));
-    if (!beginCall('lookup', id, 1)) return;
+    const lookupKey = commandLookupKey(hostRunId, backendRunId, databaseId, id);
+    if (!beginCall('lookup', lookupKey, 1)) return;
     void service
       .command(id)
       .then(
@@ -739,9 +792,12 @@ function ActiveLiveApp({
         () => {},
       )
       .finally(() => {
-        endCall('lookup', id);
+        endCall('lookup', lookupKey);
       });
   }, [
+    backendRunId,
+    databaseId,
+    hostRunId,
     stopRequested,
     record,
     fresh,
@@ -761,6 +817,7 @@ function ActiveLiveApp({
       !snapshot ||
       !connection ||
       performance.now() >= connection.expiresAt ||
+      legacyBlocks ||
       storageUnconfirmed ||
       totalCalls('stop') >= 63 ||
       pendingRef.current.length >= 64 ||
@@ -987,6 +1044,8 @@ function ActiveLiveApp({
             <div
               className="demo-message-list"
               tabIndex={
+                legacy.unreadable ||
+                legacy.items.length ||
                 pending.length ||
                 storageUnconfirmed ||
                 totalStops >= 63 ||
@@ -996,6 +1055,41 @@ function ActiveLiveApp({
                   : -1
               }
             >
+              {(legacy.unreadable || legacy.items.length > 0) && (
+                <p role="alert">
+                  {legacy.unreadable
+                    ? 'Не удалось прочитать прежний список команд; их возможный исход не подтверждён.'
+                    : 'Есть прежние команды с неизвестной принадлежностью к базе; их исход не подтверждён.'}
+                  {legacyBlocks &&
+                    ' Новые команды недоступны до выяснения их исхода; остановка доступна.'}
+                </p>
+              )}
+              {legacy.unreadable && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLegacy(readLegacyPending());
+                    setLegacyReviewed(false);
+                  }}
+                >
+                  Повторить чтение прежних команд
+                </button>
+              )}
+              {legacy.items.map((item) => (
+                <p key={item.id}>
+                  Прежняя команда: {legacyCommandLabels[item.kind]}, ID {item.id}
+                  {item.testId && `; испытание ${item.testId}`}.
+                  {item.kind === 'stop' && ' Безопасное давление не подтверждено.'}
+                </p>
+              ))}
+              {!legacy.unreadable && legacyBlocks && (
+                <p>
+                  Подтверждение не устанавливает исход команд и не связывает их с текущей базой.{' '}
+                  <button type="button" onClick={() => setLegacyReviewed(true)}>
+                    Я проверил прежние команды
+                  </button>
+                </p>
+              )}
               {totalStops >= 63 && (
                 <p role="alert">
                   Достигнут предел неподтверждённых запросов остановки. Закройте приложение и
