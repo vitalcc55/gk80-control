@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -195,6 +196,42 @@ func (o *Owner) Command(ctx context.Context, value string) (contract.CommandStat
 		return contract.CommandStatus{}, err
 	}
 	session.mu.Lock()
+	if status, isStop := session.stopStatusLocked(id); isStop {
+		identity := session.commandPayloads[id]
+		lookup := status.TestId != nil && strings.HasPrefix(identity, "stop:") && !terminalCommand(status.Status) && !session.inFlight[id] && !session.ambiguous[id]
+		session.mu.Unlock()
+		if lookup {
+			resolved, lookupErr := session.lookupStop(ctx, lease, *status.TestId, id)
+			if lookupErr != nil {
+				return status, lookupErr
+			}
+			o.mu.Lock()
+			session.mu.Lock()
+			valid := o.session == session && o.status.Status != contract.DesktopStatusStatusClosing && o.status.Status != contract.DesktopStatusStatusExited && !session.closed && !session.closing && session.leaseConfirmed && session.leaseID == lease && time.Now().Before(session.leaseUntil) && ctx.Err() == nil
+			if valid && o.process != nil {
+				select {
+				case <-o.process.Done():
+					valid = false
+				default:
+				}
+			}
+			if !valid {
+				session.mu.Unlock()
+				o.mu.Unlock()
+				return contract.CommandStatus{}, errSessionUnavailable
+			}
+			if current, tracked := session.commands[id]; tracked && session.commandPayloads[id] == identity && !session.inFlight[id] && !session.ambiguous[id] {
+				status = mergeCommandStatus(current, resolved)
+				session.commands[id] = status
+			} else if current, stillStop := session.stopStatusLocked(id); stillStop {
+				status = current
+			}
+			session.mu.Unlock()
+			o.mu.Unlock()
+		}
+		return status, nil
+	}
+	identity := session.commandPayloads[id]
 	if current, tracked := session.commands[id]; tracked && (session.inFlight[id] || session.ambiguous[id]) {
 		session.mu.Unlock()
 		return current, nil
@@ -205,8 +242,12 @@ func (o *Owner) Command(ctx context.Context, value string) (contract.CommandStat
 		return contract.CommandStatus{}, err
 	}
 	session.mu.Lock()
+	if status, isStop := session.stopStatusLocked(id); isStop {
+		session.mu.Unlock()
+		return status, nil
+	}
 	if current, tracked := session.commands[id]; tracked {
-		if session.inFlight[id] || session.ambiguous[id] {
+		if session.commandPayloads[id] != identity || session.inFlight[id] || session.ambiguous[id] {
 			status = current
 		} else {
 			status = mergeCommandStatus(current, status)

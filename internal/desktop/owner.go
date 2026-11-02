@@ -407,6 +407,7 @@ func (o *Owner) run() {
 	if native, ok := process.(interface{ Client() *transport.Client }); ok && native.Client() != nil {
 		o.mu.Lock()
 		session := newDemoSession(o.ctx, nativeSessionClient{native.Client()}, o.status.HostRunId, handshake.BackendRunId)
+		session.databaseID = handshake.DatabaseId
 		session.onChange = o.signalConnection
 		session.onEvent = o.observeCoreEvent
 		session.onState = func(previous, current bool) {

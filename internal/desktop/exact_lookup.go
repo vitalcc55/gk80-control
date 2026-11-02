@@ -61,6 +61,13 @@ func (o *Owner) LookupCommandExact(ctx context.Context, databaseValue, kind, tes
 		}
 		raw = input.body
 		identity = "confirm:" + testID.String() + ":" + actionID.String() + ":" + string(input.identity)
+	case "stop":
+		var input StopCommandInput
+		if testID == uuid.Nil || actionID != uuid.Nil || json.Unmarshal([]byte(originalJSON), &input) != nil || input.CommandId != commandID {
+			return empty, errSessionUnavailable
+		}
+		raw = input.body
+		identity = "stop:" + testID.String() + ":" + string(input.identity)
 	default:
 		return empty, errSessionUnavailable
 	}
@@ -105,6 +112,8 @@ func (o *Owner) LookupCommandExact(ctx context.Context, databaseValue, kind, tes
 		status, err = session.client.LookupStartExact(readCtx, lease, database, testID, commandID, raw)
 	case "confirm":
 		status, err = session.client.LookupConfirmExact(readCtx, lease, database, testID, actionID, commandID, raw)
+	case "stop":
+		status, err = session.client.LookupStopExact(readCtx, lease, database, testID, commandID, raw)
 	}
 	if readCtx.Err() != nil {
 		return empty, readCtx.Err()
@@ -123,10 +132,17 @@ func (o *Owner) LookupCommandExact(ctx context.Context, databaseValue, kind, tes
 	session.mu.Lock()
 	valid = valid && !session.closed && !session.closing && session.leaseConfirmed && session.leaseID == lease && time.Now().Before(session.leaseUntil)
 	busy := false
+	if displaced := session.displaced; valid && readCtx.Err() == nil && displaced != nil && displaced.id == commandID && displaced.identity == identity {
+		if displaced.inFlight {
+			busy = true
+		} else if conflict || (err == nil && status.Status != contract.CommandStatusStatusUnknown) {
+			session.displaced = nil
+		}
+	}
 	if current, ok := session.commands[commandID]; valid && readCtx.Err() == nil && ok && session.commandPayloads[commandID] == identity {
 		if session.inFlight[commandID] {
 			busy = true
-		} else if conflict {
+		} else if conflict && kind != "stop" {
 			delete(session.commands, commandID)
 			delete(session.commandPayloads, commandID)
 			delete(session.ambiguous, commandID)

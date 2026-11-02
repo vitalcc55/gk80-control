@@ -25,30 +25,51 @@ import (
 
 type testSessionClient struct {
 	sessionClient
-	mu        sync.Mutex
-	acquires  int
-	lease     uuid.UUID
-	acquire   func(context.Context, uuid.UUID, *uuid.UUID) (contract.UiLease, error)
-	run       uuid.UUID
-	stream    *testSessionStream
-	unknown   bool
-	command   contract.CommandStatus
-	lookup    func(context.Context, uuid.UUID, uuid.UUID) (contract.CommandStatus, error)
-	reads     int
-	open      func(context.Context, uuid.UUID, uuid.UUID) (sessionStream, contract.Snapshot, error)
-	renew     func(context.Context, uuid.UUID) (contract.UiLease, error)
-	snapshot  func(context.Context, uuid.UUID) (contract.Snapshot, error)
-	stop      func(context.Context, uuid.UUID, uuid.UUID, contract.StopTestCommand) (contract.CommandStatus, error)
-	test      func(context.Context, uuid.UUID, uuid.UUID) (contract.TestRecord, error)
-	release   func(context.Context, uuid.UUID) error
-	list      func(context.Context, uuid.UUID, contract.ListTestsParams) (contract.TestList, error)
-	createRaw func(context.Context, uuid.UUID, uuid.UUID, []byte) (contract.CommandStatus, error)
+	mu         sync.Mutex
+	acquires   int
+	lease      uuid.UUID
+	acquire    func(context.Context, uuid.UUID, *uuid.UUID) (contract.UiLease, error)
+	run        uuid.UUID
+	stream     *testSessionStream
+	unknown    bool
+	command    contract.CommandStatus
+	lookup     func(context.Context, uuid.UUID, uuid.UUID) (contract.CommandStatus, error)
+	lookupStop func(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID, []byte) (contract.CommandStatus, error)
+	reads      int
+	open       func(context.Context, uuid.UUID, uuid.UUID) (sessionStream, contract.Snapshot, error)
+	renew      func(context.Context, uuid.UUID) (contract.UiLease, error)
+	snapshot   func(context.Context, uuid.UUID) (contract.Snapshot, error)
+	stop       func(context.Context, uuid.UUID, uuid.UUID, contract.StopTestCommand) (contract.CommandStatus, error)
+	test       func(context.Context, uuid.UUID, uuid.UUID) (contract.TestRecord, error)
+	release    func(context.Context, uuid.UUID) error
+	list       func(context.Context, uuid.UUID, contract.ListTestsParams) (contract.TestList, error)
+	createRaw  func(context.Context, uuid.UUID, uuid.UUID, []byte) (contract.CommandStatus, error)
 }
 
 type lostOwnerCreate struct {
 	sessionClient
 	creates *atomic.Int32
 	lose    bool
+}
+
+type lostOwnerStop struct {
+	sessionClient
+	posts *atomic.Int32
+	lose  bool
+}
+
+func (c *lostOwnerStop) StopTestRaw(ctx context.Context, lease, testID, id uuid.UUID, body []byte) (contract.CommandStatus, error) {
+	c.posts.Add(1)
+	result, err := c.sessionClient.StopTestRaw(ctx, lease, testID, id, body)
+	if err == nil && c.lose {
+		return contract.CommandStatus{}, &transport.RequestError{Code: "unavailable", OutcomeUnknown: true}
+	}
+	return result, err
+}
+
+func (c *lostOwnerStop) StopTest(ctx context.Context, lease, testID uuid.UUID, command contract.StopTestCommand) (contract.CommandStatus, error) {
+	c.posts.Add(1)
+	return c.sessionClient.StopTest(ctx, lease, testID, command)
 }
 
 func (c *lostOwnerCreate) CreateTest(ctx context.Context, lease uuid.UUID, command contract.CreateTestCommand) (contract.CommandStatus, error) {
@@ -130,6 +151,13 @@ func (c *testSessionClient) Command(ctx context.Context, lease, id uuid.UUID) (c
 		return contract.CommandStatus{}, &transport.RequestError{Status: 404, Code: "command_not_found"}
 	}
 	return c.command, nil
+}
+
+func (c *testSessionClient) LookupStopExact(ctx context.Context, lease, database, testID, id uuid.UUID, body []byte) (contract.CommandStatus, error) {
+	if c.lookupStop != nil {
+		return c.lookupStop(ctx, lease, database, testID, id, body)
+	}
+	return c.Command(ctx, lease, id)
 }
 
 type testSessionStream struct {
@@ -1417,8 +1445,8 @@ func TestDemoSessionShutdownSendsStopBeforeBlockedSnapshot(t *testing.T) {
 		t.Fatal("stop waited for snapshot")
 	}
 	close(unblock)
-	if err := <-done; err != nil {
-		t.Fatal(err)
+	if err := <-done; !errors.Is(err, ErrSessionShutdownUnconfirmed) {
+		t.Fatalf("the displaced in-flight command must remain unconfirmed: %v", err)
 	}
 }
 
@@ -2166,7 +2194,7 @@ func TestOwnerSessionRunsAndReopensCore(t *testing.T) {
 		}
 	})
 	logger := diagnostic.Application(diagnostics.ComponentTransport)
-	var createCount atomic.Int32
+	var createCount, stopCount atomic.Int32
 	newOwner := func(mode string) (*Owner, func()) {
 		changes := make(chan struct{}, 1)
 		owner := NewOwner(uuid.New(), executable, profile, "test", "0.1.0", logger, nil, false, func(contract.DesktopStatus) {
@@ -2182,13 +2210,16 @@ func TestOwnerSessionRunsAndReopensCore(t *testing.T) {
 		})
 		owner.Start()
 		waitProcessReady(t, owner, changes)
-		if mode != "" {
+		{
 			session, err := owner.currentSession()
 			if err != nil {
 				t.Fatal(err)
 			}
 			session.mu.Lock()
-			session.client = &lostOwnerCreate{sessionClient: session.client, creates: &createCount, lose: mode == "lose"}
+			if mode == "lose" || mode == "track" {
+				session.client = &lostOwnerCreate{sessionClient: session.client, creates: &createCount, lose: mode == "lose"}
+			}
+			session.client = &lostOwnerStop{sessionClient: session.client, posts: &stopCount, lose: mode == "loseStop"}
 			session.mu.Unlock()
 		}
 		if err := owner.KeepAlive(context.Background()); err != nil {
@@ -2237,7 +2268,7 @@ func TestOwnerSessionRunsAndReopensCore(t *testing.T) {
 		})
 		return owner, stopPulse
 	}
-	owner, stopPulse := newOwner("")
+	owner, stopPulse := newOwner("loseStop")
 	snapshot, err := owner.Snapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -2317,18 +2348,24 @@ func TestOwnerSessionRunsAndReopensCore(t *testing.T) {
 		t.Fatal(err)
 	}
 	stopped, err := service.StopTest(context.Background(), id, stopInput)
-	if err != nil || stopped.Status != contract.CommandStatusStatusAccepted {
-		t.Fatalf("stop: %+v %v", stopped, err)
+	var lostStop *transport.RequestError
+	if !errors.As(err, &lostStop) || !lostStop.OutcomeUnknown || stopCount.Load() != 1 {
+		t.Fatalf("lost Stop response: %+v %v posts=%d", stopped, err, stopCount.Load())
 	}
 	waitOwner("stop completion", owner, func() bool {
-		stopped, err = owner.Command(context.Background(), stopID.String())
-		return err == nil && stopped.Status == contract.CommandStatusStatusCompleted
+		result, lookupErr := service.LookupCommandExact(context.Background(), owner.Status().Handshake.DatabaseId.String(), "stop", id, "", stopID.String(), string(body))
+		return lookupErr == nil && result.Outcome == contract.ExactLookupResultOutcomeMatch && result.Command != nil && result.Command.Status == contract.CommandStatusStatusCompleted
 	})
 	stopPulse()
 	if err := owner.Close(); err != nil {
 		t.Fatal(err)
 	}
 	owner, stopPulse = newOwner("lose")
+	service = NewService(owner)
+	stopLookup, err := service.LookupCommandExact(context.Background(), owner.Status().Handshake.DatabaseId.String(), "stop", id, "", stopID.String(), string(body))
+	if err != nil || stopLookup.Outcome != contract.ExactLookupResultOutcomeMatch || stopLookup.Command == nil || stopLookup.Command.Status != contract.CommandStatusStatusCompleted || stopCount.Load() != 1 {
+		t.Fatalf("reopened exact Stop: %+v %v posts=%d", stopLookup, err, stopCount.Load())
+	}
 	history, err := owner.ListTests(context.Background(), contract.ListTestsParams{})
 	if err != nil || len(history.Items) != 1 || history.Items[0].TestId.String() != id {
 		t.Fatalf("reopened history: %+v %v", history, err)
