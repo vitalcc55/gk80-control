@@ -34,7 +34,18 @@ type browserSession struct {
 	active    map[*requestSlot]struct{}
 }
 
-type requestSlot struct{ cancel context.CancelFunc }
+type requestClass uint8
+
+const (
+	ordinaryRequest requestClass = iota
+	stopRequest
+	heartbeatRequest
+)
+
+type requestSlot struct {
+	cancel context.CancelFunc
+	class  requestClass
+}
 
 func randomToken() (string, error) {
 	var bytes [24]byte
@@ -57,9 +68,9 @@ func newSession(host string, validFor time.Duration) (*browserSession, string, e
 	return &browserSession{host: host, code: code, codeUntil: time.Now().Add(validFor), validFor: validFor}, code, nil
 }
 
-// admit registers cancellation under the same lock used to revoke a session.
-// Callers must still respect the returned context before acting on a request.
-func (s *browserSession) admit(r *http.Request) (context.Context, func(), int) {
+// admitClass registers cancellation under the same lock used to revoke a session.
+// The host selects the class by its fixed route; handlers must respect cancellation.
+func (s *browserSession) admitClass(r *http.Request, class requestClass) (context.Context, func(), int) {
 	cookie, err := r.Cookie(sessionCookie)
 	s.mu.Lock()
 	valid := err == nil && time.Now().Before(s.deadline) && sameToken(cookie.Value, s.cookie) && sameToken(strings.TrimSpace(r.Header.Get("X-GK80-Session")), s.proof)
@@ -67,12 +78,25 @@ func (s *browserSession) admit(r *http.Request) (context.Context, func(), int) {
 		s.mu.Unlock()
 		return nil, nil, http.StatusUnauthorized
 	}
-	if len(s.active) >= 64 {
+	limit := 2
+	if class == ordinaryRequest {
+		limit = 60
+	} else if class != stopRequest && class != heartbeatRequest {
+		s.mu.Unlock()
+		return nil, nil, http.StatusForbidden
+	}
+	count := 0
+	for slot := range s.active {
+		if slot.class == class {
+			count++
+		}
+	}
+	if count >= limit {
 		s.mu.Unlock()
 		return nil, nil, http.StatusTooManyRequests
 	}
 	ctx, cancel := context.WithDeadline(r.Context(), s.deadline)
-	slot := &requestSlot{cancel: cancel}
+	slot := &requestSlot{cancel: cancel, class: class}
 	s.active[slot] = struct{}{}
 	s.mu.Unlock()
 	return ctx, func() {
@@ -133,12 +157,16 @@ func (s *browserSession) revoke() {
 }
 
 func (s *browserSession) protect(next http.Handler) http.Handler {
+	return s.protectClass(ordinaryRequest, next)
+}
+
+func (s *browserSession) protectClass(class requestClass, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Host != s.host || (r.Header.Get("Origin") != "" && r.Header.Get("Origin") != "http://"+s.host) || (r.Method != http.MethodGet && r.Method != http.MethodHead && r.Header.Get("Origin") != "http://"+s.host) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		ctx, cancel, status := s.admit(r)
+		ctx, cancel, status := s.admitClass(r, class)
 		if status != 0 {
 			http.Error(w, "session unavailable", status)
 			return

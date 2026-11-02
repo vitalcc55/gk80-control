@@ -125,7 +125,7 @@ func TestExpiryCancelsAndRejectsSession(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19080/state", nil)
 	r.AddCookie(cookie)
 	r.Header.Set("X-GK80-Session", proof)
-	ctx, release, status := s.admit(r)
+	ctx, release, status := s.admitClass(r, ordinaryRequest)
 	if status != 0 {
 		t.Fatal("session not admitted before expiry")
 	}
@@ -199,7 +199,7 @@ func TestAdmissionIsCancelledSynchronouslyByRevocation(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19080/state", nil)
 	r.AddCookie(cookie)
 	r.Header.Set("X-GK80-Session", proof)
-	ctx, release, status := s.admit(r)
+	ctx, release, status := s.admitClass(r, ordinaryRequest)
 	if status != 0 {
 		t.Fatal("session not admitted")
 	}
@@ -231,7 +231,7 @@ func TestAdmissionPreservesRequestDeadlineAndValues(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19080/state", nil).WithContext(original)
 	r.AddCookie(cookie)
 	r.Header.Set("X-GK80-Session", proof)
-	ctx, release, status := s.admit(r)
+	ctx, release, status := s.admitClass(r, ordinaryRequest)
 	if status != 0 {
 		t.Fatal("session not admitted")
 	}
@@ -258,7 +258,7 @@ func TestAdmissionTracksClientCancellationAndBoundsRequests(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19080/state", nil).WithContext(client)
 	r.AddCookie(cookie)
 	r.Header.Set("X-GK80-Session", proof)
-	ctx, release, status := s.admit(r)
+	ctx, release, status := s.admitClass(r, ordinaryRequest)
 	if status != 0 {
 		t.Fatal("session not admitted")
 	}
@@ -271,18 +271,82 @@ func TestAdmissionTracksClientCancellationAndBoundsRequests(t *testing.T) {
 	release()
 	r = r.WithContext(context.Background())
 	var releases []func()
-	for i := 0; i < 64; i++ {
-		_, release, status := s.admit(r)
+	for i := 0; i < 60; i++ {
+		_, release, status := s.admitClass(r, ordinaryRequest)
 		if status != 0 {
 			t.Fatalf("request %d rejected: %d", i, status)
 		}
 		releases = append(releases, release)
 	}
-	if _, _, status := s.admit(r); status != http.StatusTooManyRequests {
+	if _, _, status := s.admitClass(r, ordinaryRequest); status != http.StatusTooManyRequests {
 		t.Fatalf("limit not enforced: %d", status)
 	}
 	for _, release := range releases {
 		release()
+	}
+}
+
+func TestReservedAdmissionsRemainIndependent(t *testing.T) {
+	s, code, err := newSession("127.0.0.1:19080", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie, proof, err := s.pair(code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19080/state", nil)
+	r.AddCookie(cookie)
+	r.Header.Set("X-GK80-Session", proof)
+	var releases []func()
+	var contexts []context.Context
+	for i := 0; i < 60; i++ {
+		ctx, release, status := s.admitClass(r, ordinaryRequest)
+		if status != 0 {
+			t.Fatalf("ordinary request %d rejected: %d", i, status)
+		}
+		releases = append(releases, release)
+		contexts = append(contexts, ctx)
+	}
+	r.Header.Set("X-Priority", "stop")
+	if _, _, status := s.admitClass(r, ordinaryRequest); status != http.StatusTooManyRequests {
+		t.Fatalf("ordinary request bypassed limit: %d", status)
+	}
+	for _, class := range []requestClass{stopRequest, heartbeatRequest} {
+		var firstRelease func()
+		for i := 0; i < 2; i++ {
+			ctx, release, status := s.admitClass(r, class)
+			if status != 0 {
+				t.Fatalf("reserved request %d rejected: %d", i, status)
+			}
+			releases = append(releases, release)
+			contexts = append(contexts, ctx)
+			if i == 0 {
+				firstRelease = release
+			}
+		}
+		if _, _, status := s.admitClass(r, class); status != http.StatusTooManyRequests {
+			t.Fatalf("reserved limit not enforced: %d", status)
+		}
+		firstRelease()
+		ctx, release, status := s.admitClass(r, class)
+		if status != 0 {
+			t.Fatalf("released reserved slot not reusable: %d", status)
+		}
+		contexts = append(contexts, ctx)
+		releases = append(releases, release)
+	}
+	s.revoke()
+	for _, ctx := range contexts {
+		if ctx.Err() == nil {
+			t.Fatal("revocation left an admitted request active")
+		}
+	}
+	for _, release := range releases {
+		release()
+	}
+	if _, _, status := s.admitClass(r, stopRequest); status != http.StatusUnauthorized {
+		t.Fatalf("revoked stop admitted: %d", status)
 	}
 }
 
@@ -298,7 +362,7 @@ func TestReleaseCancelsBeforeRemovingAdmission(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19080/state", nil)
 	r.AddCookie(cookie)
 	r.Header.Set("X-GK80-Session", proof)
-	ctx, release, status := s.admit(r)
+	ctx, release, status := s.admitClass(r, ordinaryRequest)
 	if status != 0 {
 		t.Fatal("session not admitted")
 	}
