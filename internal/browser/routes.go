@@ -20,6 +20,19 @@ type sessionOperations interface {
 	StopTest(context.Context, string, desktop.StopCommandInput) (contract.CommandStatus, error)
 }
 
+type browserOperations interface {
+	sessionOperations
+	domainOperations
+}
+
+type bootstrapOperations interface {
+	Status() contract.DesktopStatus
+	Verify(context.Context) contract.DesktopStatus
+}
+
+var _ browserOperations = (*desktop.Service)(nil)
+var _ bootstrapOperations = (*desktop.BootstrapService)(nil)
+
 func readJSON(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 	contentTypes := r.Header.Values("Content-Type")
 	if len(contentTypes) != 1 {
@@ -66,8 +79,9 @@ func (s *browserSession) reply(w http.ResponseWriter, r *http.Request, status in
 	s.writeJSON(w, r, status, body)
 }
 
-func newRoutes(s *browserSession, service sessionOperations) http.Handler {
+func newRoutes(s *browserSession, service browserOperations, bootstrap bootstrapOperations) http.Handler {
 	mux := http.NewServeMux()
+	registerDomainRoutes(mux, s, service, bootstrap)
 	mux.Handle("POST /api/session/check", s.protectClass(heartbeatRequest, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.ContentLength != 0 {
 			s.reply(w, r, http.StatusBadRequest, map[string]string{"error": "invalid request"})
@@ -149,6 +163,11 @@ func newRoutes(s *browserSession, service sessionOperations) http.Handler {
 		s.reply(w, r, http.StatusOK, status)
 	})))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			closeUnreadRequest(w)
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 		if path.Clean(r.URL.Path) != r.URL.Path {
 			closeUnreadRequest(w)
 			http.Error(w, "invalid path", http.StatusBadRequest)
