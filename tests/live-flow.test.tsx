@@ -1110,6 +1110,260 @@ it('keeps separate failed stop results visible until the operator hides them', a
   expect(api.stop).not.toHaveBeenCalled();
 });
 
+it.each(['notSent', 'rejected', 'failed', 'lookupRejected', 'storageUnavailable'] as const)(
+  'clears an earlier %s notice when the operator retries successfully',
+  async (firstOutcome) => {
+    let snapshot: Snapshot = {
+      apiVersion: 'v1',
+      backendRunId: backend,
+      revision: 0,
+      lastEventSequence: 0,
+      activeTest: null,
+      pendingAction: null,
+      measurements: [],
+    };
+    const bridge: SessionBridge = {
+      beginSessionCheck: async () => 'ticket',
+      keepAlive: async () => {},
+      sessionView: async () => ({
+        connection: {
+          hostRunId: host,
+          revision: 1,
+          status: ConnectionStateStatus.Live,
+          linkValid: true,
+          leaseAcquireUnknown: false,
+          streamGeneration: 0,
+        },
+        snapshot,
+        validForMs: 6000,
+        linkValidForMs: 6000,
+      }),
+    };
+    const ids: string[] = [];
+    api.list.mockResolvedValue({ items: [], nextAfter: null });
+    api.command.mockImplementation(async (id: string) => ({
+      commandId: id,
+      status:
+        firstOutcome === 'lookupRejected' && id === ids[0]
+          ? CommandStatusStatus.CommandStatusStatusRejected
+          : CommandStatusStatus.CommandStatusStatusUnknown,
+    }));
+    api.create.mockImplementation(async (input: CreateCommandInput) => {
+      ids.push(input.commandId);
+      if (ids.length === 1 && firstOutcome !== 'storageUnavailable') {
+        if (firstOutcome === 'notSent') return { delivery: 'notSent', command: null };
+        if (firstOutcome === 'lookupRejected') throw new Error('response lost');
+        return {
+          delivery: 'response',
+          command: { commandId: input.commandId, status: firstOutcome },
+        };
+      }
+      snapshot = { ...snapshot, activeTest: record, revision: 1, lastEventSequence: 1 };
+      return {
+        delivery: 'response',
+        command: {
+          commandId: input.commandId,
+          testId,
+          status: CommandStatusStatus.CommandStatusStatusCompleted,
+        },
+      };
+    });
+    api.readiness.mockResolvedValue({ testId, revision: 1, ready: true, checks: [] });
+    render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+    const user = userEvent.setup();
+    const newTest = await screen.findByRole('button', { name: 'Новое испытание' });
+    await waitFor(() => expect(newTest.hasAttribute('disabled')).toBe(false));
+    await user.click(newTest);
+    await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
+    await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
+    await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+    const storage =
+      firstOutcome === 'storageUnavailable'
+        ? vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+            throw new Error('storage unavailable');
+          })
+        : null;
+    await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
+    const oldNotice =
+      firstOutcome === 'storageUnavailable'
+        ? /Не удалось сохранить идентификатор/
+        : firstOutcome === 'notSent'
+          ? /Команда не отправлена:/
+          : /Команда отклонена/;
+    await screen.findByText(oldNotice);
+    storage?.mockRestore();
+    const retry = screen.getByRole('button', { name: /Проверить готовность/ });
+    await waitFor(() => expect(retry.hasAttribute('disabled')).toBe(false));
+    await user.click(retry);
+    await screen.findByRole('heading', { name: 'Готовность' }, { timeout: 8000 });
+    expect(screen.queryByText(oldNotice)).toBeNull();
+    expect(ids).toHaveLength(firstOutcome === 'storageUnavailable' ? 1 : 2);
+    if (ids.length === 2) expect(ids[0]).not.toBe(ids[1]);
+  },
+  12000,
+);
+
+it('keeps an earlier test command failure when creating an unrelated test', async () => {
+  const oldStartId = '66666666-6666-4666-8666-666666666666';
+  const oldTestId = '77777777-7777-4777-8777-777777777777';
+  sessionStorage.setItem(
+    'gk80.demo.pending-command',
+    JSON.stringify([{ id: oldStartId, kind: 'start', testId: oldTestId, retired: true }]),
+  );
+  let snapshot: Snapshot = {
+    apiVersion: 'v1',
+    backendRunId: backend,
+    revision: 0,
+    lastEventSequence: 0,
+    activeTest: null,
+    pendingAction: null,
+    measurements: [],
+  };
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot,
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.list.mockResolvedValue({ items: [], nextAfter: null });
+  api.command.mockImplementation(async (id: string) => ({
+    commandId: id,
+    testId: id === oldStartId ? oldTestId : testId,
+    status:
+      id === oldStartId
+        ? CommandStatusStatus.CommandStatusStatusFailed
+        : CommandStatusStatus.CommandStatusStatusUnknown,
+  }));
+  api.create.mockImplementation(async (input: CreateCommandInput) => {
+    snapshot = { ...snapshot, activeTest: record, revision: 1, lastEventSequence: 1 };
+    return {
+      delivery: 'response',
+      command: {
+        commandId: input.commandId,
+        testId,
+        status: CommandStatusStatus.CommandStatusStatusCompleted,
+      },
+    };
+  });
+  api.readiness.mockRejectedValue(new Error('readiness unavailable'));
+  render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  const previousNotice = await screen.findByText(/Команда отклонена или не выполнена/);
+  const noticeRegion = previousNotice.closest('.demo-command-message');
+  if (!noticeRegion) throw new Error('command message region missing');
+  noticeRegion.scrollTop = 100;
+  const user = userEvent.setup();
+  const newTest = await screen.findByRole('button', { name: 'Новое испытание' });
+  await waitFor(() => expect(newTest.hasAttribute('disabled')).toBe(false));
+  await user.click(newTest);
+  await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
+  await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
+  await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+  await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
+  const newNotice = await screen.findByText(
+    'Не удалось подтвердить готовность.',
+    {},
+    { timeout: 8000 },
+  );
+  const oldNotice = screen.getByText(/Команда отклонена или не выполнена/);
+  expect(oldNotice.textContent).toContain(oldStartId);
+  expect(oldNotice.textContent).toContain(oldTestId);
+  expect(newNotice.compareDocumentPosition(oldNotice) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(
+    0,
+  );
+  expect(noticeRegion.scrollTop).toBe(0);
+  expect(api.create).toHaveBeenCalledTimes(1);
+}, 12000);
+
+it('brings a repeated readiness error back into view after another notice', async () => {
+  const oldStartId = '66666666-6666-4666-8666-666666666666';
+  const oldTestId = '77777777-7777-4777-8777-777777777777';
+  sessionStorage.setItem(
+    'gk80.demo.pending-command',
+    JSON.stringify([{ id: oldStartId, kind: 'start', testId: oldTestId, retired: true }]),
+  );
+  const snapshot: Snapshot = {
+    apiVersion: 'v1',
+    backendRunId: backend,
+    revision: 1,
+    lastEventSequence: 1,
+    activeTest: record,
+    pendingAction: null,
+    measurements: [],
+  };
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot,
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  let finishOld: (status: {
+    commandId: string;
+    testId: string;
+    status: CommandStatusStatus;
+  }) => void = () => {};
+  const old = new Promise<{ commandId: string; testId: string; status: CommandStatusStatus }>(
+    (resolve) => {
+      finishOld = resolve;
+    },
+  );
+  let failReadiness: (error: Error) => void = () => {};
+  const nextReadiness = new Promise<Readiness>((_resolve, reject) => {
+    failReadiness = reject;
+  });
+  api.list.mockResolvedValue({ items: [], nextAfter: null });
+  api.command.mockReturnValue(old);
+  api.readiness.mockRejectedValueOnce(new Error('unavailable')).mockReturnValue(nextReadiness);
+  render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  await screen.findByText('Не удалось подтвердить готовность.');
+  await waitFor(() => expect(api.command).toHaveBeenCalledWith(oldStartId));
+  await act(async () => {
+    finishOld({
+      commandId: oldStartId,
+      testId: oldTestId,
+      status: CommandStatusStatus.CommandStatusStatusFailed,
+    });
+    await old;
+  });
+  const oldNotice = await screen.findByText(/Команда отклонена или не выполнена/);
+  const noticeRegion = oldNotice.closest('.demo-command-message');
+  if (!noticeRegion) throw new Error('command message region missing');
+  await waitFor(() => expect(api.readiness.mock.calls.length).toBeGreaterThan(1), {
+    timeout: 6000,
+  });
+  noticeRegion.scrollTop = 100;
+  await act(async () => {
+    failReadiness(new Error('still unavailable'));
+    await nextReadiness.catch(() => {});
+  });
+  const repeated = screen.getByText('Не удалось подтвердить готовность.');
+  expect(repeated.compareDocumentPosition(oldNotice) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(
+    0,
+  );
+  expect(noticeRegion.scrollTop).toBe(0);
+}, 12000);
+
 it('keeps a confirmed not-sent result when the service wrapper changes', async () => {
   const snapshot: Snapshot = {
     apiVersion: 'v1',

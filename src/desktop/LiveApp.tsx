@@ -3,6 +3,7 @@ import {
   type SetStateAction,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
 } from 'react';
@@ -50,6 +51,12 @@ type Pending = {
   testId: string | null;
   status: CommandStatus | null;
   retired: boolean;
+};
+type CommandFailure = {
+  id: string;
+  kind: Exclude<Pending['kind'], 'stop'>;
+  testId: string | null;
+  text: string;
 };
 
 function commandStatusLabel(status: CommandStatus['status'] | undefined): string {
@@ -335,6 +342,21 @@ function ActiveLiveApp({
   const [pending, setPending] = useState<Pending[]>(restored ?? volatilePending ?? []);
   const pendingRef = useRef(pending);
   const [message, setMessage] = useState('');
+  const [commandFailure, setCommandFailure] = useState<CommandFailure | null>(null);
+  const [latestNotice, setLatestNotice] = useState<'message' | 'commandFailure'>('message');
+  const commandMessageRegion = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if ((latestNotice === 'message' ? message : commandFailure) && commandMessageRegion.current)
+      commandMessageRegion.current.scrollTop = 0;
+  }, [message, commandFailure, latestNotice]);
+  const showMessage = useCallback((text: string) => {
+    setMessage(text);
+    setLatestNotice('message');
+  }, []);
+  const showCommandFailure = useCallback((failure: CommandFailure) => {
+    setCommandFailure(failure);
+    setLatestNotice('commandFailure');
+  }, []);
   const [storageMessage, setStorageMessage] = useState('');
   const [commandMessages, setCommandMessages] = useState<Map<string, string>>(() => new Map());
   const setCommandMessage = useCallback((id: string, text: string) => {
@@ -457,12 +479,12 @@ function ActiveLiveApp({
           setReadinessConfirmed(true);
         } else {
           setReadinessConfirmed(false);
-          setMessage('Не удалось подтвердить готовность.');
+          showMessage('Не удалось подтвердить готовность.');
         }
       });
     }
     return undefined;
-  }, [fresh, activeId, stage, revision, service, hostRunId, backendRunId]);
+  }, [fresh, activeId, stage, revision, service, hostRunId, backendRunId, showMessage]);
 
   const savePending = useCallback((values: Pending[], allowVolatile = false): boolean => {
     try {
@@ -530,7 +552,7 @@ function ActiveLiveApp({
   const lookup = useCallback(
     async (item: Pending, manual = false) => {
       if (!beginCall('lookup', item.id, manual ? 2 : 1)) {
-        if (manual) setMessage('Ожидаем завершения предыдущих проверок состояния команды.');
+        if (manual) showMessage('Ожидаем завершения предыдущих проверок состояния команды.');
         return;
       }
       const generation = lifecycle.current;
@@ -579,11 +601,15 @@ function ActiveLiveApp({
             );
             setCommandMessage(item.id, '');
           } else {
-            setMessage(
-              merged.reason === 'canceled_by_stop'
-                ? 'Запуск отменён при остановке испытания до подтверждения оператора.'
-                : 'Команда отклонена или не выполнена.',
-            );
+            if (merged.reason === 'canceled_by_stop')
+              showMessage('Запуск отменён при остановке испытания до подтверждения оператора.');
+            else
+              showCommandFailure({
+                id: item.id,
+                kind: item.kind,
+                testId: item.testId,
+                text: 'Команда отклонена или не выполнена.',
+              });
             forget(item.id);
           }
         }
@@ -601,7 +627,16 @@ function ActiveLiveApp({
         endCall('lookup', item.id);
       }
     },
-    [forget, savePending, setCommandMessage, setStopMessage, service, unknownMessage],
+    [
+      forget,
+      savePending,
+      setCommandMessage,
+      setStopMessage,
+      service,
+      showCommandFailure,
+      showMessage,
+      unknownMessage,
+    ],
   );
   useEffect(() => {
     if (!fresh || (!pending.length && !pendingRef.current.length)) return;
@@ -735,9 +770,17 @@ function ActiveLiveApp({
     const generation = lifecycle.current;
     const item: Pending = { id: crypto.randomUUID(), kind, testId, status: null, retired: false };
     if (!savePending([...pendingRef.current, item])) {
-      setMessage('Не удалось сохранить идентификатор. Новая команда не отправлена.');
+      showCommandFailure({
+        id: item.id,
+        kind,
+        testId,
+        text: 'Не удалось сохранить идентификатор. Новая команда не отправлена.',
+      });
       return;
     }
+    setCommandFailure((previous) =>
+      previous?.kind === kind && previous.testId === testId ? null : previous,
+    );
     setCommandMessage(item.id, 'Команда отправлена. Ожидаем подтверждения ядра.');
     try {
       const dispatch = await send(item.id);
@@ -756,9 +799,12 @@ function ActiveLiveApp({
           );
           return;
         }
-        setMessage(
-          'Команда не отправлена: связь или состояние изменились. Повторите действие после восстановления.',
-        );
+        showCommandFailure({
+          id: item.id,
+          kind,
+          testId,
+          text: 'Команда не отправлена: связь или состояние изменились. Повторите действие после восстановления.',
+        });
         forget(item.id);
         return;
       }
@@ -776,7 +822,12 @@ function ActiveLiveApp({
       );
       setPending(pendingRef.current);
       if (merged.status === 'rejected' || merged.status === 'failed') {
-        setMessage('Команда отклонена или не выполнена.');
+        showCommandFailure({
+          id: item.id,
+          kind,
+          testId,
+          text: 'Команда отклонена или не выполнена.',
+        });
         forget(item.id);
       } else
         setCommandMessage(
@@ -911,10 +962,20 @@ function ActiveLiveApp({
               </div>
               <div
                 className="demo-command-message"
-                tabIndex={message || storageMessage || commandMessages.size ? 0 : -1}
+                ref={commandMessageRegion}
+                tabIndex={
+                  message || commandFailure || storageMessage || commandMessages.size ? 0 : -1
+                }
               >
                 {storageMessage && <p role="alert">{storageMessage}</p>}
-                {message && <p role="status">{message}</p>}
+                {message && latestNotice === 'message' && <p role="status">{message}</p>}
+                {commandFailure && (
+                  <p role="status">
+                    {commandFailure.text} (команда {commandFailure.id}
+                    {commandFailure.testId && `; испытание ${commandFailure.testId}`})
+                  </p>
+                )}
+                {message && latestNotice !== 'message' && <p role="status">{message}</p>}
                 {[...commandMessages].map(([id, text]) => (
                   <p role="status" key={id}>
                     {commandMessages.size > 1 ? `Команда ${id}: ` : ''}
