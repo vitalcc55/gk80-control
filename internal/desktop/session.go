@@ -80,43 +80,28 @@ func (c nativeSessionClient) openStream(ctx context.Context, lease, runID uuid.U
 // demoSession keeps all proof of UI ownership inside the host.
 type demoSession struct {
 	sessionEvidence
+	hostLedger
 	sessionStreamState
-	mu               sync.Mutex
-	leaseGate        sync.Mutex
-	client           sessionClient
-	hostID           uuid.UUID
-	backendID        uuid.UUID
-	databaseID       uuid.UUID
-	clientID         uuid.UUID
-	commands         map[uuid.UUID]contract.CommandStatus
-	commandPayloads  map[uuid.UUID]string
-	inFlight         map[uuid.UUID]bool
-	ambiguous        map[uuid.UUID]bool
-	knownStops       map[uuid.UUID]uuid.UUID
-	activeTestID     uuid.UUID
-	activeStopID     uuid.UUID
-	activeGeneration uint64
-	savedTests       map[uuid.UUID]uuid.UUID
-	displaced        *displacedAttempt
-	closed           bool
-	closing          bool
-	revision         int64
-	lastStatus       contract.ConnectionStateStatus
-	lastLinkValid    bool
-	lastGeneration   int64
-	onChange         func()
-	onEvent          func(contract.Event)
-	onState          func(bool, bool)
-	ctx              context.Context
-	cancel           context.CancelFunc
-	actionsCtx       context.Context
-	cancelActions    context.CancelFunc
-}
-
-type displacedAttempt struct {
-	id       uuid.UUID
-	identity string
-	inFlight bool
+	mu             sync.Mutex
+	leaseGate      sync.Mutex
+	client         sessionClient
+	hostID         uuid.UUID
+	backendID      uuid.UUID
+	databaseID     uuid.UUID
+	clientID       uuid.UUID
+	closed         bool
+	closing        bool
+	revision       int64
+	lastStatus     contract.ConnectionStateStatus
+	lastLinkValid  bool
+	lastGeneration int64
+	onChange       func()
+	onEvent        func(contract.Event)
+	onState        func(bool, bool)
+	ctx            context.Context
+	cancel         context.CancelFunc
+	actionsCtx     context.Context
+	cancelActions  context.CancelFunc
 }
 
 func (s *demoSession) lookupStop(ctx context.Context, lease, testID, commandID uuid.UUID) (contract.CommandStatus, error) {
@@ -137,7 +122,7 @@ func (s *demoSession) changedLocked() {
 func newDemoSession(parent context.Context, client sessionClient, hostID, backendID uuid.UUID) *demoSession {
 	ctx, cancel := context.WithCancel(parent)
 	actionsCtx, cancelActions := context.WithCancel(ctx)
-	return &demoSession{client: client, hostID: hostID, backendID: backendID, clientID: uuid.New(), commands: make(map[uuid.UUID]contract.CommandStatus), commandPayloads: make(map[uuid.UUID]string), inFlight: make(map[uuid.UUID]bool), ambiguous: make(map[uuid.UUID]bool), knownStops: make(map[uuid.UUID]uuid.UUID), savedTests: make(map[uuid.UUID]uuid.UUID), ctx: ctx, cancel: cancel, actionsCtx: actionsCtx, cancelActions: cancelActions, revision: 1, lastStatus: contract.Disconnected}
+	return &demoSession{client: client, hostID: hostID, backendID: backendID, clientID: uuid.New(), hostLedger: newHostLedger(), ctx: ctx, cancel: cancel, actionsCtx: actionsCtx, cancelActions: cancelActions, revision: 1, lastStatus: contract.Disconnected}
 }
 
 func (s *demoSession) connectionState() contract.ConnectionState {
@@ -213,12 +198,7 @@ func (s *demoSession) acceptSnapshot(ctx context.Context, lease uuid.UUID, snaps
 	}
 	s.mu.Lock()
 	s.snapshot = &snapshot
-	if snapshot.ActiveTest != nil {
-		s.rememberStopLocked(*snapshot.ActiveTest)
-	} else if s.activeTestID != uuid.Nil {
-		s.activeTestID, s.activeStopID = uuid.Nil, uuid.Nil
-		s.activeGeneration++
-	}
+	s.observeSnapshot(snapshot)
 	s.changedLocked()
 	s.mu.Unlock()
 	return nil
@@ -226,20 +206,7 @@ func (s *demoSession) acceptSnapshot(ctx context.Context, lease uuid.UUID, snaps
 
 func (s *demoSession) reconcilePending(ctx context.Context, lease uuid.UUID) {
 	s.mu.Lock()
-	type trackedCommand struct {
-		id       uuid.UUID
-		identity string
-	}
-	pending := make([]trackedCommand, 0, len(s.commands))
-	for id, command := range s.commands {
-		identity := s.commandPayloads[id]
-		_, reservedStop := s.reservedStopTestLocked(id)
-		if !terminalCommand(command.Status) && !s.inFlight[id] && !s.ambiguous[id] {
-			if !reservedStop && !strings.HasPrefix(identity, "stop:") {
-				pending = append(pending, trackedCommand{id: id, identity: identity})
-			}
-		}
-	}
+	pending := s.pendingOrdinary(s.snapshot)
 	s.mu.Unlock()
 	for _, item := range pending {
 		requestCtx, cancel := context.WithTimeout(ctx, sessionRequestLimit)
@@ -247,55 +214,14 @@ func (s *demoSession) reconcilePending(ctx context.Context, lease uuid.UUID) {
 		cancel()
 		if err == nil {
 			s.mu.Lock()
-			_, reservedStop := s.reservedStopTestLocked(item.id)
-			identityMatches := !reservedStop
-			if existing, ok := s.commands[item.id]; ok && identityMatches && s.commandPayloads[item.id] == item.identity && !s.inFlight[item.id] && !s.ambiguous[item.id] {
-				s.commands[item.id] = mergeCommandStatus(existing, command)
-			}
+			s.applyOrdinaryObservation(item, command, s.snapshot)
 			s.mu.Unlock()
 		}
 	}
 }
 
-func terminalCommand(status contract.CommandStatusStatus) bool {
-	return status == contract.CommandStatusStatusCompleted || status == contract.CommandStatusStatusRejected || status == contract.CommandStatusStatusFailed
-}
-
 // createCoveredLocked requires a later snapshot or a confirmed saved record.
 // Older snapshots can arrive after the command response and cannot establish its outcome.
-func (s *demoSession) createCoveredLocked(id uuid.UUID, status contract.CommandStatus, snapshot *contract.Snapshot) bool {
-	identity := s.commandPayloads[id]
-	if !strings.HasPrefix(identity, "create:") || status.Status != contract.CommandStatusStatusCompleted {
-		return true
-	}
-	if status.TestId == nil || *status.TestId == uuid.Nil {
-		return false
-	}
-	inputValidation.once.Do(func() { inputValidation.validator, inputValidation.err = contract.NewInputValidator() })
-	if inputValidation.err != nil {
-		return false
-	}
-	var command contract.CreateTestCommand
-	input, err := inputValidation.validator.InspectCanonical("CreateTestCommand", []byte(strings.TrimPrefix(identity, "create:")), &command)
-	if err != nil || !input.Valid || command.CommandId != id {
-		return false
-	}
-	if s.savedTests[*status.TestId] != uuid.Nil {
-		return true
-	}
-	return snapshot != nil && snapshot.BackendRunId == s.backendID && snapshot.Revision > command.ExpectedRevision
-}
-
-func mergeCommandStatus(current, next contract.CommandStatus) contract.CommandStatus {
-	if terminalCommand(current.Status) || (current.Status == contract.CommandStatusStatusAccepted && next.Status == contract.CommandStatusStatusUnknown) {
-		return current
-	}
-	if next.TestId == nil && current.TestId != nil {
-		id := *current.TestId
-		next.TestId = &id
-	}
-	return next
-}
 
 func (s *demoSession) snapshotCopy() (contract.Snapshot, error) {
 	s.mu.Lock()
@@ -318,113 +244,6 @@ func copySessionSnapshot(snapshot *contract.Snapshot) (contract.Snapshot, error)
 	return result, nil
 }
 
-func (s *demoSession) rememberStopLocked(record contract.TestRecord) {
-	if record.StopCommandId == uuid.Nil || record.TestId == uuid.Nil {
-		return
-	}
-	if record.Stage != "finished" {
-		if s.activeTestID != record.TestId || s.activeStopID != record.StopCommandId {
-			s.activeGeneration++
-		}
-		s.activeTestID, s.activeStopID = record.TestId, record.StopCommandId
-	} else if s.activeTestID == record.TestId {
-		s.activeTestID, s.activeStopID = uuid.Nil, uuid.Nil
-		s.activeGeneration++
-	}
-	s.rememberStopPairLocked(record)
-}
-
-func (s *demoSession) rememberSavedLocked(record contract.TestRecord) {
-	if record.TestId == uuid.Nil || record.StopCommandId == uuid.Nil || record.Stage != "finished" || record.SaveStatus != "saved" {
-		return
-	}
-	if s.activeTestID == record.TestId && s.activeStopID != record.StopCommandId {
-		return
-	}
-	matched := s.activeTestID == record.TestId && s.activeStopID == record.StopCommandId
-	if s.snapshot != nil && s.snapshot.ActiveTest != nil {
-		current := s.snapshot.ActiveTest
-		if current.TestId == record.TestId {
-			if current.StopCommandId != record.StopCommandId {
-				return
-			}
-			matched = true
-		}
-	}
-	for id, status := range s.commands {
-		if strings.HasPrefix(s.commandPayloads[id], "create:") && status.Status == contract.CommandStatusStatusCompleted && status.TestId != nil && *status.TestId == record.TestId {
-			matched = true
-		}
-	}
-	if matched {
-		// Keep evidence only while a bounded command or the current snapshot refers to it.
-		for testID := range s.savedTests {
-			referenced := s.activeTestID == testID || (s.snapshot != nil && s.snapshot.ActiveTest != nil && s.snapshot.ActiveTest.TestId == testID)
-			for id, status := range s.commands {
-				if strings.HasPrefix(s.commandPayloads[id], "create:") && status.TestId != nil && *status.TestId == testID {
-					referenced = true
-					break
-				}
-			}
-			if !referenced {
-				delete(s.savedTests, testID)
-			}
-		}
-		s.savedTests[record.TestId] = record.StopCommandId
-	}
-}
-
-func (s *demoSession) savedRecordLocked(record *contract.TestRecord) *contract.TestRecord {
-	if record == nil || record.TestId == uuid.Nil || record.StopCommandId == uuid.Nil || s.savedTests[record.TestId] != record.StopCommandId {
-		return record
-	}
-	copy := *record
-	copy.Stage, copy.SaveStatus = "finished", "saved"
-	return &copy
-}
-
-func (s *demoSession) rememberStopPairLocked(record contract.TestRecord) {
-	if record.StopCommandId == uuid.Nil || record.TestId == uuid.Nil {
-		return
-	}
-	if _, exists := s.knownStops[record.StopCommandId]; !exists && len(s.knownStops) >= 64 {
-		for id := range s.knownStops {
-			delete(s.knownStops, id)
-			break
-		}
-	}
-	s.knownStops[record.StopCommandId] = record.TestId
-}
-
-func (s *demoSession) reservedStopTestLocked(id uuid.UUID) (uuid.UUID, bool) {
-	if id != uuid.Nil && id == s.activeStopID && s.activeTestID != uuid.Nil {
-		return s.activeTestID, true
-	}
-	if s.snapshot != nil && s.snapshot.ActiveTest != nil {
-		record := s.snapshot.ActiveTest
-		if id != uuid.Nil && id == record.StopCommandId && record.TestId != uuid.Nil {
-			return record.TestId, true
-		}
-	}
-	testID, exists := s.knownStops[id]
-	return testID, exists
-}
-
-func (s *demoSession) stopStatusLocked(id uuid.UUID) (contract.CommandStatus, bool) {
-	current, tracked := s.commands[id]
-	identity := s.commandPayloads[id]
-	if testID, reserved := s.reservedStopTestLocked(id); reserved {
-		if tracked && strings.HasPrefix(identity, "stop:"+testID.String()+":") {
-			return current, true
-		}
-		return contract.CommandStatus{CommandId: id, TestId: &testID, Status: contract.CommandStatusStatusUnknown}, true
-	}
-	if tracked && strings.HasPrefix(identity, "stop:") {
-		return current, true
-	}
-	return contract.CommandStatus{}, false
-}
-
 func (s *demoSession) commandAllowedLocked(stop bool) bool {
 	return s.commandAllowedAtLocked(stop, time.Now())
 }
@@ -436,103 +255,27 @@ func (s *demoSession) commandAllowedAtLocked(stop bool, now time.Time) bool {
 	return !s.ordinaryCommandBlockedLocked() && s.freshnessLocked(now).status == contract.Live
 }
 
-func (s *demoSession) ordinaryCommandBlockedLocked() bool {
-	if s.displaced != nil {
-		return true
-	}
-	for id, command := range s.commands {
-		if strings.HasPrefix(s.commandPayloads[id], "stop:") && !terminalCommand(command.Status) && command.TestId != nil && *command.TestId == s.activeTestID && s.activeTestID != uuid.Nil {
-			return true
-		}
-	}
-	return false
-}
-
 // command registers the identifier before sending and never resends it automatically.
 func (s *demoSession) command(ctx context.Context, id uuid.UUID, identity string, stop bool, send func(context.Context, uuid.UUID) (contract.CommandStatus, error), invalidNew ...error) (result contract.CommandStatus, resultErr error) {
 	if id == uuid.Nil {
 		return contract.CommandStatus{}, errSessionUnavailable
 	}
 	s.mu.Lock()
-	if !stop {
-		if _, reserved := s.reservedStopTestLocked(id); reserved {
-			s.mu.Unlock()
-			return contract.CommandStatus{}, ErrCommandConflict
-		}
-	}
-	if existing, ok := s.commands[id]; ok {
-		if s.commandPayloads[id] != identity {
-			if !stop {
-				s.mu.Unlock()
-				return contract.CommandStatus{}, ErrCommandConflict
-			}
-			if !s.commandAllowedLocked(true) {
-				s.mu.Unlock()
-				return contract.CommandStatus{}, errSessionUnavailable
-			}
-			if !terminalCommand(existing.Status) || s.inFlight[id] || s.ambiguous[id] {
-				s.displaced = &displacedAttempt{id: id, identity: s.commandPayloads[id], inFlight: s.inFlight[id]}
-			}
-			delete(s.commands, id)
-			delete(s.commandPayloads, id)
-			delete(s.inFlight, id)
-			delete(s.ambiguous, id)
-		} else {
-			if stop && (existing.Status == contract.CommandStatusStatusUnknown || existing.Status == contract.CommandStatusStatusRejected) && !s.inFlight[id] {
-				delete(s.commands, id)
-				delete(s.commandPayloads, id)
-				delete(s.ambiguous, id)
-			} else {
-				s.mu.Unlock()
-				return existing, nil
-			}
-		}
-	}
-	valid := s.commandAllowedLocked(stop)
-	limit := 64
-	if stop {
-		limit++
-	}
-	if len(s.commands) >= limit {
-		for previous, status := range s.commands {
-			activeStop := previous == s.activeStopID || (s.snapshot != nil && s.snapshot.ActiveTest != nil && previous == s.snapshot.ActiveTest.StopCommandId)
-			if terminalCommand(status.Status) && !s.inFlight[previous] && (!activeStop || !strings.HasPrefix(s.commandPayloads[previous], "stop:")) && s.createCoveredLocked(previous, status, s.snapshot) {
-				delete(s.commands, previous)
-				delete(s.commandPayloads, previous)
-				delete(s.ambiguous, previous)
-				break
-			}
-		}
-	}
-	if !valid || len(s.commands) >= limit {
+	previous, done, err := s.prepareAttempt(id, identity, stop, s.commandAllowedLocked(true), s.snapshot)
+	if done {
 		s.mu.Unlock()
-		return contract.CommandStatus{}, errors.Join(errSessionUnavailable, errCommandNotSent)
+		return previous, err
+	}
+	if err := s.registerAttempt(id, identity, stop, s.commandAllowedLocked(stop), s.snapshot, s.backendID); err != nil {
+		s.mu.Unlock()
+		return contract.CommandStatus{}, err
 	}
 	lease := s.leaseID
-	status := contract.CommandStatus{CommandId: id, Status: contract.CommandStatusStatusUnknown}
-	if stop {
-		if s.activeStopID == id && s.activeTestID != uuid.Nil {
-			testID := s.activeTestID
-			status.TestId = &testID
-		} else if testID, ok := s.knownStops[id]; ok {
-			status.TestId = &testID
-		}
-	}
-	s.commands[id] = status
-	s.commandPayloads[id] = identity
-	s.inFlight[id] = true
 	actionsCtx := s.actionsCtx
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
-		if s.displaced != nil && s.displaced.id == id && s.displaced.identity == identity {
-			var failure *transport.RequestError
-			if errors.Is(resultErr, errCommandNotSent) || (errors.As(resultErr, &failure) && !failure.OutcomeUnknown) {
-				s.displaced = nil
-			} else {
-				s.displaced.inFlight = false
-			}
-		}
+		s.finishDisplaced(id, identity, resultErr)
 		s.mu.Unlock()
 	}()
 	requestCtx, requestCancel := context.WithCancel(ctx)
@@ -549,11 +292,7 @@ func (s *demoSession) command(ctx context.Context, id uuid.UUID, identity string
 		if lookupErr == nil {
 			if previous.Status == contract.CommandStatusStatusUnknown {
 				s.mu.Lock()
-				if s.commandPayloads[id] == identity {
-					delete(s.commands, id)
-					delete(s.commandPayloads, id)
-					delete(s.inFlight, id)
-				}
+				s.discardPrepared(id, identity)
 				s.mu.Unlock()
 				return contract.CommandStatus{}, errors.New("command identifier is already unresolved")
 			}
@@ -562,28 +301,20 @@ func (s *demoSession) command(ctx context.Context, id uuid.UUID, identity string
 			var failure *transport.RequestError
 			if !errors.As(lookupErr, &failure) || failure.Status != 404 || failure.Code != "command_not_found" {
 				s.mu.Lock()
-				if s.commandPayloads[id] == identity {
-					delete(s.commands, id)
-					delete(s.commandPayloads, id)
-					delete(s.inFlight, id)
-				}
+				s.discardPrepared(id, identity)
 				s.mu.Unlock()
 				return contract.CommandStatus{}, lookupErr
 			}
 		}
 		if !previouslyPresent && len(invalidNew) != 0 && invalidNew[0] != nil {
 			s.mu.Lock()
-			if s.commandPayloads[id] == identity {
-				delete(s.commands, id)
-				delete(s.commandPayloads, id)
-				delete(s.inFlight, id)
-			}
+			s.discardPrepared(id, identity)
 			s.mu.Unlock()
 			return contract.CommandStatus{}, errors.Join(invalidNew[0], errCommandNotSent)
 		}
 		s.mu.Lock()
 		admitted := false
-		if s.commandPayloads[id] == identity && s.leaseID == lease && !s.ordinaryCommandBlockedLocked() {
+		if s.matchesAttempt(id, identity) && s.leaseID == lease && !s.ordinaryCommandBlockedLocked() {
 			freshness := s.freshnessLocked(time.Now())
 			admitted = freshness.status == contract.Live && requestCtx.Err() == nil
 			if admitted {
@@ -591,10 +322,8 @@ func (s *demoSession) command(ctx context.Context, id uuid.UUID, identity string
 				streamDone = s.streamDone
 			}
 		}
-		if !admitted && s.commandPayloads[id] == identity {
-			delete(s.commands, id)
-			delete(s.commandPayloads, id)
-			delete(s.inFlight, id)
+		if !admitted && s.matchesAttempt(id, identity) {
+			s.discardPrepared(id, identity)
 		}
 		s.mu.Unlock()
 		if !admitted {
@@ -617,39 +346,10 @@ func (s *demoSession) command(ctx context.Context, id uuid.UUID, identity string
 			}
 		}()
 	}
-	result, err := send(sendCtx, lease)
+	result, err = send(sendCtx, lease)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.commandPayloads[id] != identity {
-		return contract.CommandStatus{CommandId: id, Status: contract.CommandStatusStatusUnknown}, err
-	}
-	delete(s.inFlight, id)
-	current := s.commands[id]
-	if err == nil && !terminalCommand(current.Status) {
-		current = mergeCommandStatus(current, result)
-		s.commands[id] = current
-	}
-	if err != nil {
-		var failure *transport.RequestError
-		if errors.As(err, &failure) && failure.OutcomeUnknown && previouslyPresent {
-			s.ambiguous[id] = true
-		}
-		if errors.As(err, &failure) && !failure.OutcomeUnknown {
-			if !stop {
-				delete(s.commands, id)
-				delete(s.commandPayloads, id)
-				delete(s.ambiguous, id)
-			} else if failure.Code != "command_conflict" {
-				current.Status = contract.CommandStatusStatusRejected
-				if failure.Code != "" {
-					reason := failure.Code
-					current.Reason = &reason
-				}
-				s.commands[id] = current
-			}
-		}
-	}
-	return current, err
+	return s.finishAttempt(id, identity, stop, previouslyPresent, result, err)
 }
 
 func (s *demoSession) close() {
@@ -943,4 +643,8 @@ func (s *demoSession) pauseLiveLocked(now time.Time) {
 		pending = s.stream.PendingSince()
 	}
 	s.pauseLive(now, pending)
+}
+
+func (s *demoSession) createCoveredLocked(id uuid.UUID, status contract.CommandStatus, snapshot *contract.Snapshot) bool {
+	return s.createCovered(id, status, snapshot, s.backendID)
 }
