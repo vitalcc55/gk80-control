@@ -9,14 +9,13 @@ import type {
 } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
 import type { GraphPoint } from '../model';
 
-function shown(item: Measurement | undefined, fresh: boolean): string {
-  return fresh && item?.quality === 'valid' && item.value !== null
+function shown(item: Measurement | undefined): string {
+  return (item?.quality === 'valid' || item?.quality === 'stale') && item.value !== null
     ? `≈ ${formatNumber(item.value, 6)} Па`
     : 'Неизвестно';
 }
 
-function quality(item: Measurement | undefined, fresh: boolean): string {
-  if (!fresh) return 'не подтверждено';
+function quality(item: Measurement | undefined): string {
   switch (item?.quality) {
     case 'valid':
       return 'достоверно';
@@ -118,31 +117,30 @@ export function LiveRun({
             <h2>Этапы</h2>
           </div>
           <p>Упрощённый демонстрационный проход</p>
+          <p>Этап по последнему полученному снимку</p>
           <strong>
-            {!fresh
-              ? 'Состояние не подтверждено'
-              : snapshot.pendingAction
-                ? 'Ожидание подтверждения'
-                : pressure
-                  ? 'Измерение'
-                  : 'Ожидание измерений'}
+            {snapshot.pendingAction
+              ? 'Ожидание подтверждения'
+              : pressure
+                ? 'Измерение'
+                : 'Ожидание измерений'}
           </strong>
         </aside>
         <section className="run-content" aria-label="Измерения">
           <div className="measurement-top">
             <div className="section-heading">
               <h2>Показания</h2>
+              <p>Последние полученные показания; текущие значения могут отличаться.</p>
             </div>
             <div className="measurements live-measurements">
               <div className="reading main-reading">
                 <span>
                   Давление в ёмкости <small>ДД1</small>
                 </span>
-                <strong>{shown(pressure, fresh)}</strong>
-                <p>{fresh ? 'Последнее полученное показание' : 'Показание не подтверждено'}</p>
+                <strong>{shown(pressure)}</strong>
                 <p>
-                  Время последнего измерения: {pressure?.measuredAt ?? 'неизвестно'} · качество:{' '}
-                  {quality(pressure, fresh)}
+                  Время последнего измерения: {pressure?.measuredAt ?? 'неизвестно'} · качество
+                  последнего наблюдения: {quality(pressure)}
                 </p>
               </div>
               <div className="reading target-reading">
@@ -155,14 +153,14 @@ export function LiveRun({
                 <span>
                   Перепад на диафрагме <small>ДД2</small>
                 </span>
-                <strong>{shown(differential, fresh)}</strong>
+                <strong>{shown(differential)}</strong>
                 <p>
-                  Время ДД2: {differential?.measuredAt ?? 'неизвестно'} · качество:{' '}
-                  {quality(differential, fresh)}
+                  Время ДД2: {differential?.measuredAt ?? 'неизвестно'} · качество последнего
+                  наблюдения: {quality(differential)}
                 </p>
                 <p>
-                  ДД3: {shown(reserve, fresh)} · время: {reserve?.measuredAt ?? 'неизвестно'} ·
-                  качество: {quality(reserve, fresh)}
+                  ДД3: {shown(reserve)} · время: {reserve?.measuredAt ?? 'неизвестно'} · качество
+                  последнего наблюдения: {quality(reserve)}
                 </p>
               </div>
             </div>
@@ -172,7 +170,7 @@ export function LiveRun({
             <div className="section-heading">
               <div>
                 <h2>Изменение показаний</h2>
-                <p>Время от первого отсчёта по полученным меткам; пропуски обозначены разрывами.</p>
+                <p>Время от первого полученного отсчёта; при потере связи график прерывается.</p>
                 {clockChanged && (
                   <p>Время измерения изменилось: график начат заново с нового отсчёта.</p>
                 )}
@@ -181,8 +179,9 @@ export function LiveRun({
             <MeasurementChart live points={points} target={record.parameters.pmaxPa} />
           </div>
         </section>
-        <aside className="action-panel" aria-label="Текущее действие">
+        <aside className="action-panel" aria-label="Действие по последнему полученному снимку">
           <div>
+            <p>Действие по последнему полученному снимку</p>
             <h2>
               {snapshot.pendingAction ? 'Подтверждение оператора' : 'Демонстрационное измерение'}
             </h2>

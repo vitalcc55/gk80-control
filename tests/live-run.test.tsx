@@ -63,6 +63,105 @@ const snapshot: Snapshot = {
   measurements: [first],
 };
 
+it('keeps the last received reading visible while a new snapshot is being confirmed', () => {
+  const withAction = {
+    ...snapshot,
+    measurements: [
+      first,
+      { ...first, channel: MeasurementChannel.Dd2, value: 150 },
+      { ...first, channel: MeasurementChannel.Dd3, value: 80 },
+    ],
+    pendingAction: {
+      testId: record.testId,
+      actionId: '44444444-4444-4444-8444-444444444444',
+      instruction: 'Подтвердите',
+    },
+  };
+  const renderRun = (fresh: boolean) => (
+    <LiveRun
+      record={record}
+      snapshot={withAction}
+      fresh={fresh}
+      pending={false}
+      onConfirm={() => {}}
+    />
+  );
+  const view = render(renderRun(true));
+  expect(screen.getByText(/≈ 1\s?000 Па/)).toBeTruthy();
+  expect(
+    screen.getByRole('button', { name: 'Подтвердить действие' }).hasAttribute('disabled'),
+  ).toBe(false);
+  view.rerender(renderRun(false));
+  expect(screen.getByText(/≈ 1\s?000 Па/)).toBeTruthy();
+  expect(screen.getByText('≈ 150 Па')).toBeTruthy();
+  expect(screen.getByText(/ДД3:.*≈ 80 Па/)).toBeTruthy();
+  expect(screen.getByText(/Последние полученные показания/)).toBeTruthy();
+  expect(screen.getAllByText(/качество последнего наблюдения: достоверно/)).toHaveLength(3);
+  expect(screen.getAllByText(/2026-10-30T00:00:01Z/)).toHaveLength(3);
+  expect(screen.getByText('Этап по последнему полученному снимку')).toBeTruthy();
+  expect(
+    screen.getByRole('button', { name: 'Подтвердить действие' }).hasAttribute('disabled'),
+  ).toBe(true);
+  expect(screen.getByTestId('chart').textContent).toBe('1000');
+  const next = { ...first, sequence: 2, measuredAt: '2026-10-30T00:00:02Z', value: 1001 };
+  view.rerender(
+    <LiveRun
+      record={record}
+      snapshot={{ ...snapshot, measurements: [next] }}
+      fresh
+      pending={false}
+      onConfirm={() => {}}
+    />,
+  );
+  expect(screen.getByText(/≈ 1\s?001 Па/)).toBeTruthy();
+  expect(screen.getByTestId('chart').textContent).toBe('1000,1001');
+  view.rerender(
+    <LiveRun
+      record={record}
+      snapshot={{
+        ...snapshot,
+        measurements: [
+          {
+            ...first,
+            sequence: 3,
+            value: null,
+            measuredAt: null,
+            quality: MeasurementQuality.MeasurementQualityUnavailable,
+          },
+        ],
+      }}
+      fresh
+      pending={false}
+      onConfirm={() => {}}
+    />,
+  );
+  expect(screen.queryByText(/≈ 1\s?001 Па/)).toBeNull();
+  expect(screen.getByText(/качество последнего наблюдения: недоступно/)).toBeTruthy();
+  view.rerender(
+    <LiveRun
+      record={record}
+      snapshot={{
+        ...snapshot,
+        measurements: [
+          {
+            ...first,
+            sequence: 4,
+            observedAt: '2026-10-30T00:00:04Z',
+            quality: MeasurementQuality.MeasurementQualityStale,
+          },
+        ],
+      }}
+      fresh={false}
+      pending={false}
+      onConfirm={() => {}}
+    />,
+  );
+  expect(screen.getByText(/≈ 1\s?000 Па/)).toBeTruthy();
+  expect(screen.getByText(/качество последнего наблюдения: устарело/)).toBeTruthy();
+  expect(screen.getByText(/2026-10-30T00:00:01Z/)).toBeTruthy();
+  expect(screen.queryByText(/2026-10-30T00:00:04Z/)).toBeNull();
+});
+
 it('breaks the chart across an unavailable measurement and labels pending confirmation honestly', () => {
   const view = render(
     <LiveRun record={record} snapshot={snapshot} fresh pending={false} onConfirm={() => {}} />,

@@ -727,6 +727,11 @@ it('keeps the link visible during snapshot updates but revokes stale data and de
     }),
   );
   expect(screen.getByText('Состояние управления не подтверждено')).toBeTruthy();
+  expect(
+    screen.getByText(
+      /Состояние испытания не подтверждено; последние показания могут быть неактуальны/,
+    ),
+  ).toBeTruthy();
 });
 
 it('explains a prolonged snapshot update without changing the link status', async () => {
