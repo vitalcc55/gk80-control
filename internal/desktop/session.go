@@ -300,48 +300,80 @@ func (s *demoSession) connectionState() contract.ConnectionState {
 	return s.connectionStateLocked(time.Now())
 }
 
-func (s *demoSession) connectionStateLocked(now time.Time) contract.ConnectionState {
-	status := contract.Disconnected
-	linkValid := false
-	if !s.closed && !s.closing && !s.unknownAcquire && !s.streamBroken && s.leaseConfirmed && !s.lastUI.IsZero() && now.Sub(s.lastUI) < uiHeartbeatFreshness && now.Before(s.leaseUntil) {
-		status = contract.Recovering
-		streamOpen := s.streamActive && s.streamDone != nil
-		if streamOpen {
-			select {
-			case <-s.streamDone:
-				streamOpen = false
-			default:
-			}
-		}
-		linkValid = streamOpen && s.stream != nil && !s.lastProbe.IsZero() && now.Sub(s.lastProbe) < streamProbeFreshness
-		if linkValid && !s.stream.Pending() && !s.snapshotPending && s.snapshot != nil {
-			status = contract.Live
+type sessionFreshness struct {
+	status    contract.ConnectionStateStatus
+	linkValid bool
+	deadline  time.Time
+}
+
+// freshnessDeadlineLocked is also the upper bound on an admitted action.
+func (s *demoSession) freshnessDeadlineLocked() time.Time {
+	var earliest time.Time
+	for _, limit := range []time.Time{s.lastUI.Add(uiHeartbeatFreshness), s.lastProbe.Add(streamProbeFreshness), s.leaseUntil} {
+		if !limit.IsZero() && (earliest.IsZero() || limit.Before(earliest)) {
+			earliest = limit
 		}
 	}
-	if status != s.lastStatus || linkValid != s.lastLinkValid || s.lastGeneration != s.streamGeneration {
+	return earliest
+}
+
+// freshnessLocked observes the stream once while the caller holds s.mu.
+func (s *demoSession) freshnessLocked(now time.Time) sessionFreshness {
+	result := sessionFreshness{status: contract.Disconnected}
+	if s.closed || s.closing || s.unknownAcquire || s.streamBroken || s.leaseID == uuid.Nil || !s.leaseConfirmed || s.lastUI.IsZero() || now.Sub(s.lastUI) >= uiHeartbeatFreshness || !now.Before(s.leaseUntil) {
+		return result
+	}
+	result.status = contract.Recovering
+	if !s.streamActive || s.streamDone == nil || s.stream == nil || s.lastProbe.IsZero() || now.Sub(s.lastProbe) >= streamProbeFreshness {
+		return result
+	}
+	pending := s.stream.Pending()
+	select {
+	case <-s.streamDone:
+		return result
+	default:
+	}
+	result.linkValid = true
+	result.deadline = s.freshnessDeadlineLocked()
+	if !pending && !s.snapshotPending && s.snapshot != nil {
+		result.status = contract.Live
+	}
+	return result
+}
+
+func (s *demoSession) connectionStateLocked(now time.Time) contract.ConnectionState {
+	return s.publishConnectionLocked(now, s.freshnessLocked(now))
+}
+
+func (s *demoSession) publishConnectionLocked(now time.Time, freshness sessionFreshness) contract.ConnectionState {
+	if freshness.status != s.lastStatus || freshness.linkValid != s.lastLinkValid || s.lastGeneration != s.streamGeneration {
 		previousLink := s.lastLinkValid
-		if status != contract.Live {
+		if freshness.status != contract.Live {
 			s.pauseLiveLocked(now)
-		} else {
-			s.startLiveLocked(now)
+		} else if s.liveMark.IsZero() {
+			s.liveMark = now
 		}
-		s.lastStatus = status
-		s.lastLinkValid = linkValid
+		s.lastStatus = freshness.status
+		s.lastLinkValid = freshness.linkValid
 		s.lastGeneration = s.streamGeneration
 		s.changedLocked()
-		if s.onState != nil && previousLink != linkValid {
-			s.onState(previousLink, linkValid)
+		if s.onState != nil && previousLink != freshness.linkValid {
+			s.onState(previousLink, freshness.linkValid)
 		}
 	}
-	return contract.ConnectionState{HostRunId: s.hostID, Revision: s.revision, Status: status, LinkValid: linkValid, LeaseAcquireUnknown: s.unknownAcquire, StreamGeneration: s.streamGeneration}
+	return contract.ConnectionState{HostRunId: s.hostID, Revision: s.revision, Status: freshness.status, LinkValid: freshness.linkValid, LeaseAcquireUnknown: s.unknownAcquire, StreamGeneration: s.streamGeneration}
 }
 
 // sessionView takes a single ordered snapshot of connection freshness and data.
 func (s *demoSession) sessionView() (contract.SessionView, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	now := time.Now()
-	result := contract.SessionView{Connection: s.connectionStateLocked(now)}
+	return s.sessionViewLocked(time.Now())
+}
+
+func (s *demoSession) sessionViewLocked(now time.Time) (contract.SessionView, error) {
+	freshness := s.freshnessLocked(now)
+	result := contract.SessionView{Connection: s.publishConnectionLocked(now, freshness)}
 	if s.snapshot != nil && !s.closed {
 		copy, err := copySessionSnapshot(s.snapshot)
 		if err != nil {
@@ -349,15 +381,8 @@ func (s *demoSession) sessionView() (contract.SessionView, error) {
 		}
 		result.Snapshot = &copy
 	}
-	if result.Connection.LinkValid {
-		until := s.lastUI.Add(uiHeartbeatFreshness)
-		if s.leaseUntil.Before(until) {
-			until = s.leaseUntil
-		}
-		if probeUntil := s.lastProbe.Add(streamProbeFreshness); probeUntil.Before(until) {
-			until = probeUntil
-		}
-		if remaining := until.Sub(now).Milliseconds(); remaining > 0 {
+	if freshness.linkValid {
+		if remaining := freshness.deadline.Sub(now).Milliseconds(); remaining > 0 {
 			result.LinkValidForMs = remaining
 			if result.Connection.Status == contract.Live {
 				result.ValidForMs = remaining
@@ -504,8 +529,12 @@ func (s *demoSession) consumeStream(ctx context.Context, lease uuid.UUID, stream
 			}
 			if valid {
 				s.lastProbe = probeAt
-				s.startLiveLocked(time.Now())
-				_ = s.connectionStateLocked(time.Now())
+				now := time.Now()
+				freshness := s.freshnessLocked(now)
+				if s.liveMark.IsZero() && freshness.status == contract.Live {
+					s.liveMark = now
+				}
+				_ = s.publishConnectionLocked(now, freshness)
 			}
 			s.mu.Unlock()
 			if !valid {
@@ -857,33 +886,26 @@ func (s *demoSession) stopStatusLocked(id uuid.UUID) (contract.CommandStatus, bo
 }
 
 func (s *demoSession) commandAllowedLocked(stop bool) bool {
-	now := time.Now()
-	valid := !s.closed && !s.closing && s.leaseID != uuid.Nil
+	return s.commandAllowedAtLocked(stop, time.Now())
+}
+
+func (s *demoSession) commandAllowedAtLocked(stop bool, now time.Time) bool {
 	if stop {
-		return valid
+		return !s.closed && !s.closing && s.leaseID != uuid.Nil
 	}
+	return !s.ordinaryCommandBlockedLocked() && s.freshnessLocked(now).status == contract.Live
+}
+
+func (s *demoSession) ordinaryCommandBlockedLocked() bool {
 	if s.displaced != nil {
-		return false
+		return true
 	}
 	for id, command := range s.commands {
 		if strings.HasPrefix(s.commandPayloads[id], "stop:") && !terminalCommand(command.Status) && command.TestId != nil && *command.TestId == s.activeTestID && s.activeTestID != uuid.Nil {
-			return false
+			return true
 		}
 	}
-	return s.liveLocked(now)
-}
-
-func (s *demoSession) liveLocked(now time.Time) bool {
-	valid := !s.closed && !s.closing && s.leaseID != uuid.Nil
-	valid = valid && s.leaseConfirmed && now.Before(s.leaseUntil) && !s.streamBroken && !s.unknownAcquire && s.streamActive && s.streamDone != nil && s.stream != nil && !s.stream.Pending() && !s.snapshotPending && s.snapshot != nil && !s.lastUI.IsZero() && now.Sub(s.lastUI) < uiHeartbeatFreshness && !s.lastProbe.IsZero() && now.Sub(s.lastProbe) < streamProbeFreshness
-	if valid {
-		select {
-		case <-s.streamDone:
-			valid = false
-		default:
-		}
-	}
-	return valid
+	return false
 }
 
 func (s *demoSession) invalidateActionsLocked() {
@@ -894,7 +916,7 @@ func (s *demoSession) invalidateActionsLocked() {
 }
 
 func (s *demoSession) startLiveLocked(now time.Time) {
-	if s.liveMark.IsZero() && s.liveLocked(now) {
+	if s.liveMark.IsZero() && s.freshnessLocked(now).status == contract.Live {
 		s.liveMark = now
 	}
 }
@@ -904,10 +926,8 @@ func (s *demoSession) pauseLiveLocked(now time.Time) {
 		return
 	}
 	end := now
-	for _, limit := range []time.Time{s.lastUI.Add(uiHeartbeatFreshness), s.lastProbe.Add(streamProbeFreshness), s.leaseUntil} {
-		if !limit.IsZero() && limit.Before(end) {
-			end = limit
-		}
+	if deadline := s.freshnessDeadlineLocked(); !deadline.IsZero() && deadline.Before(end) {
+		end = deadline
 	}
 	if s.stream != nil {
 		if pending := s.stream.PendingSince(); !pending.IsZero() && pending.Before(end) {
@@ -1058,16 +1078,14 @@ func (s *demoSession) command(ctx context.Context, id uuid.UUID, identity string
 			return contract.CommandStatus{}, errors.Join(invalidNew[0], errCommandNotSent)
 		}
 		s.mu.Lock()
-		admitted := s.commandPayloads[id] == identity && s.leaseID == lease && s.commandAllowedLocked(false) && requestCtx.Err() == nil
-		if admitted {
-			admissionDeadline = s.lastUI.Add(uiHeartbeatFreshness)
-			if deadline := s.lastProbe.Add(streamProbeFreshness); deadline.Before(admissionDeadline) {
-				admissionDeadline = deadline
+		admitted := false
+		if s.commandPayloads[id] == identity && s.leaseID == lease && !s.ordinaryCommandBlockedLocked() {
+			freshness := s.freshnessLocked(time.Now())
+			admitted = freshness.status == contract.Live && requestCtx.Err() == nil
+			if admitted {
+				admissionDeadline = freshness.deadline
+				streamDone = s.streamDone
 			}
-			if s.leaseUntil.Before(admissionDeadline) {
-				admissionDeadline = s.leaseUntil
-			}
-			streamDone = s.streamDone
 		}
 		if !admitted && s.commandPayloads[id] == identity {
 			delete(s.commands, id)
