@@ -182,6 +182,7 @@ type testSessionStream struct {
 	run           uuid.UUID
 	sequence      int64
 	pending       bool
+	pendingAt     time.Time
 	failSnapshots int
 	events        chan struct{}
 	done          chan struct{}
@@ -235,7 +236,11 @@ func (s *testSessionStream) Pending() bool {
 	return s.pending || len(s.events) != 0
 }
 
-func (s *testSessionStream) PendingSince() time.Time { return time.Time{} }
+func (s *testSessionStream) PendingSince() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pendingAt
+}
 
 func (s *testSessionStream) Probe(context.Context) error { return nil }
 func (s *testSessionStream) Done() <-chan struct{}       { return s.done }
@@ -467,7 +472,7 @@ func TestOwnerSessionViewRejectsCoreExitDuringRead(t *testing.T) {
 	session.leaseUntil = now.Add(time.Minute)
 	session.lastUI, session.lastProbe = now, now
 	session.streamActive, session.streamDone, session.stream = true, stream.done, stream
-	session.snapshot = &contract.Snapshot{Measurements: []contract.Measurement{}}
+	session.snapshot = &contract.Snapshot{ApiVersion: "v1", BackendRunId: session.backendID, Measurements: []contract.Measurement{}}
 	owner.session = session
 	result := make(chan error, 1)
 	go func() {
@@ -489,12 +494,12 @@ func TestSessionViewUsesEarliestFreshnessDeadline(t *testing.T) {
 			stream := &testSessionStream{done: make(chan struct{})}
 			session := newDemoSession(context.Background(), &testSessionClient{}, uuid.New(), uuid.New())
 			defer session.close()
-			session.leaseConfirmed = true
+			session.leaseID, session.leaseConfirmed = uuid.New(), true
 			session.leaseUntil = now.Add(5 * time.Second)
 			session.lastUI = now.Add(-uiHeartbeatFreshness + 5*time.Second)
 			session.lastProbe = now.Add(-streamProbeFreshness + 5*time.Second)
 			session.streamActive, session.streamDone, session.stream = true, stream.done, stream
-			session.snapshot = &contract.Snapshot{Measurements: []contract.Measurement{}}
+			session.snapshot = &contract.Snapshot{ApiVersion: "v1", BackendRunId: session.backendID, Measurements: []contract.Measurement{}}
 			switch earliest {
 			case "ui":
 				session.lastUI = now.Add(-uiHeartbeatFreshness + time.Second)
@@ -511,6 +516,202 @@ func TestSessionViewUsesEarliestFreshnessDeadline(t *testing.T) {
 	}
 }
 
+func TestSessionViewFreshnessEvidence(t *testing.T) {
+	now := time.Date(2026, time.November, 3, 12, 0, 0, 0, time.UTC)
+	type change func(*demoSession, *testSessionStream)
+	type testCase struct {
+		name   string
+		change change
+		status contract.ConnectionStateStatus
+		link   bool
+		ttlMs  int64
+	}
+	tests := []testCase{
+		{"fresh", func(*demoSession, *testSessionStream) {}, contract.Live, true, 6000},
+		{"confirmed without lease ID", func(s *demoSession, _ *testSessionStream) { s.leaseID = uuid.Nil }, contract.Disconnected, false, 0},
+		{"unconfirmed lease", func(s *demoSession, _ *testSessionStream) { s.leaseConfirmed = false }, contract.Disconnected, false, 0},
+		{"unknown acquire", func(s *demoSession, _ *testSessionStream) { s.unknownAcquire = true }, contract.Disconnected, false, 0},
+		{"closed session", func(s *demoSession, _ *testSessionStream) { s.closed = true }, contract.Disconnected, false, 0},
+		{"closing session", func(s *demoSession, _ *testSessionStream) { s.closing = true }, contract.Disconnected, false, 0},
+		{"broken stream", func(s *demoSession, _ *testSessionStream) { s.streamBroken = true }, contract.Disconnected, false, 0},
+		{"missing heartbeat", func(s *demoSession, _ *testSessionStream) { s.lastUI = time.Time{} }, contract.Disconnected, false, 0},
+		{"missing probe", func(s *demoSession, _ *testSessionStream) { s.lastProbe = time.Time{} }, contract.Recovering, false, 0},
+		{"inactive stream", func(s *demoSession, _ *testSessionStream) { s.streamActive = false }, contract.Recovering, false, 0},
+		{"missing stream closure", func(s *demoSession, _ *testSessionStream) { s.streamDone = nil }, contract.Recovering, false, 0},
+		{"closed stream", func(_ *demoSession, stream *testSessionStream) { close(stream.done) }, contract.Recovering, false, 0},
+		{"missing stream", func(s *demoSession, _ *testSessionStream) { s.stream = nil }, contract.Recovering, false, 0},
+		{"snapshot pending", func(s *demoSession, _ *testSessionStream) { s.snapshotPending = true }, contract.Recovering, true, 6000},
+		{"event pending", func(_ *demoSession, stream *testSessionStream) { stream.pending, stream.pendingAt = true, now }, contract.Recovering, true, 6000},
+		{"missing snapshot", func(s *demoSession, _ *testSessionStream) { s.snapshot = nil }, contract.Recovering, true, 6000},
+	}
+	for _, deadline := range []string{"ui", "lease", "probe"} {
+		for _, offset := range []time.Duration{time.Millisecond, 500 * time.Microsecond, 0, -time.Millisecond} {
+			boundary, distance := deadline, offset
+			status, link := contract.Live, true
+			if distance <= 0 {
+				status, link = contract.Disconnected, false
+				if boundary == "probe" {
+					status = contract.Recovering
+				}
+			}
+			tests = append(tests, testCase{fmt.Sprintf("%s deadline %s", boundary, distance), func(s *demoSession, _ *testSessionStream) {
+				switch boundary {
+				case "ui":
+					s.lastUI = now.Add(-uiHeartbeatFreshness + distance)
+				case "lease":
+					s.leaseUntil = now.Add(distance)
+				case "probe":
+					s.lastProbe = now.Add(-streamProbeFreshness + distance)
+				}
+			}, status, link, max(distance.Milliseconds(), 0)})
+		}
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			stream := &testSessionStream{done: make(chan struct{}), events: make(chan struct{}, 1)}
+			s := newDemoSession(context.Background(), &testSessionClient{}, uuid.New(), uuid.New())
+			defer s.cancel()
+			s.leaseID, s.leaseConfirmed, s.leaseUntil = uuid.New(), true, now.Add(time.Minute)
+			s.lastUI, s.lastProbe = now, now
+			s.streamActive, s.streamDone, s.stream = true, stream.done, stream
+			s.snapshot = &contract.Snapshot{ApiVersion: "v1", BackendRunId: s.backendID, Measurements: []contract.Measurement{}}
+			tc.change(s, stream)
+			lastUI, lastProbe, leaseUntil := s.lastUI, s.lastProbe, s.leaseUntil
+			revision := s.revision
+			changes := 0
+			s.onChange = func() { changes++ }
+			_ = s.freshnessLocked(now)
+			if s.revision != revision || changes != 0 || !s.liveMark.IsZero() {
+				t.Fatal("freshness evaluation changed or published session state")
+			}
+			view, err := s.sessionViewLocked(now)
+			allowed := s.commandAllowedAtLocked(false, now)
+			wantValidMs := int64(0)
+			if tc.status == contract.Live {
+				wantValidMs = tc.ttlMs
+			}
+			if err != nil || view.Connection.Status != tc.status || view.Connection.LinkValid != tc.link || view.LinkValidForMs != tc.ttlMs || view.ValidForMs != wantValidMs || allowed != (tc.status == contract.Live) {
+				t.Fatalf("view=%+v admission=%t err=%v, want status=%s link=%t ttl=%d", view, allowed, err, tc.status, tc.link, tc.ttlMs)
+			}
+			if !s.lastUI.Equal(lastUI) || !s.lastProbe.Equal(lastProbe) || !s.leaseUntil.Equal(leaseUntil) {
+				t.Fatal("read-only view extended or changed a freshness deadline")
+			}
+		})
+	}
+}
+
+type changingPendingStream struct {
+	*testSessionStream
+	reads int
+}
+
+func (s *changingPendingStream) Pending() bool {
+	s.reads++
+	return s.reads > 1
+}
+
+func TestSessionViewUsesOneStreamObservation(t *testing.T) {
+	now := time.Date(2026, time.November, 3, 12, 0, 0, 0, time.UTC)
+	stream := &changingPendingStream{testSessionStream: &testSessionStream{done: make(chan struct{})}}
+	s := newDemoSession(context.Background(), &testSessionClient{}, uuid.New(), uuid.New())
+	defer s.cancel()
+	s.leaseID, s.leaseConfirmed, s.leaseUntil = uuid.New(), true, now.Add(time.Minute)
+	s.lastUI, s.lastProbe = now, now
+	s.streamActive, s.streamDone, s.stream = true, stream.done, stream
+	s.snapshot = &contract.Snapshot{ApiVersion: "v1", BackendRunId: s.backendID, Measurements: []contract.Measurement{}}
+	view, err := s.sessionViewLocked(now)
+	if err != nil || stream.reads != 1 || view.Connection.Status != contract.Live || view.ValidForMs != 6000 || s.liveMark != now {
+		t.Fatalf("first view=%+v reads=%d liveMark=%v err=%v", view, stream.reads, s.liveMark, err)
+	}
+	view, err = s.sessionViewLocked(now)
+	if err != nil || stream.reads != 2 || view.Connection.Status != contract.Recovering || !view.Connection.LinkValid || view.ValidForMs != 0 || view.LinkValidForMs != 6000 {
+		t.Fatalf("pending view=%+v reads=%d err=%v", view, stream.reads, err)
+	}
+}
+
+func TestSessionLiveDurationStopsAtPendingEvent(t *testing.T) {
+	start := time.Date(2026, time.November, 3, 12, 0, 0, 0, time.UTC)
+	stream := &testSessionStream{done: make(chan struct{}), pending: true, pendingAt: start.Add(2 * time.Second)}
+	s := newDemoSession(context.Background(), &testSessionClient{}, uuid.New(), uuid.New())
+	defer s.cancel()
+	s.stream = stream
+	s.lastUI, s.lastProbe, s.leaseUntil = start, start, start.Add(time.Minute)
+	s.liveMark, s.recoverySince = start, start.Add(-time.Second)
+	s.pauseLiveLocked(start.Add(5 * time.Second))
+	if s.liveDuration != 2*time.Second || s.recoverySince.IsZero() || !s.liveMark.IsZero() {
+		t.Fatalf("pending event: duration=%v recovery=%v mark=%v", s.liveDuration, s.recoverySince, s.liveMark)
+	}
+	stream.pending, stream.pendingAt = false, time.Time{}
+	s.lastUI, s.lastProbe, s.liveMark = start.Add(10*time.Second), start.Add(10*time.Second), start.Add(10*time.Second)
+	s.pauseLiveLocked(start.Add(14 * time.Second))
+	if s.liveDuration != 0 || !s.recoverySince.IsZero() || !s.liveMark.IsZero() {
+		t.Fatalf("accumulated live interval: duration=%v recovery=%v mark=%v", s.liveDuration, s.recoverySince, s.liveMark)
+	}
+}
+
+func TestSessionLiveDurationHonorsFreshnessDeadline(t *testing.T) {
+	start := time.Date(2026, time.November, 3, 12, 0, 0, 0, time.UTC)
+	for _, boundary := range []string{"ui", "lease", "probe"} {
+		t.Run(boundary, func(t *testing.T) {
+			s := newDemoSession(context.Background(), &testSessionClient{}, uuid.New(), uuid.New())
+			defer s.cancel()
+			s.lastUI, s.lastProbe, s.leaseUntil = start, start, start.Add(time.Minute)
+			s.liveMark, s.recoverySince = start, start.Add(-time.Second)
+			switch boundary {
+			case "ui":
+				s.lastUI = start.Add(-uiHeartbeatFreshness + 2*time.Second)
+			case "lease":
+				s.leaseUntil = start.Add(2 * time.Second)
+			case "probe":
+				s.lastProbe = start.Add(-streamProbeFreshness + 2*time.Second)
+			}
+			s.pauseLiveLocked(start.Add(5 * time.Second))
+			if s.liveDuration != 2*time.Second || s.recoverySince.IsZero() {
+				t.Fatalf("deadline %s: duration=%v recovery=%v", boundary, s.liveDuration, s.recoverySince)
+			}
+		})
+	}
+}
+
+func TestSessionCommandUsesEarliestFreshnessDeadline(t *testing.T) {
+	for _, earliest := range []string{"ui", "lease", "probe"} {
+		t.Run(earliest, func(t *testing.T) {
+			now := time.Now()
+			client := &testSessionClient{}
+			s := newDemoSession(context.Background(), client, uuid.New(), uuid.New())
+			defer s.cancel()
+			stream := &testSessionStream{done: make(chan struct{}), events: make(chan struct{}, 1)}
+			s.leaseID, s.leaseConfirmed, s.leaseUntil = uuid.New(), true, now.Add(5*time.Second)
+			s.lastUI = now.Add(-uiHeartbeatFreshness + 5*time.Second)
+			s.lastProbe = now.Add(-streamProbeFreshness + 5*time.Second)
+			s.streamActive, s.streamDone, s.stream = true, stream.done, stream
+			s.snapshot = &contract.Snapshot{ApiVersion: "v1", BackendRunId: s.backendID, Measurements: []contract.Measurement{}}
+			deadline := now.Add(3 * time.Second)
+			switch earliest {
+			case "ui":
+				s.lastUI = deadline.Add(-uiHeartbeatFreshness)
+			case "lease":
+				s.leaseUntil = deadline
+			case "probe":
+				s.lastProbe = deadline.Add(-streamProbeFreshness)
+			}
+			id := uuid.New()
+			sends := 0
+			_, err := s.command(context.Background(), id, "create", false, func(ctx context.Context, _ uuid.UUID) (contract.CommandStatus, error) {
+				sends++
+				got, ok := ctx.Deadline()
+				if !ok || !got.Equal(deadline) {
+					t.Errorf("%s deadline = %v, want %v", earliest, got, deadline)
+				}
+				return contract.CommandStatus{CommandId: id, Status: contract.CommandStatusStatusAccepted}, nil
+			})
+			if err != nil || sends != 1 || client.reads != 1 {
+				t.Fatalf("%s: err=%v sends=%d preflight=%d", earliest, err, sends, client.reads)
+			}
+		})
+	}
+}
+
 func TestSessionViewSeparatesLinkFromPendingSnapshot(t *testing.T) {
 	now := time.Now()
 	stream := &testSessionStream{done: make(chan struct{}), events: make(chan struct{}, 1)}
@@ -519,7 +720,7 @@ func TestSessionViewSeparatesLinkFromPendingSnapshot(t *testing.T) {
 	session.leaseID, session.leaseConfirmed, session.leaseUntil = uuid.New(), true, now.Add(time.Minute)
 	session.lastUI, session.lastProbe = now, now
 	session.streamActive, session.streamDone, session.stream = true, stream.done, stream
-	session.snapshot = &contract.Snapshot{Measurements: []contract.Measurement{}}
+	session.snapshot = &contract.Snapshot{ApiVersion: "v1", BackendRunId: session.backendID, Measurements: []contract.Measurement{}}
 	session.snapshotPending = true
 	view, err := session.sessionView()
 	if err != nil || !view.Connection.LinkValid || view.LinkValidForMs <= 0 || view.Connection.Status != contract.Recovering || view.ValidForMs != 0 {
@@ -1105,9 +1306,9 @@ func TestDemoSessionRetainsUncoveredCreateAndReservesStop(t *testing.T) {
 	session.leaseUntil = time.Now().Add(time.Minute)
 	session.lastUI, session.lastProbe = time.Now(), time.Now()
 	session.streamActive = true
-	session.streamDone = make(chan struct{})
 	session.stream = &testSessionStream{events: make(chan struct{}, 1), done: make(chan struct{})}
-	session.snapshot = &contract.Snapshot{BackendRunId: run, Revision: 5}
+	session.streamDone = session.stream.Done()
+	session.snapshot = &contract.Snapshot{ApiVersion: "v1", BackendRunId: run, Revision: 5, Measurements: []contract.Measurement{}}
 	session.commands[createID] = contract.CommandStatus{CommandId: createID, TestId: &testID, Status: contract.CommandStatusStatusCompleted}
 	session.commandPayloads[createID] = identity
 	for range 63 {
@@ -1533,8 +1734,8 @@ func TestDemoSessionReconcilesPendingWithoutBlockingStop(t *testing.T) {
 	session.leaseUntil = time.Now().Add(time.Minute)
 	session.lastUI, session.lastProbe = time.Now(), time.Now()
 	session.streamActive = true
-	session.streamDone = make(chan struct{})
 	session.stream = &testSessionStream{events: make(chan struct{}, 1), done: make(chan struct{})}
+	session.streamDone = session.stream.Done()
 	session.snapshot = &contract.Snapshot{ApiVersion: "v1", BackendRunId: run, Measurements: []contract.Measurement{}}
 	session.mu.Unlock()
 	started, release := make(chan struct{}), make(chan struct{})
@@ -1591,8 +1792,8 @@ func TestDemoSessionReconcilesLostResponseWithoutResending(t *testing.T) {
 	session.leaseUntil = time.Now().Add(time.Minute)
 	session.lastUI, session.lastProbe = time.Now(), time.Now()
 	session.streamActive = true
-	session.streamDone = make(chan struct{})
 	session.stream = &testSessionStream{events: make(chan struct{}, 1), done: make(chan struct{})}
+	session.streamDone = session.stream.Done()
 	session.snapshot = &contract.Snapshot{ApiVersion: "v1", BackendRunId: run, Measurements: []contract.Measurement{}}
 	session.mu.Unlock()
 	sends := 0
@@ -1626,8 +1827,8 @@ func TestDemoSessionDoesNotAttributeOldCommandToConflict(t *testing.T) {
 	session.leaseUntil = time.Now().Add(time.Minute)
 	session.lastUI, session.lastProbe = time.Now(), time.Now()
 	session.streamActive = true
-	session.streamDone = make(chan struct{})
 	session.stream = &testSessionStream{events: make(chan struct{}, 1), done: make(chan struct{})}
+	session.streamDone = session.stream.Done()
 	session.snapshot = &contract.Snapshot{ApiVersion: "v1", BackendRunId: run, Measurements: []contract.Measurement{}}
 	session.mu.Unlock()
 	started, release := make(chan struct{}), make(chan struct{})
@@ -1805,8 +2006,8 @@ func TestDemoSessionDoesNotSendAfterPreflightLosesUI(t *testing.T) {
 	session.leaseUntil = time.Now().Add(time.Minute)
 	session.lastUI, session.lastProbe = time.Now(), time.Now()
 	session.streamActive = true
-	session.streamDone = make(chan struct{})
 	session.stream = &testSessionStream{events: make(chan struct{}, 1), done: make(chan struct{})}
+	session.streamDone = session.stream.Done()
 	session.snapshot = &contract.Snapshot{ApiVersion: "v1", BackendRunId: run, Measurements: []contract.Measurement{}}
 	session.mu.Unlock()
 	sent := make(chan struct{}, 1)
@@ -1844,13 +2045,15 @@ func TestDemoSessionActionContextExpiresWithUI(t *testing.T) {
 	session.lastUI = time.Now().Add(-uiHeartbeatFreshness + 150*time.Millisecond)
 	session.lastProbe = time.Now()
 	session.streamActive = true
-	session.streamDone = make(chan struct{})
 	session.stream = &testSessionStream{events: make(chan struct{}, 1), done: make(chan struct{})}
-	session.snapshot = &contract.Snapshot{BackendRunId: run, Measurements: []contract.Measurement{}}
+	session.streamDone = session.stream.Done()
+	session.snapshot = &contract.Snapshot{ApiVersion: "v1", BackendRunId: run, Measurements: []contract.Measurement{}}
 	session.mu.Unlock()
+	started := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
 		_, err := session.command(context.Background(), id, "start", false, func(ctx context.Context, _ uuid.UUID) (contract.CommandStatus, error) {
+			close(started)
 			<-ctx.Done()
 			return contract.CommandStatus{}, ctx.Err()
 		})
@@ -1860,6 +2063,11 @@ func TestDemoSessionActionContextExpiresWithUI(t *testing.T) {
 	case err := <-done:
 		if err == nil {
 			t.Fatal("expired UI action reported success")
+		}
+		select {
+		case <-started:
+		default:
+			t.Fatal("action was not admitted before its context expired")
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("action outlived UI freshness")
@@ -1878,9 +2086,9 @@ func TestDemoSessionRenewalFailureCancelsAdmittedAction(t *testing.T) {
 	session.leaseUntil = time.Now().Add(time.Minute)
 	session.lastUI, session.lastProbe = time.Now(), time.Now()
 	session.streamActive = true
-	session.streamDone = make(chan struct{})
 	session.stream = &testSessionStream{events: make(chan struct{}, 1), done: make(chan struct{})}
-	session.snapshot = &contract.Snapshot{BackendRunId: run, Measurements: []contract.Measurement{}}
+	session.streamDone = session.stream.Done()
+	session.snapshot = &contract.Snapshot{ApiVersion: "v1", BackendRunId: run, Measurements: []contract.Measurement{}}
 	session.mu.Unlock()
 	started := make(chan struct{})
 	done := make(chan error, 1)
@@ -1918,9 +2126,9 @@ func TestDemoSessionDoesNotTreatInvalid404AsMissingCommand(t *testing.T) {
 	session.leaseUntil = time.Now().Add(time.Minute)
 	session.lastUI, session.lastProbe = time.Now(), time.Now()
 	session.streamActive = true
-	session.streamDone = make(chan struct{})
 	session.stream = &testSessionStream{events: make(chan struct{}, 1), done: make(chan struct{})}
-	session.snapshot = &contract.Snapshot{Measurements: []contract.Measurement{}}
+	session.streamDone = session.stream.Done()
+	session.snapshot = &contract.Snapshot{ApiVersion: "v1", BackendRunId: session.backendID, Measurements: []contract.Measurement{}}
 	session.mu.Unlock()
 	sent := false
 	_, err := session.command(context.Background(), id, "create", false, func(context.Context, uuid.UUID) (contract.CommandStatus, error) {
@@ -2033,9 +2241,9 @@ func TestOwnerUnknownStopKeepsPinnedTestAfterHistoryEviction(t *testing.T) {
 	session.leaseUntil = time.Now().Add(time.Minute)
 	session.lastUI, session.lastProbe = time.Now(), time.Now()
 	session.streamActive = true
-	session.streamDone = make(chan struct{})
 	session.stream = &testSessionStream{events: make(chan struct{}, 1), done: make(chan struct{})}
-	session.snapshot = &contract.Snapshot{BackendRunId: run, ActiveTest: &contract.TestRecord{TestId: testID, StopCommandId: stopID, Stage: "running"}, Measurements: []contract.Measurement{}}
+	session.streamDone = session.stream.Done()
+	session.snapshot = &contract.Snapshot{ApiVersion: "v1", BackendRunId: run, ActiveTest: &contract.TestRecord{TestId: testID, StopCommandId: stopID, Stage: "running"}, Measurements: []contract.Measurement{}}
 	session.activeTestID, session.activeStopID = testID, stopID
 	session.mu.Unlock()
 	owner := &Owner{session: session, status: contract.DesktopStatus{Status: contract.DesktopStatusStatusReady}}
@@ -2063,9 +2271,9 @@ func TestDemoSessionFinishedUnknownStopDoesNotBlockNewCommand(t *testing.T) {
 	session.leaseUntil = time.Now().Add(time.Minute)
 	session.lastUI, session.lastProbe = time.Now(), time.Now()
 	session.streamActive = true
-	session.streamDone = make(chan struct{})
 	session.stream = &testSessionStream{events: make(chan struct{}, 1), done: make(chan struct{})}
-	session.snapshot = &contract.Snapshot{BackendRunId: run, ActiveTest: &contract.TestRecord{TestId: oldTest, StopCommandId: oldStop, Stage: "finished"}, Measurements: []contract.Measurement{}}
+	session.streamDone = session.stream.Done()
+	session.snapshot = &contract.Snapshot{ApiVersion: "v1", BackendRunId: run, ActiveTest: &contract.TestRecord{TestId: oldTest, StopCommandId: oldStop, Stage: "finished"}, Measurements: []contract.Measurement{}}
 	session.commands[oldStop] = contract.CommandStatus{CommandId: oldStop, TestId: &oldTest, Status: contract.CommandStatusStatusUnknown}
 	session.commandPayloads[oldStop] = "stop:" + oldTest.String()
 	session.mu.Unlock()
@@ -2085,19 +2293,42 @@ func TestDemoSessionMeasuresLiveWhileStopIsPending(t *testing.T) {
 	session.leaseID, session.leaseConfirmed = uuid.New(), true
 	session.leaseUntil = time.Now().Add(time.Minute)
 	session.lastUI, session.lastProbe = time.Now(), time.Now()
-	session.streamActive = true
-	session.streamDone = make(chan struct{})
-	session.stream = &testSessionStream{events: make(chan struct{}, 1), done: make(chan struct{})}
-	session.snapshot = &contract.Snapshot{Measurements: []contract.Measurement{}}
+	stream := &testSessionStream{events: make(chan struct{}, 1), done: make(chan struct{})}
+	session.streamActive, session.streamDone, session.stream = true, stream.done, stream
+	session.snapshot = &contract.Snapshot{ApiVersion: "v1", BackendRunId: session.backendID, Measurements: []contract.Measurement{}}
 	session.activeTestID = testID
 	session.commands[stopID] = contract.CommandStatus{CommandId: stopID, TestId: &testID, Status: contract.CommandStatusStatusAccepted}
 	session.commandPayloads[stopID] = "stop:" + testID.String()
 	session.startLiveLocked(time.Now())
 	marked := !session.liveMark.IsZero()
+	state := session.connectionStateLocked(time.Now())
 	commandAllowed := session.commandAllowedLocked(false)
+	stopAllowed := session.commandAllowedLocked(true)
 	session.mu.Unlock()
-	if !marked || commandAllowed {
-		t.Fatal("pending stop confused connection health with command availability")
+	if !marked || state.Status != contract.Live || !state.LinkValid || commandAllowed || !stopAllowed {
+		t.Fatalf("pending stop confused connection health with command availability: %+v ordinary=%t stop=%t", state, commandAllowed, stopAllowed)
+	}
+}
+
+func TestDemoSessionStopSendsWithStaleSnapshot(t *testing.T) {
+	now := time.Now()
+	client := &testSessionClient{}
+	s := newDemoSession(context.Background(), client, uuid.New(), uuid.New())
+	defer s.cancel()
+	stream := &testSessionStream{done: make(chan struct{}), events: make(chan struct{}, 1)}
+	s.leaseID, s.leaseConfirmed, s.leaseUntil = uuid.New(), true, now.Add(time.Minute)
+	s.lastUI, s.lastProbe = now.Add(-uiHeartbeatFreshness), now
+	s.streamActive, s.streamDone, s.stream = true, stream.done, stream
+	s.snapshot = &contract.Snapshot{ApiVersion: "v1", BackendRunId: s.backendID, Measurements: []contract.Measurement{}}
+	state := s.connectionStateLocked(now)
+	stopID := uuid.New()
+	sends := 0
+	status, err := s.command(context.Background(), stopID, "stop:test", true, func(_ context.Context, lease uuid.UUID) (contract.CommandStatus, error) {
+		sends++
+		return contract.CommandStatus{CommandId: stopID, Status: contract.CommandStatusStatusAccepted}, nil
+	})
+	if state.Status == contract.Live || err != nil || status.Status != contract.CommandStatusStatusAccepted || sends != 1 || client.reads != 0 {
+		t.Fatalf("stale Stop state=%+v status=%+v err=%v sends=%d preflight=%d", state, status, err, sends, client.reads)
 	}
 }
 

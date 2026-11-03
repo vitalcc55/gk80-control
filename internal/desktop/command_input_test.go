@@ -225,9 +225,9 @@ func TestWailsCreateRejectsNewRoundedValueButForwardsHistoricalReplay(t *testing
 	session.leaseUntil = time.Now().Add(time.Minute)
 	session.lastUI, session.lastProbe = time.Now(), time.Now()
 	session.streamActive = true
-	session.streamDone = make(chan struct{})
 	session.stream = &testSessionStream{events: make(chan struct{}, 1), done: make(chan struct{})}
-	session.snapshot = &contract.Snapshot{BackendRunId: run, Measurements: []contract.Measurement{}}
+	session.streamDone = session.stream.Done()
+	session.snapshot = &contract.Snapshot{ApiVersion: "v1", BackendRunId: run, Measurements: []contract.Measurement{}}
 	session.mu.Unlock()
 	owner := &Owner{session: session, status: contract.DesktopStatus{Status: contract.DesktopStatusStatusReady}}
 	if _, err := owner.CreateTestInput(context.Background(), input); err == nil || sends != 0 {
