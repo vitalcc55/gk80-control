@@ -1,5 +1,3 @@
-import { useSyncExternalStore } from 'react';
-
 type Kind = 'stop' | 'lookup' | 'stopLookup';
 const calls: Record<Kind, Map<string, number>> = {
   stop: new Map(),
@@ -36,12 +34,13 @@ export function totalCalls(kind: Kind): number {
   return [...calls[kind].values()].reduce((sum, value) => sum + value, 0);
 }
 
-export function useCallRevision(): void {
-  useSyncExternalStore(
-    (listener) => {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-    () => revision,
-  );
+export function subscribeCalls(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+export function callRevision(): number {
+  return revision;
 }
