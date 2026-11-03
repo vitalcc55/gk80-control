@@ -44,6 +44,8 @@ func mergeCommandStatus(current, next contract.CommandStatus) contract.CommandSt
 	return next
 }
 
+// Older snapshots can arrive after the response; only later matching snapshots
+// or confirmed saved records cover a completed Create.
 func (s *hostLedger) createCovered(id uuid.UUID, status contract.CommandStatus, snapshot *contract.Snapshot, backendID uuid.UUID) bool {
 	identity := s.commandPayloads[id]
 	if !strings.HasPrefix(identity, "create:") || status.Status != contract.CommandStatusStatusCompleted {
