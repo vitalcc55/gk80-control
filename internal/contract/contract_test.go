@@ -89,6 +89,19 @@ func TestActionLookupSchemasAcceptHistoricalValuesButRequireStructure(t *testing
 	validateJSON(t, confirmLookup, confirm, false)
 }
 
+func TestCommandDispatchDistinguishesConflictAndDelivery(t *testing.T) {
+	schema := schemaFor(t, "CommandDispatch")
+	command := CommandStatus{CommandId: uuid.New(), Status: CommandStatusStatusCompleted}
+	validateJSON(t, schema, CommandDispatch{Delivery: CommandDispatchDeliveryConflict}, true)
+	validateJSON(t, schema, CommandDispatch{Delivery: CommandDispatchDeliveryNotSent}, true)
+	validateJSON(t, schema, CommandDispatch{Delivery: CommandDispatchDeliveryResponse, Command: &command}, true)
+	validateJSON(t, schema, CommandDispatch{Delivery: CommandDispatchDeliveryConflict, Command: &command}, false)
+	validateJSON(t, schema, CommandDispatch{Delivery: CommandDispatchDeliveryNotSent, Command: &command}, false)
+	validateJSON(t, schema, CommandDispatch{Delivery: CommandDispatchDeliveryResponse}, false)
+	validateJSON(t, schema, map[string]any{"delivery": "conflict"}, false)
+	validateJSON(t, schema, map[string]any{"delivery": "conflict", "command": nil, "extra": true}, false)
+}
+
 func TestExactLookupResultKeepsConflictSeparateFromCommandStatus(t *testing.T) {
 	schema := schemaFor(t, "ExactLookupResult")
 	command := CommandStatus{CommandId: uuid.New(), Status: CommandStatusStatusCompleted}

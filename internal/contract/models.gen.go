@@ -11,16 +11,19 @@ import (
 
 // Defines values for CommandDispatchDelivery.
 const (
-	NotSent  CommandDispatchDelivery = "notSent"
-	Response CommandDispatchDelivery = "response"
+	CommandDispatchDeliveryConflict CommandDispatchDelivery = "conflict"
+	CommandDispatchDeliveryNotSent  CommandDispatchDelivery = "notSent"
+	CommandDispatchDeliveryResponse CommandDispatchDelivery = "response"
 )
 
 // Valid indicates whether the value is a known member of the CommandDispatchDelivery enum.
 func (e CommandDispatchDelivery) Valid() bool {
 	switch e {
-	case NotSent:
+	case CommandDispatchDeliveryConflict:
 		return true
-	case Response:
+	case CommandDispatchDeliveryNotSent:
+		return true
+	case CommandDispatchDeliveryResponse:
 		return true
 	default:
 		return false

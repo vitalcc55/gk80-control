@@ -150,12 +150,16 @@ func (s *Service) ListTests(ctx context.Context, params contract.ListTestsParams
 
 func dispatch(result contract.CommandStatus, err error) (contract.CommandDispatch, error) {
 	if errors.Is(err, errCommandNotSent) {
-		return contract.CommandDispatch{Delivery: contract.NotSent}, nil
+		return contract.CommandDispatch{Delivery: contract.CommandDispatchDeliveryNotSent}, nil
 	}
 	if err != nil {
-		return contract.CommandDispatch{}, commandError(err)
+		err = commandError(err)
+		if errors.Is(err, ErrCommandConflict) {
+			return contract.CommandDispatch{Delivery: contract.CommandDispatchDeliveryConflict}, nil
+		}
+		return contract.CommandDispatch{}, err
 	}
-	return contract.CommandDispatch{Delivery: contract.Response, Command: &result}, nil
+	return contract.CommandDispatch{Delivery: contract.CommandDispatchDeliveryResponse, Command: &result}, nil
 }
 
 func commandError(err error) error {
@@ -182,9 +186,8 @@ func (s *Service) StartTest(ctx context.Context, testID string, command StartCom
 	return dispatch(s.core.StartTestInput(ctx, testID, command))
 }
 
-func (s *Service) StopTest(ctx context.Context, testID string, command StopCommandInput) (contract.CommandStatus, error) {
-	result, err := s.core.StopTestInput(ctx, testID, command)
-	return result, commandError(err)
+func (s *Service) StopTest(ctx context.Context, testID string, command StopCommandInput) (contract.CommandDispatch, error) {
+	return dispatch(s.core.StopTestInput(ctx, testID, command))
 }
 
 func (s *Service) ConfirmAction(ctx context.Context, testID, actionID string, command ConfirmCommandInput) (contract.CommandDispatch, error) {

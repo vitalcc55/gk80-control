@@ -684,7 +684,7 @@ func TestUnadmittedCommandReportsOnlyThatAttemptWasNotSent(t *testing.T) {
 		t.Fatalf("unadmitted command: sent=%v err=%v", sent, err)
 	}
 	delivery, err := dispatch(result, err)
-	if err != nil || delivery.Delivery != contract.NotSent || delivery.Command != nil {
+	if err != nil || delivery.Delivery != contract.CommandDispatchDeliveryNotSent || delivery.Command != nil {
 		t.Fatalf("delivery: %+v %v", delivery, err)
 	}
 }
@@ -1645,7 +1645,7 @@ func TestDemoSessionDoesNotAttributeOldCommandToConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	close(release)
-	if _, err := dispatch(contract.CommandStatus{}, <-done); !errors.Is(err, ErrCommandConflict) {
+	if result, err := dispatch(contract.CommandStatus{}, <-done); err != nil || result.Delivery != contract.CommandDispatchDeliveryConflict {
 		t.Fatalf("core conflict was not distinguished: %v", err)
 	}
 	session.mu.Lock()

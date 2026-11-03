@@ -1,3 +1,4 @@
+import type { CommandDispatch } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
 import {
   MeasurementChannel,
   MeasurementQuality,
@@ -11,10 +12,30 @@ import {
   TestRecordStage,
 } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
 import type { DesktopBridge, SessionBridge } from './bridge';
-import { CommandConflictError, type DemoService } from './demo-service';
+import { type DemoService, normalizeCommandDispatch } from './demo-service';
 
 function object(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+// Preserve duplicate-key evidence that JSON.parse would otherwise discard.
+function uniqueCommandKeys(body: string): boolean {
+  const containers: (Set<string> | null)[] = [];
+  const tokens = /("(?:\\.|[^"\\])*")\s*:|"(?:\\.|[^"\\])*"|[{}[\]]/g;
+  for (const match of body.matchAll(tokens)) {
+    const token = match[0];
+    if (token === '{') containers.push(new Set());
+    else if (token === '[') containers.push(null);
+    else if (token === '}' || token === ']') containers.pop();
+    else if (match[1] !== undefined) {
+      const current = containers[containers.length - 1];
+      if (!current) return false;
+      const key: unknown = JSON.parse(match[1]);
+      if (typeof key !== 'string' || current.has(key)) return false;
+      current.add(key);
+    }
+  }
+  return true;
 }
 
 function counter(value: unknown): boolean {
@@ -168,6 +189,7 @@ export function createBrowserBridge(
     headers?: Record<string, string>;
     signal?: AbortSignal;
     validate?: (value: unknown) => boolean;
+    command?: boolean;
   };
   function request<T>(path: string, options?: RequestOptions): Promise<T>;
   function request(path: string, options: RequestOptions & { empty: true }): Promise<void>;
@@ -202,19 +224,18 @@ export function createBrowserBridge(
       });
       ensureActive();
       if (!response.ok) {
-        if (response.status === 409) {
-          const failure = await response.text().catch(() => '');
-          ensureActive();
-          if (failure.trim() === '{"error":"command_conflict"}') throw new CommandConflictError();
-        }
         throw new Error('browser request unavailable');
       }
       if (options.empty) {
         if (response.status !== 204) throw new Error('invalid browser response');
         return;
       }
-      if (response.status === 204) throw new Error('invalid browser response');
-      const result: unknown = await response.json();
+      if (response.status === 204 || (options.command && response.status !== 200))
+        throw new Error('invalid browser response');
+      const body = options.command ? await response.text() : null;
+      ensureActive();
+      if (body !== null && !uniqueCommandKeys(body)) throw new Error('invalid browser response');
+      const result: unknown = body === null ? await response.json() : JSON.parse(body);
       ensureActive();
       if (typeof result !== 'object' || result === null || Array.isArray(result))
         throw new Error('invalid browser response');
@@ -236,9 +257,10 @@ export function createBrowserBridge(
     const value = query.toString();
     return value ? `?${value}` : '';
   };
-  const post = <T>(path: string, body?: unknown) =>
+  const post = <T>(path: string, body?: unknown, command = false) =>
     request<T>(path, {
       method: 'POST',
+      command,
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
 
@@ -325,12 +347,23 @@ export function createBrowserBridge(
     },
   };
   const service: DemoService = {
-    createTest: (command) => post('/api/tests', command),
+    createTest: (command) =>
+      post<CommandDispatch>('/api/tests', command, true).then(normalizeCommandDispatch),
     readiness: (testId) => request(`/api/tests/${segment(testId)}/readiness`),
-    startTest: (testId, command) => post(`/api/tests/${segment(testId)}/start`, command),
+    startTest: (testId, command) =>
+      post<CommandDispatch>(`/api/tests/${segment(testId)}/start`, command, true).then(
+        normalizeCommandDispatch,
+      ),
     confirmAction: (testId, actionId, command) =>
-      post(`/api/tests/${segment(testId)}/actions/${segment(actionId)}/confirm`, command),
-    stopTest: (testId, command) => post(`/api/tests/${segment(testId)}/stop`, command),
+      post<CommandDispatch>(
+        `/api/tests/${segment(testId)}/actions/${segment(actionId)}/confirm`,
+        command,
+        true,
+      ).then(normalizeCommandDispatch),
+    stopTest: (testId, command) =>
+      post<CommandDispatch>(`/api/tests/${segment(testId)}/stop`, command, true).then(
+        normalizeCommandDispatch,
+      ),
     command: (commandId) => request(`/api/commands/${segment(commandId)}`),
     lookupCommandExact: (databaseId, kind, testId, actionId, commandId, originalJSON) =>
       request(`/api/commands/${segment(commandId)}/lookup-exact`, {

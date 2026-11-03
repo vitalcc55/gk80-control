@@ -1417,6 +1417,7 @@ function ActiveLiveApp({
       null,
       originalJSON,
     ]);
+    const storageUnknownBeforeSend = memory.storageUnknown;
     const existing = pendingRef.current.find(
       (item) =>
         item.id === record.stopCommandId &&
@@ -1484,8 +1485,40 @@ function ActiveLiveApp({
         : 'Запрошена остановка. Ожидаем подтверждения ядра.',
     );
     try {
-      const result = await service.stopTest(record.testId, command);
+      const dispatch = await service.stopTest(record.testId, command);
       if (lifecycle.current !== generation) return;
+      if (
+        validDispatchEnvelope(dispatch) &&
+        dispatch.delivery === 'notSent' &&
+        dispatch.command === null
+      ) {
+        const current = pendingRef.current.find(
+          (item) => item.kind === 'stop' && pendingKey(item) === stopIdentity,
+        );
+        if (
+          !existing &&
+          !knownStatus &&
+          !storageUnknownBeforeSend &&
+          !memory.storageUnknown &&
+          observationVersion &&
+          current?.observationVersion === observationVersion &&
+          !current.status &&
+          countCalls('stop', record.testId) === 1
+        )
+          forget(current);
+        if (
+          currentTest.current === record.testId &&
+          !terminalStatus(stopStatuses.current.get(stopIdentity) ?? null)
+        )
+          setStopMessage(
+            'Новый запрос остановки не отправлен. Прежний исход необходимо проверить.',
+          );
+        return;
+      }
+      const result =
+        validDispatchEnvelope(dispatch) && dispatch.delivery === 'response'
+          ? dispatch.command
+          : null;
       if (!confirmedCommandStatus(result, record.stopCommandId, record.testId)) {
         if (
           currentTest.current === record.testId &&

@@ -3,7 +3,6 @@ package browser
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"mime"
 	"net/http"
@@ -18,7 +17,7 @@ import (
 type sessionOperations interface {
 	BeginSessionCheck() (string, error)
 	KeepAlive(context.Context, string) error
-	StopTest(context.Context, string, desktop.StopCommandInput) (contract.CommandStatus, error)
+	StopTest(context.Context, string, desktop.StopCommandInput) (contract.CommandDispatch, error)
 }
 
 type browserOperations interface {
@@ -161,10 +160,6 @@ func newRoutes(s *browserSession, service browserOperations, bootstrap bootstrap
 		}
 		status, err := service.StopTest(r.Context(), r.PathValue("testId"), input)
 		if err != nil {
-			if errors.Is(err, desktop.ErrCommandConflict) {
-				s.reply(w, r, http.StatusConflict, map[string]string{"error": "command_conflict"})
-				return
-			}
 			s.reply(w, r, http.StatusServiceUnavailable, map[string]string{"error": "command outcome unavailable"})
 			return
 		}

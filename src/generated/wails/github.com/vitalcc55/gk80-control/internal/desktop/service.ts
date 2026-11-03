@@ -100,7 +100,7 @@ export function StartTest(testID: string, command: $models.StartCommandInput): $
     return $Call.ByID(4013822117, testID, command);
 }
 
-export function StopTest(testID: string, command: $models.StopCommandInput): $CancellablePromise<contract$0.CommandStatus> {
+export function StopTest(testID: string, command: $models.StopCommandInput): $CancellablePromise<contract$0.CommandDispatch> {
     return $Call.ByID(106225571, testID, command);
 }
 
