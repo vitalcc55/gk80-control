@@ -22,7 +22,11 @@ import type {
 import type { TestParameters as FormParameters } from '../model';
 import type { SessionBridge } from './bridge';
 import { type Pending, pendingKey, terminalStatus } from './command-attempt-state';
-import { type CommandCoordinator, createCommandCoordinator } from './command-coordinator';
+import {
+  type CommandCoordinator,
+  commandObservation,
+  createCommandCoordinator,
+} from './command-coordinator';
 import type { DemoService } from './demo-service';
 import { History } from './History';
 import { LiveRun } from './LiveRun';
@@ -234,16 +238,10 @@ function ActiveLiveApp({
     blocking,
   } = state;
   const { stop, lookup, forget, showMessage } = coordinator;
-  const snapshot = connection?.view.snapshot ?? lastSnapshot;
-  const record = snapshot?.activeTest ?? null;
+  const { snapshot, record, fresh } = commandObservation({ connection, lastSnapshot });
   const activeId = record?.testId;
   const stage = record?.stage;
   const revision = snapshot?.revision;
-  const fresh =
-    !!connection &&
-    !!snapshot &&
-    Number.isSafeInteger(snapshot.revision) &&
-    Number.isSafeInteger(snapshot.lastEventSequence);
   const commandMessageRegion = useRef<HTMLDivElement>(null);
   const stopMessageRegion = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {

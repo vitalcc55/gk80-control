@@ -5,10 +5,8 @@ const calls: Record<Kind, Map<string, number>> = {
   stopLookup: new Map(),
 };
 const listeners = new Set<() => void>();
-let revision = 0;
 
 function changed() {
-  revision += 1;
   for (const listener of listeners) listener();
 }
 
@@ -39,8 +37,4 @@ export function subscribeCalls(listener: () => void): () => void {
   return () => {
     listeners.delete(listener);
   };
-}
-
-export function callRevision(): number {
-  return revision;
 }

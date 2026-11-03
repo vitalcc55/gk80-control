@@ -55,6 +55,21 @@ export type CommandInput = {
   lastSnapshot: Snapshot | null;
   isCurrentConnection: (connection: SessionProjection['connection']) => boolean;
 };
+
+// Consume the accepted projection from #15; no clocks, ordering or lease policy here.
+export function commandObservation({
+  connection,
+  lastSnapshot,
+}: Pick<CommandInput, 'connection' | 'lastSnapshot'>) {
+  const snapshot = connection?.view.snapshot ?? lastSnapshot;
+  const record = snapshot?.activeTest ?? null;
+  const fresh =
+    !!connection &&
+    !!snapshot &&
+    Number.isSafeInteger(snapshot.revision) &&
+    Number.isSafeInteger(snapshot.lastEventSequence);
+  return { connection, snapshot, record, fresh };
+}
 type Identity = {
   hostRunId: string;
   backendRunId: string;
@@ -94,15 +109,7 @@ export function createCommandCoordinator({
   let reconcileNeeded = false;
   let stopCalls: (() => void) | undefined;
   function currentView() {
-    const connection = input?.connection ?? null;
-    const snapshot = connection?.view.snapshot ?? input?.lastSnapshot ?? null;
-    const record = snapshot?.activeTest ?? null;
-    const fresh =
-      !!connection &&
-      !!snapshot &&
-      Number.isSafeInteger(snapshot.revision) &&
-      Number.isSafeInteger(snapshot.lastEventSequence);
-    return { connection, snapshot, record, fresh };
+    return commandObservation(input ?? { connection: null, lastSnapshot: null });
   }
   function legacyBlocked() {
     return (
