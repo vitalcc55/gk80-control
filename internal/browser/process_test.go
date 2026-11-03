@@ -355,7 +355,7 @@ func TestBrowserRoutesRunAndReopenCore(t *testing.T) {
 	start := contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: ready.Revision, ValveClosed: true, ConnectionConfirmed: true}
 	var started contract.CommandDispatch
 	processRequest(t, p, http.MethodPost, "/api/tests/"+id+"/start", start, &started, http.StatusOK)
-	if started.Delivery != contract.Response || started.Command == nil || started.Command.Status != contract.CommandStatusStatusAccepted {
+	if started.Delivery != contract.CommandDispatchDeliveryResponse || started.Command == nil || started.Command.Status != contract.CommandStatusStatusAccepted {
 		t.Fatalf("start: %+v", started)
 	}
 	startBody, err := json.Marshal(start)
@@ -376,7 +376,7 @@ func TestBrowserRoutesRunAndReopenCore(t *testing.T) {
 	confirm := contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: view.Snapshot.Revision}
 	var confirmed contract.CommandDispatch
 	processRequest(t, p, http.MethodPost, "/api/tests/"+id+"/actions/"+view.Snapshot.PendingAction.ActionId.String()+"/confirm", confirm, &confirmed, http.StatusOK)
-	if confirmed.Delivery != contract.Response || confirmed.Command == nil || confirmed.Command.Status != contract.CommandStatusStatusCompleted {
+	if confirmed.Delivery != contract.CommandDispatchDeliveryResponse || confirmed.Command == nil || confirmed.Command.Status != contract.CommandStatusStatusCompleted {
 		t.Fatalf("confirm: %+v", confirmed)
 	}
 	confirmBody, err := json.Marshal(confirm)
@@ -404,7 +404,12 @@ func TestBrowserRoutesRunAndReopenCore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	processRequest(t, p, http.MethodPost, "/api/tests/"+id+"/stop", stop, &command, http.StatusOK)
+	var stopped contract.CommandDispatch
+	processRequest(t, p, http.MethodPost, "/api/tests/"+id+"/stop", stop, &stopped, http.StatusOK)
+	if stopped.Delivery != contract.CommandDispatchDeliveryResponse || stopped.Command == nil {
+		t.Fatalf("stop dispatch: %+v", stopped)
+	}
+	command = *stopped.Command
 	if command.Status != contract.CommandStatusStatusAccepted && command.Status != contract.CommandStatusStatusCompleted {
 		t.Fatalf("stop: %+v", command)
 	}
@@ -463,14 +468,14 @@ func TestBrowserRoutesRunAndReopenCore(t *testing.T) {
 	}
 	changed := create
 	changed.Parameters.PmaxPa++
-	var conflict map[string]string
-	processRequest(t, p, http.MethodPost, "/api/tests", changed, &conflict, http.StatusConflict)
-	if conflict["error"] != "command_conflict" {
+	var conflict contract.CommandDispatch
+	processRequest(t, p, http.MethodPost, "/api/tests", changed, &conflict, http.StatusOK)
+	if conflict.Delivery != contract.CommandDispatchDeliveryConflict || conflict.Command != nil {
 		t.Fatalf("conflict: %+v", conflict)
 	}
 	var created contract.CommandDispatch
 	processRequest(t, p, http.MethodPost, "/api/tests", create, &created, http.StatusOK)
-	if created.Delivery != contract.Response || created.Command == nil || created.Command.CommandId != create.CommandId || created.Command.Status != contract.CommandStatusStatusCompleted || created.Command.TestId == nil || created.Command.TestId.String() != id {
+	if created.Delivery != contract.CommandDispatchDeliveryResponse || created.Command == nil || created.Command.CommandId != create.CommandId || created.Command.Status != contract.CommandStatusStatusCompleted || created.Command.TestId == nil || created.Command.TestId.String() != id {
 		t.Fatalf("replay: %+v", created)
 	}
 	var history contract.TestList
@@ -517,8 +522,8 @@ func TestBrowserRoutesRunAndReopenCore(t *testing.T) {
 	case http.StatusServiceUnavailable:
 		t.Log("historical Stop replay remains unconfirmed by the owner")
 	case http.StatusOK:
-		var repeated contract.CommandStatus
-		if err := json.Unmarshal(stopBody, &repeated); err != nil || repeated.CommandId != stopID || repeated.TestId == nil || repeated.TestId.String() != id || repeated.Status != contract.CommandStatusStatusCompleted {
+		var repeated contract.CommandDispatch
+		if err := json.Unmarshal(stopBody, &repeated); err != nil || repeated.Delivery != contract.CommandDispatchDeliveryResponse || repeated.Command == nil || repeated.Command.CommandId != stopID || repeated.Command.TestId == nil || repeated.Command.TestId.String() != id || repeated.Command.Status != contract.CommandStatusStatusCompleted {
 			t.Fatalf("historical stop replay: %s, %v", stopBody, err)
 		}
 	default:

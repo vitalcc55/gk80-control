@@ -267,9 +267,13 @@ func TestDispatchDistinguishesConfirmedConflictFromUnknownOutcome(t *testing.T) 
 		{"other conflict", &transport.RequestError{Status: 409, Code: "busy"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := dispatch(contract.CommandStatus{}, tc.failure)
-			if err == nil || errors.Is(err, ErrCommandConflict) != tc.conflict {
-				t.Fatalf("classification: %v", err)
+			result, err := dispatch(contract.CommandStatus{}, tc.failure)
+			if tc.conflict {
+				if err != nil || result.Delivery != contract.CommandDispatchDeliveryConflict || result.Command != nil {
+					t.Fatalf("confirmed conflict: %+v %v", result, err)
+				}
+			} else if err == nil {
+				t.Fatalf("unknown outcome accepted: %+v", result)
 			}
 		})
 	}

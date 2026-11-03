@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { type ComponentProps, StrictMode } from 'react';
 import { beforeEach, expect, it, vi } from 'vitest';
 import type { DesktopBridge, SessionBridge } from '../src/desktop/bridge';
+import { createBrowserBridge } from '../src/desktop/browser-bridge';
 import { DesktopApp as RealDesktopApp } from '../src/desktop/DesktopApp';
 import { CommandConflictError } from '../src/desktop/demo-service';
 import { History } from '../src/desktop/History';
@@ -93,6 +94,8 @@ vi.mock(
     WaitConnection: vi.fn(),
   }),
 );
+
+const stopResponse = <T,>(command: T) => ({ delivery: 'response', command });
 
 const host = '11111111-1111-4111-8111-111111111111';
 const backend = '22222222-2222-4222-8222-222222222222';
@@ -404,11 +407,13 @@ it('keeps Stop available when the legacy command list cannot be read', async () 
     commandId: stopId,
     status: CommandStatusStatus.CommandStatusStatusUnknown,
   });
-  api.stop.mockResolvedValue({
-    commandId: stopId,
-    testId,
-    status: CommandStatusStatus.CommandStatusStatusAccepted,
-  });
+  api.stop.mockResolvedValue(
+    stopResponse({
+      commandId: stopId,
+      testId,
+      status: CommandStatusStatus.CommandStatusStatusAccepted,
+    }),
+  );
   render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   await screen.findByText(/Не удалось прочитать прежний список команд/i);
   await userEvent
@@ -524,11 +529,13 @@ it('tracks Stop separately from a restored ordinary command with the same identi
     testId,
     status: CommandStatusStatus.CommandStatusStatusUnknown,
   });
-  api.stop.mockResolvedValue({
-    commandId: stopId,
-    testId,
-    status: CommandStatusStatus.CommandStatusStatusCompleted,
-  });
+  api.stop.mockResolvedValue(
+    stopResponse({
+      commandId: stopId,
+      testId,
+      status: CommandStatusStatus.CommandStatusStatusCompleted,
+    }),
+  );
   const mounted = render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   const stop = await screen.findByRole('button', { name: 'Остановить испытание' });
   await userEvent.setup().click(stop);
@@ -904,11 +911,13 @@ it('keeps stop available when diagnostics degrade during a live test', async () 
       linkValidForMs: 6000,
     }),
   };
-  api.stop.mockResolvedValue({
-    commandId: stopId,
-    status: CommandStatusStatus.CommandStatusStatusAccepted,
-    testId,
-  });
+  api.stop.mockResolvedValue(
+    stopResponse({
+      commandId: stopId,
+      status: CommandStatusStatus.CommandStatusStatusAccepted,
+      testId,
+    }),
+  );
   render(<DesktopApp bridge={desktop} session={session} />);
   const stop = await screen.findByRole('button', { name: 'Остановить испытание' });
   act(() => notify({ ...ready, revision: 2, diagnosticsDegraded: true }));
@@ -1520,7 +1529,7 @@ it('distinguishes a Stop lookup conflict from rejecting the actual request', asy
     }),
   };
   api.exact.mockResolvedValue({ outcome: 'conflict', command: null });
-  api.stop.mockResolvedValue({ commandId: stopId, testId, status: 'accepted' });
+  api.stop.mockResolvedValue(stopResponse({ commandId: stopId, testId, status: 'accepted' }));
   render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   await userEvent
     .setup()
@@ -1562,7 +1571,7 @@ it('keeps a storage conflict visible after the direct Stop succeeds', async () =
     finish = resolve;
   });
   api.exact.mockResolvedValue({ outcome: 'conflict', command: null });
-  api.stop.mockReturnValue(response);
+  api.stop.mockReturnValue(response.then(stopResponse));
   render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   await userEvent
     .setup()
@@ -1603,7 +1612,7 @@ it('retains a confirmed Stop in volatile memory after remount', async () => {
       linkValidForMs: 6000,
     }),
   };
-  api.stop.mockResolvedValue({ commandId: stopId, testId, status: 'completed' });
+  api.stop.mockResolvedValue(stopResponse({ commandId: stopId, testId, status: 'completed' }));
   api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
   const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
     throw new Error('unavailable');
@@ -1772,7 +1781,7 @@ it('does not give an old Stop without contents the result of a new attempt', asy
     }),
   };
   api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
-  api.stop.mockResolvedValue({ commandId: stopId, testId, status: 'completed' });
+  api.stop.mockResolvedValue(stopResponse({ commandId: stopId, testId, status: 'completed' }));
   render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   await userEvent
     .setup()
@@ -1825,7 +1834,7 @@ it('does not attribute another Stop with the same ID but different JSON to the c
   const stop = new Promise<CommandStatus>((resolve) => {
     finishStop = resolve;
   });
-  api.stop.mockReturnValue(stop);
+  api.stop.mockReturnValue(stop.then(stopResponse));
   try {
     render(
       <LiveApp
@@ -1922,69 +1931,85 @@ it('does not send another creation after an unknown response and remount', async
   expect(screen.getByText(/Команда:/)).toBeTruthy();
 }, 10000);
 
-it('does not attribute a previous command to a conflicting browser creation', async () => {
-  const snapshot: Snapshot = {
-    apiVersion: 'v1',
-    backendRunId: backend,
-    revision: 0,
-    lastEventSequence: 0,
-    activeTest: null,
-    pendingAction: null,
-    measurements: [],
-  };
-  const bridge: SessionBridge = {
-    beginSessionCheck: async () => 'ticket',
-    keepAlive: async () => {},
-    sessionView: async () => ({
-      connection: {
-        hostRunId: host,
-        revision: 1,
-        status: ConnectionStateStatus.Live,
-        linkValid: true,
-        leaseAcquireUnknown: false,
-        streamGeneration: 0,
-      },
-      snapshot,
-      validForMs: 6000,
-      linkValidForMs: 6000,
-    }),
-  };
-  let rejectCreate: (reason: Error) => void = () => {};
-  const response = new Promise<CommandDispatch>((_resolve, reject) => {
-    rejectCreate = reject;
-  });
-  api.list.mockResolvedValue({ items: [], nextAfter: null });
-  api.create.mockReturnValue(response);
-  api.command.mockImplementation(async (id: string) => ({
-    commandId: id,
-    testId,
-    status: CommandStatusStatus.CommandStatusStatusCompleted,
-  }));
-  api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
-  const browser = { ...desktopDemoService };
-  render(<LiveApp session={bridge} service={browser} hostRunId={host} backendRunId={backend} />);
-  const user = userEvent.setup();
-  const newTest = await screen.findByRole('button', { name: 'Новое испытание' });
-  await waitFor(() => expect(newTest.hasAttribute('disabled')).toBe(false));
-  await user.click(newTest);
-  const valve = screen.getByLabelText('Обозначение или наименование клапана') as HTMLInputElement;
-  await user.type(valve, 'К-1');
-  await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
-  await user.type(screen.getByLabelText(/производителя, Па/), '10000');
-  await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
-  await screen.findByText(/Команда: исход неизвестен/);
-  await user.click(screen.getByRole('button', { name: 'Проверить состояние' }));
-  expect(screen.queryByText(/Команда: выполнена/)).toBeNull();
-  expect(valve.value).toBe('К-1');
-  await act(async () => {
-    rejectCreate(new CommandConflictError());
-    await response.catch(() => {});
-  });
-  await screen.findByText(/идентификатор.*другой команде/i);
-  expect(screen.queryByText(/Команда: выполнена/)).toBeNull();
-  expect(valve.value).toBe('К-1');
-  expect(api.create).toHaveBeenCalledOnce();
-}, 10000);
+it.each(['wails', 'browser'])(
+  'does not attribute a previous command to a conflicting %s creation',
+  async (adapter) => {
+    const snapshot: Snapshot = {
+      apiVersion: 'v1',
+      backendRunId: backend,
+      revision: 0,
+      lastEventSequence: 0,
+      activeTest: null,
+      pendingAction: null,
+      measurements: [],
+    };
+    const bridge: SessionBridge = {
+      beginSessionCheck: async () => 'ticket',
+      keepAlive: async () => {},
+      sessionView: async () => ({
+        connection: {
+          hostRunId: host,
+          revision: 1,
+          status: ConnectionStateStatus.Live,
+          linkValid: true,
+          leaseAcquireUnknown: false,
+          streamGeneration: 0,
+        },
+        snapshot,
+        validForMs: 6000,
+        linkValidForMs: 6000,
+      }),
+    };
+    let resolveCreate: (value: CommandDispatch) => void = () => {};
+    const response = new Promise<CommandDispatch>((resolve) => {
+      resolveCreate = resolve;
+    });
+    api.list.mockResolvedValue({ items: [], nextAfter: null });
+    api.create.mockReturnValue(response);
+    api.command.mockImplementation(async (id: string) => ({
+      commandId: id,
+      testId,
+      status: CommandStatusStatus.CommandStatusStatusCompleted,
+    }));
+    api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
+    const fetcher = vi.fn<typeof fetch>(async () => Response.json(await response));
+    const browser = createBrowserBridge(
+      { generation: 'test', signal: new AbortController().signal },
+      fetcher,
+    ).service;
+    const service =
+      adapter === 'browser'
+        ? { ...desktopDemoService, createTest: browser.createTest }
+        : desktopDemoService;
+    render(<LiveApp session={bridge} service={service} hostRunId={host} backendRunId={backend} />);
+    const user = userEvent.setup();
+    const newTest = await screen.findByRole('button', { name: 'Новое испытание' });
+    await waitFor(() => expect(newTest.hasAttribute('disabled')).toBe(false));
+    await user.click(newTest);
+    const valve = screen.getByLabelText('Обозначение или наименование клапана') as HTMLInputElement;
+    await user.type(valve, 'К-1');
+    await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
+    await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+    await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
+    await screen.findByText(/Команда: исход неизвестен/);
+    await user.click(screen.getByRole('button', { name: 'Проверить состояние' }));
+    expect(screen.queryByText(/Команда: выполнена/)).toBeNull();
+    expect(valve.value).toBe('К-1');
+    await act(async () => {
+      resolveCreate({
+        delivery: CommandDispatchDelivery.CommandDispatchDeliveryConflict,
+        command: null,
+      });
+      await response;
+    });
+    await screen.findByText(/идентификатор.*другой команде/i);
+    expect(screen.queryByText(/Команда: выполнена/)).toBeNull();
+    expect(valve.value).toBe('К-1');
+    if (adapter === 'browser') expect(fetcher).toHaveBeenCalledOnce();
+    else expect(api.create).toHaveBeenCalledOnce();
+  },
+  10000,
+);
 
 it('keeps a browser creation unknown after a lost response and service replacement', async () => {
   const bridge: SessionBridge = {
@@ -2181,7 +2206,7 @@ it('does not replace a confirmed command with a late unknown exact lookup', asyn
   if (!sent) throw new Error('create was not sent');
   await act(async () => {
     finishCreate({
-      delivery: CommandDispatchDelivery.Response,
+      delivery: CommandDispatchDelivery.CommandDispatchDeliveryResponse,
       command: {
         commandId: sent.commandId,
         testId,
@@ -2413,7 +2438,7 @@ it('checks an exact ordinary attempt even when its ID is reserved for Stop', asy
   };
   api.list.mockResolvedValue({ items: [], nextAfter: null });
   api.exact.mockResolvedValue({ outcome: 'conflict', command: null });
-  api.stop.mockResolvedValue({ commandId: stopId, testId, status: 'completed' });
+  api.stop.mockResolvedValue(stopResponse({ commandId: stopId, testId, status: 'completed' }));
   render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   await screen.findByText(/Идентификатор принадлежит другой команде/);
   expect(api.exact).toHaveBeenCalledWith(
@@ -2466,7 +2491,7 @@ it('can confirm Stop while an exact lookup with the same ID is waiting', async (
       ? { outcome: 'match', command: { commandId: stopId, testId, status: 'completed' } }
       : held,
   );
-  api.stop.mockResolvedValue({ commandId: stopId, testId, status: 'accepted' });
+  api.stop.mockResolvedValue(stopResponse({ commandId: stopId, testId, status: 'accepted' }));
   const view = render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   await waitFor(() => expect(api.exact).toHaveBeenCalled());
   await userEvent.setup().click(screen.getByRole('button', { name: 'Остановить испытание' }));
@@ -2516,7 +2541,7 @@ it('keeps the first unresolved Stop when a later Stop attempt is rejected', asyn
   api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
   api.stop
     .mockRejectedValueOnce(new Error('first response lost'))
-    .mockRejectedValueOnce(new CommandConflictError());
+    .mockResolvedValueOnce({ delivery: 'conflict', command: null });
   render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   const user = userEvent.setup();
   await user.click(await screen.findByRole('button', { name: 'Остановить испытание' }));
@@ -2572,7 +2597,7 @@ it('shows the restored terminal Stop status when the operator requests it again'
   const response = new Promise<{ commandId: string; testId: string; status: string }>((resolve) => {
     finish = resolve;
   });
-  api.stop.mockReturnValue(response);
+  api.stop.mockReturnValue(response.then(stopResponse));
   const view = render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   await screen.findByText(/Команда: выполнена/);
   await userEvent
@@ -2621,8 +2646,8 @@ it.each(['failed', 'rejected'])(
       finishRetry = resolve;
     });
     api.stop
-      .mockResolvedValueOnce({ commandId: stopId, testId, status })
-      .mockReturnValueOnce(retry);
+      .mockResolvedValueOnce(stopResponse({ commandId: stopId, testId, status }))
+      .mockReturnValueOnce(retry.then(stopResponse));
     const view = render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
     const user = userEvent.setup();
     await user.click(await screen.findByRole('button', { name: 'Остановить испытание' }));
@@ -2670,7 +2695,9 @@ it('does not let a late rejected Stop replace a confirmed finished outcome', asy
   });
   const completed = { commandId: stopId, testId, status: 'completed' };
   api.exact.mockResolvedValue({ outcome: 'match', command: completed });
-  api.stop.mockResolvedValueOnce(completed).mockReturnValueOnce(second);
+  api.stop
+    .mockResolvedValueOnce(stopResponse(completed))
+    .mockReturnValueOnce(second.then(stopResponse));
   render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   const user = userEvent.setup();
   await user.click(await screen.findByRole('button', { name: 'Остановить испытание' }));
@@ -2728,7 +2755,9 @@ it('does not discard a Stop observation while an earlier request is still in fli
     rejectFirst = reject;
   });
   api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
-  api.stop.mockReturnValueOnce(first).mockRejectedValueOnce(new CommandConflictError());
+  api.stop
+    .mockReturnValueOnce(first)
+    .mockResolvedValueOnce({ delivery: 'conflict', command: null });
   render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   const user = userEvent.setup();
   await user.click(await screen.findByRole('button', { name: 'Остановить испытание' }));
@@ -2776,14 +2805,19 @@ it.each(['conflict', 'wrongTest', 'badStatus'])('does not confirm Stop from %s',
     testId: '77777777-7777-4777-8777-777777777777',
     status: 'completed',
   });
-  if (mode === 'conflict') api.stop.mockRejectedValue(new CommandConflictError());
+  if (mode === 'conflict') api.stop.mockResolvedValue({ delivery: 'conflict', command: null });
   else if (mode === 'wrongTest')
-    api.stop.mockResolvedValue({
-      commandId: stopId,
-      testId: '77777777-7777-4777-8777-777777777777',
-      status: 'completed',
-    });
-  else api.stop.mockResolvedValue({ commandId: stopId, testId, status: 'completed', reason: {} });
+    api.stop.mockResolvedValue(
+      stopResponse({
+        commandId: stopId,
+        testId: '77777777-7777-4777-8777-777777777777',
+        status: 'completed',
+      }),
+    );
+  else
+    api.stop.mockResolvedValue(
+      stopResponse({ commandId: stopId, testId, status: 'completed', reason: {} }),
+    );
   render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   await userEvent
     .setup()
@@ -2967,7 +3001,7 @@ it('does not report an unpersisted Stop when an ordinary browser receipt cannot 
   });
   api.list.mockResolvedValue({ items: [], nextAfter: null });
   api.create.mockImplementation(async (input: CreateCommandInput) => ({
-    delivery: CommandDispatchDelivery.Response,
+    delivery: CommandDispatchDelivery.CommandDispatchDeliveryResponse,
     command: {
       commandId: input.commandId,
       testId,
@@ -3059,7 +3093,11 @@ it.each(['rejected response', 'not sent response'] as const)(
     await screen.findByText(/Действие подтверждено ядром; ожидаем состояние/);
     await act(async () => {
       if (lateOutcome === 'rejected response') rejectCreate(new Error('response lost'));
-      else finishCreate({ delivery: CommandDispatchDelivery.NotSent, command: null });
+      else
+        finishCreate({
+          delivery: CommandDispatchDelivery.CommandDispatchDeliveryNotSent,
+          command: null,
+        });
       await delayedCreate.catch(() => {});
     });
     expect(screen.queryByText(/Исход команды пока неизвестен/)).toBeNull();
@@ -3693,12 +3731,14 @@ it('allows stopping while another command is unresolved and reports a confirmed 
     status: CommandStatusStatus.CommandStatusStatusUnknown,
     testId,
   });
-  api.stop.mockResolvedValue({
-    commandId: stopId,
-    status: CommandStatusStatus.CommandStatusStatusFailed,
-    testId,
-    reason: 'simulator_stop_failed',
-  });
+  api.stop.mockResolvedValue(
+    stopResponse({
+      commandId: stopId,
+      status: CommandStatusStatus.CommandStatusStatusFailed,
+      testId,
+      reason: 'simulator_stop_failed',
+    }),
+  );
   render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   const user = userEvent.setup();
   const stop = await screen.findByRole('button', { name: 'Остановить испытание' });
@@ -3750,7 +3790,7 @@ it('does not report an unknown stop after its confirmed response', async () => {
     },
   );
   api.command.mockReturnValue(lookup);
-  api.stop.mockReturnValue(stop);
+  api.stop.mockReturnValue(stop.then(stopResponse));
   render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   await userEvent
     .setup()
@@ -3807,11 +3847,13 @@ it('keeps a storage warning when stop fails', async () => {
     finishLookup = resolve;
   });
   api.command.mockReturnValue(heldLookup);
-  api.stop.mockResolvedValue({
-    commandId: stopId,
-    testId,
-    status: CommandStatusStatus.CommandStatusStatusFailed,
-  });
+  api.stop.mockResolvedValue(
+    stopResponse({
+      commandId: stopId,
+      testId,
+      status: CommandStatusStatus.CommandStatusStatusFailed,
+    }),
+  );
   const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
     throw new Error('unavailable');
   });
@@ -3889,11 +3931,13 @@ it('clears an unknown stop when the separate stop check confirms it', async () =
     if (!allowConfirmation) throw new Error('temporarily unavailable');
     return stopCheck;
   });
-  api.stop.mockResolvedValue({
-    commandId: stopId,
-    testId,
-    status: CommandStatusStatus.CommandStatusStatusAccepted,
-  });
+  api.stop.mockResolvedValue(
+    stopResponse({
+      commandId: stopId,
+      testId,
+      status: CommandStatusStatus.CommandStatusStatusAccepted,
+    }),
+  );
   const view = render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   await waitFor(() => expect(api.command).toHaveBeenCalledWith(oldId));
   await userEvent
@@ -4015,11 +4059,13 @@ it('offers the reserved stop after remount even when heartbeat cannot be confirm
       linkValidForMs: 0,
     }),
   };
-  api.stop.mockResolvedValue({
-    commandId: stopId,
-    status: CommandStatusStatus.CommandStatusStatusAccepted,
-    testId,
-  });
+  api.stop.mockResolvedValue(
+    stopResponse({
+      commandId: stopId,
+      status: CommandStatusStatus.CommandStatusStatusAccepted,
+      testId,
+    }),
+  );
   render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   const stop = await screen.findByRole('button', { name: 'Остановить испытание' });
   expect(screen.getByText('Состояние управления не подтверждено')).toBeTruthy();
@@ -4056,11 +4102,13 @@ it('continues checking Stop after the interrupted result and keeps saving separa
       linkValidForMs: 6000,
     }),
   };
-  api.stop.mockResolvedValue({
-    commandId: stopId,
-    status: CommandStatusStatus.CommandStatusStatusAccepted,
-    testId,
-  });
+  api.stop.mockResolvedValue(
+    stopResponse({
+      commandId: stopId,
+      status: CommandStatusStatus.CommandStatusStatusAccepted,
+      testId,
+    }),
+  );
   api.command.mockImplementation(async () => ({
     commandId: stopId,
     status:
@@ -4188,7 +4236,7 @@ it('keeps an earlier unknown Stop observable when stopping a later test', async 
     commandId: id,
     status: CommandStatusStatus.CommandStatusStatusUnknown,
   }));
-  api.stop.mockReturnValue(new Promise(() => {}));
+  api.stop.mockReturnValue(new Promise(() => {}).then(stopResponse));
   render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   await userEvent
     .setup()
@@ -4233,11 +4281,13 @@ it('keeps Stop available and reserves its identifier when the command list is fu
     }),
   };
   api.command.mockReturnValue(new Promise(() => {}));
-  api.stop.mockResolvedValue({
-    commandId: stopId,
-    status: CommandStatusStatus.CommandStatusStatusAccepted,
-    testId,
-  });
+  api.stop.mockResolvedValue(
+    stopResponse({
+      commandId: stopId,
+      status: CommandStatusStatus.CommandStatusStatusAccepted,
+      testId,
+    }),
+  );
   render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   await userEvent
     .setup()
@@ -4279,11 +4329,13 @@ it('keeps an unpersisted Stop observable across remount when session storage fai
     commandId: id,
     status: CommandStatusStatus.CommandStatusStatusUnknown,
   }));
-  api.stop.mockResolvedValue({
-    commandId: stopId,
-    status: CommandStatusStatus.CommandStatusStatusAccepted,
-    testId,
-  });
+  api.stop.mockResolvedValue(
+    stopResponse({
+      commandId: stopId,
+      status: CommandStatusStatus.CommandStatusStatusAccepted,
+      testId,
+    }),
+  );
   const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
     throw new Error('unavailable');
   });
@@ -4351,7 +4403,7 @@ it('preserves a newer shared attempt when restoring an unpersisted Stop', async 
       ? { outcome: 'match', command: { commandId: stopId, status: 'accepted', testId } }
       : { outcome: 'unknown', command: null },
   );
-  api.stop.mockResolvedValue({ commandId: stopId, status: 'accepted', testId });
+  api.stop.mockResolvedValue(stopResponse({ commandId: stopId, status: 'accepted', testId }));
   const originalSet = Storage.prototype.setItem;
   const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (
     this: Storage,
@@ -4879,11 +4931,13 @@ it('merges the previously unread command list before storing an emergency Stop',
     }),
   };
   api.command.mockReturnValue(new Promise(() => {}));
-  api.stop.mockResolvedValue({
-    commandId: stopId,
-    status: CommandStatusStatus.CommandStatusStatusAccepted,
-    testId,
-  });
+  api.stop.mockResolvedValue(
+    stopResponse({
+      commandId: stopId,
+      status: CommandStatusStatus.CommandStatusStatusAccepted,
+      testId,
+    }),
+  );
   render(
     <StrictMode>
       <LiveApp session={bridge} hostRunId={host} backendRunId={backend} />
@@ -4949,4 +5003,316 @@ it('can retry reading an unavailable command list without sending a command', as
     true,
   );
   expect(api.create).not.toHaveBeenCalled();
+});
+
+it.each(['create', 'start', 'confirm', 'stop'] as const)(
+  'normalizes a typed direct %s conflict through both adapters',
+  async (kind) => {
+    const response = { delivery: 'conflict', command: null };
+    api[kind].mockResolvedValue(response);
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(response));
+    const browser = createBrowserBridge(
+      { generation: 'test', signal: new AbortController().signal },
+      fetcher,
+    ).service;
+    const invoke = (service: typeof desktopDemoService) => {
+      switch (kind) {
+        case 'create':
+          return service.createTest({
+            commandId: 'id',
+            expectedRevision: 0,
+            parameters: record.parameters,
+          });
+        case 'start':
+          return service.startTest(testId, {
+            commandId: 'id',
+            expectedRevision: 0,
+            valveClosed: true,
+            connectionConfirmed: true,
+          });
+        case 'confirm':
+          return service.confirmAction(testId, actionId, { commandId: 'id', expectedRevision: 0 });
+        case 'stop':
+          return service.stopTest(testId, { commandId: 'id' });
+      }
+    };
+    await expect(invoke(desktopDemoService)).rejects.toBeInstanceOf(CommandConflictError);
+    await expect(invoke(browser)).rejects.toBeInstanceOf(CommandConflictError);
+    expect(api[kind]).toHaveBeenCalledOnce();
+    expect(fetcher).toHaveBeenCalledOnce();
+    const paths = {
+      create: '/api/tests',
+      start: `/api/tests/${testId}/start`,
+      confirm: `/api/tests/${testId}/actions/${actionId}/confirm`,
+      stop: `/api/tests/${testId}/stop`,
+    };
+    expect(fetcher.mock.calls[0]?.[0]).toBe(paths[kind]);
+    const sent = api[kind].mock.calls[0]?.at(-1);
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual(sent);
+    const expectedArgs =
+      kind === 'create' ? [sent] : kind === 'confirm' ? [testId, actionId, sent] : [testId, sent];
+    expect(api[kind]).toHaveBeenCalledWith(...expectedArgs);
+
+    for (const value of [
+      { delivery: 'notSent', command: null },
+      { delivery: 'response', command: { commandId: 'id', status: 'completed' } },
+      { delivery: 'conflict' },
+      { delivery: 'conflict', command: null, extra: true },
+      { delivery: 'conflict', command: {} },
+    ]) {
+      api[kind].mockResolvedValueOnce(value);
+      fetcher.mockResolvedValueOnce(Response.json(value));
+      await expect(invoke(desktopDemoService)).resolves.toEqual(value);
+      await expect(invoke(browser)).resolves.toEqual(value);
+    }
+    api[kind].mockRejectedValueOnce(new Error('response lost'));
+    fetcher.mockRejectedValueOnce(new Error('response lost'));
+    for (const service of [desktopDemoService, browser]) {
+      const error: unknown = await invoke(service).catch((failure: unknown) => failure);
+      expect(error).toBeInstanceOf(Error);
+      expect(error).not.toBeInstanceOf(CommandConflictError);
+    }
+    expect(api[kind]).toHaveBeenCalledTimes(7);
+    expect(fetcher).toHaveBeenCalledTimes(7);
+  },
+);
+
+it.each([false, true])(
+  'retains only a previous unknown Stop after notSent (previous=%s)',
+  async (previous) => {
+    if (previous)
+      sessionStorage.setItem(
+        pendingKey,
+        JSON.stringify([savedAttempt(stopId, 'stop', testId, false)]),
+      );
+    const bridge: SessionBridge = {
+      beginSessionCheck: async () => 'ticket',
+      keepAlive: async () => {},
+      sessionView: async () => ({
+        connection: {
+          hostRunId: host,
+          revision: 1,
+          status: ConnectionStateStatus.Live,
+          linkValid: true,
+          leaseAcquireUnknown: false,
+          streamGeneration: 0,
+        },
+        snapshot: {
+          apiVersion: 'v1',
+          backendRunId: backend,
+          revision: 2,
+          lastEventSequence: 2,
+          activeTest: { ...record, stage: TestRecordStage.Running },
+          pendingAction: null,
+          measurements: [],
+        },
+        validForMs: 6000,
+        linkValidForMs: 6000,
+      }),
+    };
+    api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
+    api.stop.mockResolvedValue({ delivery: 'notSent', command: null });
+    render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+    await userEvent
+      .setup()
+      .click(await screen.findByRole('button', { name: 'Остановить испытание' }));
+    await screen.findByText(/Новый запрос остановки не отправлен/);
+    const saved: unknown[] = JSON.parse(sessionStorage.getItem(pendingKey) ?? '[]');
+    expect(saved).toHaveLength(previous ? 1 : 0);
+    expect(api.stop).toHaveBeenCalledOnce();
+  },
+);
+
+it('does not accept a raw Stop status as a dispatch response', async () => {
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 2,
+        lastEventSequence: 2,
+        activeTest: { ...record, stage: TestRecordStage.Running },
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
+  api.stop.mockResolvedValue({ commandId: stopId, testId, status: 'completed' });
+  render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  await userEvent
+    .setup()
+    .click(await screen.findByRole('button', { name: 'Остановить испытание' }));
+  await screen.findByText(/Исход остановки неизвестен/);
+  expect(screen.queryByText('Остановка подтверждена ядром.')).toBeNull();
+});
+
+it.each([
+  ['wails', 'start'],
+  ['browser', 'start'],
+  ['wails', 'confirm'],
+  ['browser', 'confirm'],
+  ['wails', 'stop'],
+  ['browser', 'stop'],
+] as const)(
+  'reports a direct %s %s conflict from the adapter in React',
+  async (adapter, kind) => {
+    const bridge: SessionBridge = {
+      beginSessionCheck: async () => 'ticket',
+      keepAlive: async () => {},
+      sessionView: async () => ({
+        connection: {
+          hostRunId: host,
+          revision: 1,
+          status: ConnectionStateStatus.Live,
+          linkValid: true,
+          leaseAcquireUnknown: false,
+          streamGeneration: 0,
+        },
+        snapshot: {
+          apiVersion: 'v1',
+          backendRunId: backend,
+          revision: 2,
+          lastEventSequence: 2,
+          activeTest: {
+            ...record,
+            stage: kind === 'start' ? TestRecordStage.Preparing : TestRecordStage.Running,
+          },
+          pendingAction:
+            kind === 'confirm' ? { testId, actionId, instruction: 'Подтвердите измерение' } : null,
+          measurements: [],
+        },
+        validForMs: 6000,
+        linkValidForMs: 6000,
+      }),
+    };
+    const conflict = { delivery: 'conflict', command: null };
+    api[kind].mockResolvedValue(conflict);
+    api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
+    api.readiness.mockResolvedValue({ testId, revision: 2, ready: true, checks: [] });
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(conflict));
+    const browser = createBrowserBridge(
+      { generation: 'test', signal: new AbortController().signal },
+      fetcher,
+    ).service;
+    const service =
+      adapter === 'wails'
+        ? desktopDemoService
+        : {
+            ...desktopDemoService,
+            ...(kind === 'start'
+              ? { startTest: browser.startTest }
+              : kind === 'confirm'
+                ? { confirmAction: browser.confirmAction }
+                : { stopTest: browser.stopTest }),
+          };
+    render(<LiveApp session={bridge} service={service} hostRunId={host} backendRunId={backend} />);
+    const user = userEvent.setup();
+    if (kind === 'start') {
+      await screen.findByText('Проверки демонстрационного ядра');
+      await user.click(screen.getByLabelText(/Клапан закрыт/));
+      await user.click(screen.getByLabelText(/Подключение соответствует направлению/));
+      const start = screen.getByRole('button', { name: /Перейти к проведению/ });
+      await waitFor(() => expect(start.hasAttribute('disabled')).toBe(false));
+      await user.click(start);
+    } else {
+      const button = await screen.findByRole('button', {
+        name: kind === 'stop' ? 'Остановить испытание' : 'Подтвердить действие',
+      });
+      await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
+      await user.click(button);
+    }
+    await screen.findByText(
+      kind === 'stop' ? /Запрос остановки отклонён/ : /Идентификатор принадлежит другой команде/,
+    );
+    expect(screen.queryByText('Остановка подтверждена ядром.')).toBeNull();
+    if (adapter === 'browser') expect(fetcher).toHaveBeenCalledOnce();
+    else expect(api[kind]).toHaveBeenCalledOnce();
+  },
+  10000,
+);
+
+it('retains an unread earlier Stop after Storage recovers and a new request is not sent', async () => {
+  const db = '77777777-7777-4777-8777-777777777777';
+  const key = `gk80.demo.pending-command.v1:${db}`;
+  const previous = savedAttempt(stopId, 'stop', testId, false);
+  localStorage.setItem(key, JSON.stringify([previous]));
+  const originalGet = Storage.prototype.getItem;
+  let failedReads = 0;
+  const getItem = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (
+    this: Storage,
+    name: string,
+  ) {
+    if (this === localStorage && name === key && failedReads === 0) {
+      failedReads++;
+      throw new Error('unavailable');
+    }
+    return originalGet.call(this, name);
+  });
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 2,
+        lastEventSequence: 2,
+        activeTest: { ...record, stage: TestRecordStage.Running },
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
+  api.stop.mockResolvedValue({ delivery: 'notSent', command: null });
+  try {
+    render(
+      <LiveApp
+        session={bridge}
+        hostRunId={host}
+        backendRunId={backend}
+        databaseId={db}
+        pendingStorage={localStorage}
+      />,
+    );
+    await userEvent
+      .setup()
+      .click(await screen.findByRole('button', { name: 'Остановить испытание' }));
+    await screen.findByText(/Новый запрос остановки не отправлен/);
+    expect(failedReads).toBe(1);
+    const stored: unknown[] = JSON.parse(originalGet.call(localStorage, key) ?? '[]');
+    expect(stored).toContainEqual(
+      expect.objectContaining({ id: stopId, kind: 'stop', originalJSON: previous.originalJSON }),
+    );
+    await waitFor(() =>
+      expect(api.exact).toHaveBeenCalledWith(db, 'stop', testId, '', stopId, previous.originalJSON),
+    );
+    expect(api.stop).toHaveBeenCalledOnce();
+  } finally {
+    getItem.mockRestore();
+    localStorage.removeItem(key);
+  }
 });

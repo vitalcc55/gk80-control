@@ -26,7 +26,7 @@ import {
   WaitConnection,
 } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/desktop/service';
 import type { DesktopBridge, SessionBridge } from './bridge';
-import type { DemoService } from './demo-service';
+import { type DemoService, normalizeCommandDispatch } from './demo-service';
 
 export const sessionBridge: SessionBridge = {
   beginSessionCheck: BeginSessionCheck,
@@ -48,11 +48,12 @@ export const desktopBridge: DesktopBridge = {
 };
 
 export const desktopDemoService: DemoService = {
-  createTest: CreateTest,
+  createTest: (command) => CreateTest(command).then(normalizeCommandDispatch),
   readiness: Readiness,
-  startTest: StartTest,
-  confirmAction: ConfirmAction,
-  stopTest: StopTest,
+  startTest: (testId, command) => StartTest(testId, command).then(normalizeCommandDispatch),
+  confirmAction: (testId, actionId, command) =>
+    ConfirmAction(testId, actionId, command).then(normalizeCommandDispatch),
+  stopTest: (testId, command) => StopTest(testId, command).then(normalizeCommandDispatch),
   command: Command,
   lookupCommandExact: LookupCommandExact,
   listTests: ListTests,

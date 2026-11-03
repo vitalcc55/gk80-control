@@ -33,6 +33,7 @@ type routeService struct {
 	dispatch                     contract.CommandDispatch
 	dispatchErr                  error
 	stopErr                      error
+	stopDispatch                 *contract.CommandDispatch
 	starts, confirms, waits      int
 	startInput                   desktop.StartCommandInput
 	confirmInput                 desktop.ConfirmCommandInput
@@ -177,13 +178,17 @@ func (f *routeService) KeepAlive(_ context.Context, ticket string) error {
 	f.beats++
 	return nil
 }
-func (f *routeService) StopTest(_ context.Context, id string, input desktop.StopCommandInput) (contract.CommandStatus, error) {
+func (f *routeService) StopTest(_ context.Context, id string, input desktop.StopCommandInput) (contract.CommandDispatch, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stops++
 	f.testID = id
 	f.commandID = input.CommandId
-	return contract.CommandStatus{CommandId: input.CommandId, Status: contract.CommandStatusStatusAccepted}, f.stopErr
+	if f.stopDispatch != nil {
+		return *f.stopDispatch, f.stopErr
+	}
+	status := contract.CommandStatus{CommandId: input.CommandId, Status: contract.CommandStatusStatusAccepted}
+	return contract.CommandDispatch{Delivery: contract.CommandDispatchDeliveryResponse, Command: &status}, f.stopErr
 }
 
 func TestHeartbeatAndStopUseProtectedFixedRoutes(t *testing.T) {
@@ -314,15 +319,15 @@ func TestHeartbeatAndStopUseProtectedFixedRoutes(t *testing.T) {
 		t.Fatal("invalid command reached service")
 	}
 	fake.mu.Lock()
-	fake.stopErr = desktop.ErrCommandConflict
+	fake.stopDispatch = &contract.CommandDispatch{Delivery: contract.CommandDispatchDeliveryConflict}
 	fake.mu.Unlock()
-	if status, body := request("/api/tests/"+testID+"/stop", `{"commandId":"`+commandID.String()+`"}`, true); status != http.StatusConflict || !strings.Contains(body, `"command_conflict"`) {
+	if status, body := request("/api/tests/"+testID+"/stop", `{"commandId":"`+commandID.String()+`"}`, true); status != http.StatusOK || body != `{"command":null,"delivery":"conflict"}` {
 		t.Fatalf("stop conflict not distinguished: %d %s", status, body)
 	}
 }
 
 func TestCreateRoutePreservesInputAndDelivery(t *testing.T) {
-	fake := &routeService{ticket: uuid.NewString(), dispatch: contract.CommandDispatch{Delivery: contract.NotSent}}
+	fake := &routeService{ticket: uuid.NewString(), dispatch: contract.CommandDispatch{Delivery: contract.CommandDispatchDeliveryNotSent}}
 	var router http.Handler
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { router.ServeHTTP(w, r) }))
 	defer server.Close()
@@ -375,10 +380,11 @@ func TestCreateRoutePreservesInputAndDelivery(t *testing.T) {
 		t.Fatalf("error misreported: %d %s", status, response)
 	}
 	fake.mu.Lock()
-	fake.dispatchErr = desktop.ErrCommandConflict
+	fake.dispatchErr = nil
+	fake.dispatch = contract.CommandDispatch{Delivery: contract.CommandDispatchDeliveryConflict}
 	fake.mu.Unlock()
 	status, response = request(body)
-	if status != http.StatusConflict || !strings.Contains(response, `"command_conflict"`) {
+	if status != http.StatusOK || response != `{"command":null,"delivery":"conflict"}` {
 		t.Fatalf("confirmed conflict not distinguished: %d %s", status, response)
 	}
 }
@@ -386,7 +392,7 @@ func TestCreateRoutePreservesInputAndDelivery(t *testing.T) {
 func TestDomainRoutesForwardCommandsAndValidateWait(t *testing.T) {
 	commandID, testID, actionID := uuid.New(), uuid.NewString(), uuid.NewString()
 	completed := contract.CommandStatus{CommandId: commandID, Status: contract.CommandStatusStatusCompleted}
-	fake := &routeService{ticket: uuid.NewString(), dispatch: contract.CommandDispatch{Delivery: contract.Response, Command: &completed}}
+	fake := &routeService{ticket: uuid.NewString(), dispatch: contract.CommandDispatch{Delivery: contract.CommandDispatchDeliveryResponse, Command: &completed}}
 	var router http.Handler
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { router.ServeHTTP(w, r) }))
 	defer server.Close()
@@ -484,7 +490,7 @@ func TestDomainRouteRevocationCancelsCallAndSuppressesLateResult(t *testing.T) {
 				fake.createFunc = func(ctx context.Context) (contract.CommandDispatch, error) {
 					entered <- ctx
 					<-release
-					return contract.CommandDispatch{Delivery: contract.NotSent}, nil
+					return contract.CommandDispatch{Delivery: contract.CommandDispatchDeliveryNotSent}, nil
 				}
 			case "wait":
 				fake.waitFunc = func(ctx context.Context) (contract.ConnectionNotice, error) {

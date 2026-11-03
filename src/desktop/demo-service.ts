@@ -24,6 +24,19 @@ export class CommandConflictError extends Error {
   }
 }
 
+// Only a complete host result can establish a direct conflict.
+export function normalizeCommandDispatch(result: CommandDispatch): CommandDispatch {
+  if (
+    typeof result === 'object' &&
+    result !== null &&
+    Object.keys(result).length === 2 &&
+    result.delivery === 'conflict' &&
+    result.command === null
+  )
+    throw new CommandConflictError();
+  return result;
+}
+
 // Replacements within one host/backend session must address the same demo profile and core.
 // The caller must preserve that profile binding when reconciling unresolved commands.
 export interface DemoService {
@@ -35,7 +48,7 @@ export interface DemoService {
     actionId: string,
     command: ConfirmCommandInput,
   ): Promise<CommandDispatch>;
-  stopTest(testId: string, command: StopCommandInput): Promise<CommandStatus>;
+  stopTest(testId: string, command: StopCommandInput): Promise<CommandDispatch>;
   command(commandId: string): Promise<CommandStatus>;
   lookupCommandExact(
     databaseId: string,

@@ -54,8 +54,9 @@ export enum CommandDispatchDelivery {
     /**
      * Defines values for CommandDispatchDelivery.
      */
-    NotSent = "notSent",
-    Response = "response",
+    CommandDispatchDeliveryConflict = "conflict",
+    CommandDispatchDeliveryNotSent = "notSent",
+    CommandDispatchDeliveryResponse = "response",
 };
 
 /**

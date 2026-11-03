@@ -27,7 +27,7 @@ it('does not accept a late conflict or repeat a command after its channel closes
     .stopTest('test', { commandId: 'command' })
     .catch((error: unknown) => error);
   owner.abort();
-  finish(Response.json({ error: 'command_conflict' }, { status: 409 }));
+  finish(Response.json({ delivery: 'conflict', command: null }));
   const error = await outcome;
   expect(error).toBeInstanceOf(Error);
   expect(error).not.toBeInstanceOf(CommandConflictError);
@@ -66,24 +66,30 @@ it('aborts active reads and commands when their shared channel closes', async ()
 
 it('rejects a response whose body finishes after the channel closes', async () => {
   const owner = new AbortController();
-  let finishBody: () => void = () => {};
-  const body = new ReadableStream<Uint8Array>({
-    start: (controller) => {
-      finishBody = () => {
-        controller.enqueue(new TextEncoder().encode('{"delivery":"notSent","command":null}'));
-        controller.close();
-      };
-    },
+  let finishBody: (text: string) => void = () => {};
+  let bodyStarted: () => void = () => {};
+  const started = new Promise<void>((resolve) => {
+    bodyStarted = resolve;
   });
-  const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(body));
+  const body = new Promise<string>((resolve) => {
+    finishBody = resolve;
+  });
+  const response = new Response();
+  vi.spyOn(response, 'text').mockImplementation(() => {
+    bodyStarted();
+    return body;
+  });
+  const request = vi.fn<typeof fetch>().mockResolvedValue(response);
   const { service } = createBrowserBridge({ generation: 'first', signal: owner.signal }, request);
   const outcome = service
     .stopTest('test', { commandId: 'command' })
     .catch((error: unknown) => error);
-  await Promise.resolve();
+  await started;
   owner.abort();
-  finishBody();
-  expect(await outcome).toBeInstanceOf(Error);
+  finishBody('{"delivery":"conflict","command":null}');
+  const error = await outcome;
+  expect(error).toBeInstanceOf(Error);
+  expect(error).not.toBeInstanceOf(CommandConflictError);
   expect(request).toHaveBeenCalledOnce();
 });
 
@@ -144,8 +150,8 @@ it('sends the original Stop attempt and connection generation in the header', as
 
 it('distinguishes a confirmed command conflict and never retries a failed POST', async () => {
   const request = vi.fn<typeof fetch>();
+  request.mockResolvedValueOnce(Response.json({ delivery: 'conflict', command: null }));
   request.mockResolvedValueOnce(Response.json({ error: 'command_conflict' }, { status: 409 }));
-  request.mockResolvedValueOnce(Response.json({ error: 'other' }, { status: 409 }));
   request.mockResolvedValueOnce(
     new Response('{"error":"other","error":"command_conflict"}', { status: 409 }),
   );
@@ -358,4 +364,23 @@ it('aborts an overdue wait and never produces a successful notice', async () => 
   expect(await result).toBeInstanceOf(Error);
   expect(cancelled).toBe(true);
   expect(request).toHaveBeenCalledOnce();
+});
+
+it('rejects ambiguous command envelopes and unexpected success statuses', async () => {
+  const request = vi
+    .fn<typeof fetch>()
+    .mockResolvedValueOnce(
+      new Response('{"delivery":"response","delivery":"conflict","command":null}'),
+    )
+    .mockResolvedValueOnce(new Response('{"delivery":"conflict","command":null,"command":null}'))
+    .mockResolvedValueOnce(Response.json({ delivery: 'conflict', command: null }, { status: 202 }));
+  const { service } = createBrowserBridge(channel, request);
+  for (let index = 0; index < 3; index++) {
+    const error: unknown = await service
+      .stopTest('test', { commandId: 'command' })
+      .catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(CommandConflictError);
+  }
+  expect(request).toHaveBeenCalledTimes(3);
 });

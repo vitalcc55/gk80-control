@@ -859,13 +859,13 @@ components:
       additionalProperties: false
       required: [delivery, command]
       properties:
-        delivery: { type: string, enum: [notSent, response] }
+        delivery: { type: string, enum: [notSent, conflict, response] }
         command:
           oneOf:
             - $ref: "#/components/schemas/CommandStatus"
             - type: "null"
       allOf:
-        - if: { properties: { delivery: { const: notSent } } }
+        - if: { properties: { delivery: { enum: [notSent, conflict] } } }
           then: { properties: { command: { type: "null" } } }
           else: { properties: { command: { $ref: "#/components/schemas/CommandStatus" } } }
     ExactLookupResult:

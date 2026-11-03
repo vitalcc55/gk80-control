@@ -31,10 +31,6 @@ func (s *browserSession) call(w http.ResponseWriter, r *http.Request, operation 
 	}
 	value, err := operation(r.Context())
 	if err != nil {
-		if errors.Is(err, desktop.ErrCommandConflict) {
-			s.reply(w, r, http.StatusConflict, map[string]string{"error": "command_conflict"})
-			return
-		}
 		s.reply(w, r, http.StatusServiceUnavailable, map[string]string{"error": "operation unavailable"})
 		return
 	}
