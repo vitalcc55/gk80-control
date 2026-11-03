@@ -4074,6 +4074,151 @@ it('offers the reserved stop after remount even when heartbeat cannot be confirm
   expect(api.start).not.toHaveBeenCalled();
 });
 
+it('does not carry an active snapshot into a different database before a new observation', async () => {
+  const snapshot: Snapshot = {
+    apiVersion: 'v1',
+    backendRunId: backend,
+    revision: 2,
+    lastEventSequence: 2,
+    activeTest: { ...record, stage: TestRecordStage.Running },
+    pendingAction: null,
+    measurements: [],
+  };
+  const current: SessionView = {
+    connection: {
+      hostRunId: host,
+      revision: 2,
+      status: ConnectionStateStatus.Live,
+      linkValid: true,
+      leaseAcquireUnknown: false,
+      streamGeneration: 0,
+    },
+    snapshot,
+    validForMs: 6000,
+    linkValidForMs: 6000,
+  };
+  const never = new Promise<SessionView>(() => {});
+  let currentRead: Promise<SessionView> = Promise.resolve(current);
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: () => currentRead,
+  };
+  const mounted = render(
+    <LiveApp session={bridge} hostRunId={host} backendRunId={backend} databaseId={database} />,
+  );
+  await screen.findByRole('button', { name: 'Остановить испытание' });
+  currentRead = never;
+  mounted.rerender(
+    <LiveApp
+      session={bridge}
+      hostRunId={host}
+      backendRunId={backend}
+      databaseId="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    />,
+  );
+  expect(screen.queryByRole('button', { name: 'Остановить испытание' })).toBeNull();
+  expect(api.stop).not.toHaveBeenCalled();
+});
+
+it('does not reuse a previous database snapshot after full remount', async () => {
+  const snapshot: Snapshot = {
+    apiVersion: 'v1',
+    backendRunId: backend,
+    revision: 2,
+    lastEventSequence: 2,
+    activeTest: { ...record, stage: TestRecordStage.Running },
+    pendingAction: null,
+    measurements: [],
+  };
+  const current: SessionView = {
+    connection: {
+      hostRunId: host,
+      revision: 2,
+      status: ConnectionStateStatus.Live,
+      linkValid: true,
+      leaseAcquireUnknown: false,
+      streamGeneration: 0,
+    },
+    snapshot,
+    validForMs: 6000,
+    linkValidForMs: 6000,
+  };
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => current,
+  };
+  const first = render(
+    <LiveApp session={bridge} hostRunId={host} backendRunId={backend} databaseId={database} />,
+  );
+  await screen.findByRole('button', { name: 'Остановить испытание' });
+  first.unmount();
+  const never = new Promise<SessionView>(() => {});
+  const replacement = { ...bridge, sessionView: () => never };
+  const second = render(
+    <LiveApp
+      session={replacement}
+      hostRunId={host}
+      backendRunId={backend}
+      databaseId="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    />,
+  );
+  expect(screen.queryByRole('button', { name: 'Остановить испытание' })).toBeNull();
+  second.unmount();
+  render(
+    <LiveApp
+      session={replacement}
+      hostRunId={host}
+      backendRunId={backend}
+      databaseId="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    />,
+  );
+  expect(screen.queryByRole('button', { name: 'Остановить испытание' })).toBeNull();
+});
+
+it('retains the running display and reserved Stop while replacing the session wrapper', async () => {
+  const snapshot: Snapshot = {
+    apiVersion: 'v1',
+    backendRunId: backend,
+    revision: 2,
+    lastEventSequence: 2,
+    activeTest: { ...record, stage: TestRecordStage.Running },
+    pendingAction: null,
+    measurements: [],
+  };
+  const current: SessionView = {
+    connection: {
+      hostRunId: host,
+      revision: 2,
+      status: ConnectionStateStatus.Live,
+      linkValid: true,
+      leaseAcquireUnknown: false,
+      streamGeneration: 0,
+    },
+    snapshot,
+    validForMs: 6000,
+    linkValidForMs: 6000,
+  };
+  const first: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => current,
+  };
+  const mounted = render(<LiveApp session={first} hostRunId={host} backendRunId={backend} />);
+  const chart = await screen.findByRole('img', { name: 'График показаний симулятора' });
+  const never = new Promise<SessionView>(() => {});
+  mounted.rerender(
+    <LiveApp
+      session={{ ...first, sessionView: () => never }}
+      hostRunId={host}
+      backendRunId={backend}
+    />,
+  );
+  expect(screen.getByRole('img', { name: 'График показаний симулятора' })).toBe(chart);
+  expect(screen.getByRole('button', { name: 'Остановить испытание' })).toBeTruthy();
+});
+
 it('continues checking Stop after the interrupted result and keeps saving separate', async () => {
   let snapshot: Snapshot = {
     apiVersion: 'v1',

@@ -18,17 +18,18 @@ import {
   type CommandDispatch,
   type CommandStatus,
   type Readiness,
-  type SessionView,
   type Snapshot,
   TestParametersDirection,
 } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
 import type { TestParameters as FormParameters } from '../model';
-import { readLastSession, type SessionBridge } from './bridge';
+import type { SessionBridge } from './bridge';
 import { beginCall, countCalls, endCall, totalCalls, useCallRevision } from './call-limits';
 import { CommandConflictError, type DemoService } from './demo-service';
 import { History } from './History';
 import { LiveRun } from './LiveRun';
 import { SessionStatus } from './SessionStatus';
+import { type SessionObservation, sessionObservation } from './session-observation';
+import { useSessionObservation } from './use-session-observation';
 
 const empty: FormParameters = {
   id: '',
@@ -607,7 +608,40 @@ type LiveAppProps = {
   suspended?: boolean;
 };
 
+const observationDatabases = new WeakMap<
+  SessionObservation,
+  { database: string; minimum: number }
+>();
+
+function bindObservationDatabase(props: LiveAppProps) {
+  const observer = sessionObservation(props.hostRunId, props.backendRunId);
+  const previous = observationDatabases.get(observer);
+  const minimum =
+    previous?.database === props.databaseId
+      ? previous.minimum
+      : previous
+        ? observer.getSnapshot().observationVersion + 1
+        : 0;
+  observationDatabases.set(observer, { database: props.databaseId, minimum });
+  return {
+    host: props.hostRunId,
+    backend: props.backendRunId,
+    database: props.databaseId,
+    minimum,
+  };
+}
+
 export function LiveApp(props: LiveAppProps) {
+  const [binding, setBinding] = useState(() => bindObservationDatabase(props));
+  let currentBinding = binding;
+  if (
+    binding.host !== props.hostRunId ||
+    binding.backend !== props.backendRunId ||
+    binding.database !== props.databaseId
+  ) {
+    currentBinding = bindObservationDatabase(props);
+    setBinding(currentBinding);
+  }
   const [draft, setDraft] = useState(newDraft);
   const [draftAvailable, setDraftAvailable] = useState(false);
   const [showForm, setShowForm] = useState(false);
@@ -617,6 +651,7 @@ export function LiveApp(props: LiveAppProps) {
     <ActiveLiveApp
       key={`${props.hostRunId}:${props.backendRunId}:${props.databaseId}`}
       {...props}
+      minimumObservation={currentBinding.minimum}
       draft={draft}
       setDraft={setDraft}
       draftAvailable={draftAvailable}
@@ -637,6 +672,7 @@ function ActiveLiveApp({
   databaseId,
   diagnosticsDegraded = false,
   pendingStorage,
+  minimumObservation,
   draft,
   setDraft,
   draftAvailable,
@@ -646,6 +682,7 @@ function ActiveLiveApp({
   showHistory,
   setShowHistory,
 }: LiveAppProps & {
+  minimumObservation: number;
   draft: ReturnType<typeof newDraft>;
   setDraft: Dispatch<SetStateAction<ReturnType<typeof newDraft>>>;
   draftAvailable: boolean;
@@ -655,10 +692,11 @@ function ActiveLiveApp({
   showHistory: boolean;
   setShowHistory: Dispatch<SetStateAction<boolean>>;
 }) {
-  const [connection, setConnection] = useState<{ view: SessionView; expiresAt: number } | null>(
-    null,
-  );
-  const [lastSnapshot, setLastSnapshot] = useState<Snapshot | null>(null);
+  const { observer, projection } = useSessionObservation(session, hostRunId, backendRunId);
+  const acceptedProjection = projection.observationVersion >= minimumObservation;
+  const connection = acceptedProjection ? projection.connection : null;
+  const lastSnapshot = acceptedProjection ? projection.lastSnapshot : null;
+  const { gapVersion } = projection;
   const [showSavedParameters, setShowSavedParameters] = useState(false);
   const [readiness, setReadiness] = useState<Readiness | null>(null);
   const [readinessConfirmed, setReadinessConfirmed] = useState(false);
@@ -729,8 +767,6 @@ function ActiveLiveApp({
     memory.volatile ? hasUnstoredStop(memory.volatile, storageKey, pendingStorage) : false,
   );
   const lastStopId = useRef<string | null>(null);
-  const [gapVersion, setGapVersion] = useState(0);
-  const onGap = useCallback(() => setGapVersion((value) => value + 1), []);
   useCallRevision();
   const [stopRequestedFor, setStopRequestedFor] = useState<string | null>(null);
   const stopStatuses = useRef(new Map<string, CommandStatus>());
@@ -742,54 +778,6 @@ function ActiveLiveApp({
       lifecycle.current += 1;
     };
   }, []);
-  const knownView = useRef<{ revision: number; sequence: number; measurement: number } | null>(
-    null,
-  );
-  const lastKnownSnapshot = useRef<Snapshot | null>(null);
-  const rememberView = useCallback(
-    (view: SessionView) => {
-      const next = view.snapshot;
-      if (view.connection.hostRunId !== hostRunId || next?.backendRunId !== backendRunId)
-        return false;
-      const current = knownView.current;
-      const measurement = Math.max(0, ...(next.measurements ?? []).map((item) => item.sequence));
-      const revision = view.connection.revision;
-      if (!Number.isSafeInteger(revision) || !Number.isSafeInteger(next.lastEventSequence))
-        return false;
-      if (
-        current &&
-        (revision < current.revision ||
-          next.lastEventSequence < current.sequence ||
-          (revision === current.revision &&
-            next.lastEventSequence === current.sequence &&
-            measurement < current.measurement))
-      )
-        return false;
-      knownView.current = { revision, sequence: next.lastEventSequence, measurement };
-      lastKnownSnapshot.current = next;
-      setLastSnapshot(next);
-      return true;
-    },
-    [backendRunId, hostRunId],
-  );
-  const onView = useCallback(
-    (view: SessionView | null, expiresAt: number) => {
-      if (view?.snapshot && rememberView(view)) setConnection({ view, expiresAt });
-      else setConnection(null);
-    },
-    [rememberView],
-  );
-  useEffect(
-    () =>
-      readLastSession(session, (view) => {
-        const previous = knownView.current;
-        const previousSnapshot = lastKnownSnapshot.current;
-        if (!rememberView(view) || !previous || !view.snapshot) return;
-        if (previousSnapshot && JSON.stringify(previousSnapshot) !== JSON.stringify(view.snapshot))
-          setConnection(null);
-      }),
-    [session, rememberView],
-  );
   const snapshot = connection?.view.snapshot ?? lastSnapshot;
   const record = snapshot?.activeTest ?? null;
   const activeId = record?.testId;
@@ -804,7 +792,6 @@ function ActiveLiveApp({
   const totalStops = totalCalls('stop');
   const fresh =
     !!connection &&
-    performance.now() < connection.expiresAt &&
     !!snapshot &&
     Number.isSafeInteger(snapshot.revision) &&
     Number.isSafeInteger(snapshot.lastEventSequence);
@@ -1243,7 +1230,7 @@ function ActiveLiveApp({
       !fresh ||
       !snapshot ||
       !connection ||
-      performance.now() >= connection.expiresAt ||
+      observer.getSnapshotFor(session).connection !== connection ||
       legacyBlocks ||
       storageUnconfirmed ||
       totalCalls('stop') >= 63 ||
@@ -1612,8 +1599,6 @@ function ActiveLiveApp({
             bridge={session}
             hostRunId={hostRunId}
             backendRunId={backendRunId}
-            onView={onView}
-            onGap={onGap}
             snapshotAccepted={fresh}
           />
           <p role="status" aria-live="polite" className="live-diagnostics-warning">

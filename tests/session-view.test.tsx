@@ -1,13 +1,13 @@
 import { act, render, screen } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
+import type { SessionBridge } from '../src/desktop/bridge';
+import { SessionStatus } from '../src/desktop/SessionStatus';
 import {
   readLastSession,
   readSession,
   requestSessionObservation,
-  type SessionBridge,
   watchConnection,
-} from '../src/desktop/bridge';
-import { SessionStatus } from '../src/desktop/SessionStatus';
+} from '../src/desktop/session-observation';
 import {
   type ConnectionNotice,
   ConnectionStateStatus,
@@ -41,6 +41,39 @@ const view: SessionView = {
 function call<T>(promise: Promise<T>): Promise<T> {
   return promise;
 }
+
+it('bounds unfinished session checks across wrapper replacements of the same session', async () => {
+  vi.useFakeTimers();
+  const hostRunId = 'f5555555-5555-4555-8555-555555555555';
+  const backendRunId = view.snapshot?.backendRunId ?? '';
+  const pending: Array<(ticket: string) => void> = [];
+  const begin = vi.fn(() => new Promise<string>((resolve) => pending.push(resolve)));
+  const makeBridge = (): SessionBridge => ({
+    beginSessionCheck: begin,
+    keepAlive: vi.fn().mockResolvedValue(undefined),
+    sessionView: vi.fn().mockResolvedValue(view),
+  });
+  const mounted = render(
+    <SessionStatus bridge={makeBridge()} hostRunId={hostRunId} backendRunId={backendRunId} />,
+  );
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(10000);
+  });
+  for (let i = 0; i < 3; i += 1) {
+    mounted.rerender(
+      <SessionStatus bridge={makeBridge()} hostRunId={hostRunId} backendRunId={backendRunId} />,
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10000);
+    });
+  }
+  expect(begin).toHaveBeenCalledTimes(2);
+  mounted.unmount();
+  await act(async () => {
+    for (const finish of pending) finish('ticket');
+    await vi.advanceTimersByTimeAsync(0);
+  });
+});
 
 it('reports unknown initial acquisition from a passive view without restoring freshness', async () => {
   vi.useFakeTimers();
