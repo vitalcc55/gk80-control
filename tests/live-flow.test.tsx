@@ -318,7 +318,7 @@ it('restores the browser profile pending attempt from shared storage without rep
   api.list.mockResolvedValue({ items: [], nextAfter: null });
   api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
   try {
-    render(
+    const mounted = render(
       <LiveApp
         session={bridge}
         hostRunId={host}
@@ -335,6 +335,28 @@ it('restores the browser profile pending attempt from shared storage without rep
         '',
         id,
         attempt.originalJSON,
+      ),
+    );
+    mounted.unmount();
+    const newer = savedAttempt('17171717-1717-4717-8717-171717171717', 'create', null, false);
+    localStorage.setItem(key, JSON.stringify([newer]));
+    render(
+      <LiveApp
+        session={bridge}
+        hostRunId={host}
+        backendRunId={backend}
+        databaseId={browserDatabase}
+        pendingStorage={localStorage}
+      />,
+    );
+    await waitFor(() =>
+      expect(api.exact).toHaveBeenCalledWith(
+        browserDatabase,
+        'create',
+        '',
+        '',
+        newer.id,
+        newer.originalJSON,
       ),
     );
     expect(api.create).not.toHaveBeenCalled();
@@ -1600,7 +1622,7 @@ it('retains a confirmed Stop in volatile memory after remount', async () => {
       .click(await screen.findByRole('button', { name: 'Остановить испытание' }));
     await screen.findByText('Остановка подтверждена ядром.');
     mounted.unmount();
-    render(
+    const restored = render(
       <LiveApp
         session={bridge}
         hostRunId={host}
@@ -1609,9 +1631,113 @@ it('retains a confirmed Stop in volatile memory after remount', async () => {
       />,
     );
     expect(await screen.findByText(/Команда: выполнена/)).toBeTruthy();
-    expect(api.stop).toHaveBeenCalledOnce();
+    api.stop.mockRejectedValue(new Error('response lost'));
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Остановить испытание' }));
+    expect(await screen.findByText('Остановка подтверждена ядром.')).toBeTruthy();
+    expect(api.stop).toHaveBeenCalledTimes(2);
+    setItem.mockRestore();
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Повторить чтение команд' }));
+    restored.unmount();
+    const persisted = render(
+      <LiveApp
+        session={bridge}
+        hostRunId={host}
+        backendRunId={backend}
+        databaseId={volatileDatabase}
+      />,
+    );
+    expect(await screen.findByText(/Команда: выполнена/)).toBeTruthy();
+    persisted.unmount();
+    const originalGet = Storage.prototype.getItem;
+    const unavailable = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (
+      this: Storage,
+      key,
+    ) {
+      if (key === `gk80.demo.pending-command.v1:${volatileDatabase}`)
+        throw new Error('unavailable');
+      return originalGet.call(this, key);
+    });
+    try {
+      render(
+        <LiveApp
+          session={bridge}
+          hostRunId={host}
+          backendRunId={backend}
+          databaseId={volatileDatabase}
+        />,
+      );
+      await userEvent
+        .setup()
+        .click(await screen.findByRole('button', { name: 'Остановить испытание' }));
+      expect(await screen.findByText('Остановка подтверждена ядром.')).toBeTruthy();
+      expect(screen.getByText(/Команда: выполнена/)).toBeTruthy();
+      expect(api.stop).toHaveBeenCalledTimes(3);
+    } finally {
+      unavailable.mockRestore();
+    }
   } finally {
     setItem.mockRestore();
+  }
+});
+
+it('does not repeatedly write a confirmed observation while storage remains unavailable', async () => {
+  const browserDatabase = '80808080-8080-4080-8080-808080808080';
+  const key = `gk80.demo.pending-command.v1:${browserDatabase}`;
+  const attempt = savedAttempt('90909090-9090-4090-8090-909090909090', 'create', null, false);
+  localStorage.setItem(key, JSON.stringify([attempt]));
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 2,
+        lastEventSequence: 2,
+        activeTest: { ...record, stage: TestRecordStage.Running },
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.exact.mockResolvedValue({
+    outcome: 'match',
+    command: { commandId: attempt.id, testId, status: 'completed' },
+  });
+  const failure = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+    throw new Error('unavailable');
+  });
+  try {
+    render(
+      <LiveApp
+        session={bridge}
+        hostRunId={host}
+        backendRunId={backend}
+        databaseId={browserDatabase}
+        pendingStorage={localStorage}
+      />,
+    );
+    await screen.findByRole('button', { name: 'Повторить чтение команд' });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(failure).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(new RegExp(`ID ${attempt.id}`))).toBeTruthy();
+    failure.mockRestore();
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Повторить чтение команд' }));
+    await waitFor(() => expect(screen.queryByText(new RegExp(`ID ${attempt.id}`))).toBeNull());
+    expect(api.create).not.toHaveBeenCalled();
+  } finally {
+    failure.mockRestore();
+    localStorage.removeItem(key);
   }
 });
 
@@ -1655,6 +1781,97 @@ it('does not give an old Stop without contents the result of a new attempt', asy
   expect(old.textContent).toContain('исход неизвестен');
   expect(old.textContent).not.toContain('Команда: выполнена');
   expect(screen.getByText('Остановка подтверждена ядром.')).toBeTruthy();
+});
+
+it('does not attribute another Stop with the same ID but different JSON to the current request', async () => {
+  const browserDatabase = '70707070-7070-4070-8070-707070707070';
+  const key = `gk80.demo.pending-command.v1:${browserDatabase}`;
+  const old = savedAttempt(stopId, 'stop', testId, false);
+  old.originalJSON += ' ';
+  localStorage.setItem(key, JSON.stringify([old]));
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 2,
+        lastEventSequence: 2,
+        activeTest: { ...record, stage: TestRecordStage.Running },
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  let finish: (value: { outcome: string; command: CommandStatus }) => void = () => {};
+  const lookup = new Promise<{ outcome: string; command: CommandStatus }>((resolve) => {
+    finish = resolve;
+  });
+  api.exact.mockImplementation(async (_database, _kind, _test, _action, _id, originalJSON) =>
+    originalJSON === old.originalJSON ? lookup : { outcome: 'unknown', command: null },
+  );
+  let finishStop: (value: CommandStatus) => void = () => {};
+  const stop = new Promise<CommandStatus>((resolve) => {
+    finishStop = resolve;
+  });
+  api.stop.mockReturnValue(stop);
+  try {
+    render(
+      <LiveApp
+        session={bridge}
+        hostRunId={host}
+        backendRunId={backend}
+        databaseId={browserDatabase}
+        pendingStorage={localStorage}
+      />,
+    );
+    await waitFor(() =>
+      expect(api.exact).toHaveBeenCalledWith(
+        browserDatabase,
+        'stop',
+        testId,
+        '',
+        stopId,
+        old.originalJSON,
+      ),
+    );
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Остановить испытание' }));
+    await act(async () => {
+      finish({
+        outcome: 'match',
+        command: {
+          commandId: stopId,
+          testId,
+          status: CommandStatusStatus.CommandStatusStatusCompleted,
+        },
+      });
+      await lookup;
+    });
+    expect(await screen.findByText(/Команда: выполнена/)).toBeTruthy();
+    expect(screen.queryByText('Остановка подтверждена ядром.')).toBeNull();
+    expect(screen.getByText(/Запрошена остановка/)).toBeTruthy();
+    await act(async () => {
+      finishStop({
+        commandId: stopId,
+        testId,
+        status: CommandStatusStatus.CommandStatusStatusAccepted,
+      });
+      await stop;
+    });
+  } finally {
+    localStorage.removeItem(key);
+  }
 });
 
 it('does not send another creation after an unknown response and remount', async () => {
@@ -2616,6 +2833,13 @@ it('allows an explicitly reviewed legacy observation to be removed from a full l
   render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   const remove = (await screen.findAllByRole('button', { name: 'Удалить запись наблюдения' }))[0];
   if (!remove) throw new Error('reviewed observation is missing');
+  const failedWrite = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+    throw new Error('unavailable');
+  });
+  await userEvent.setup().click(remove);
+  expect(screen.getByText(/ID old-0\./)).toBeTruthy();
+  expect(JSON.parse(sessionStorage.getItem(pendingKey) ?? '[]')).toHaveLength(64);
+  failedWrite.mockRestore();
   await userEvent.setup().click(remove);
   await waitFor(() =>
     expect(screen.getByRole('button', { name: 'Новое испытание' }).hasAttribute('disabled')).toBe(
@@ -2623,6 +2847,7 @@ it('allows an explicitly reviewed legacy observation to be removed from a full l
     ),
   );
   expect(JSON.parse(sessionStorage.getItem(pendingKey) ?? '[]')).toHaveLength(63);
+  expect(screen.queryByText(/ID old-0\./)).toBeNull();
   expect(api.command).not.toHaveBeenCalled();
 });
 
@@ -3098,7 +3323,7 @@ it('keeps separate failed stop results visible until the operator hides them', a
   for (const item of stops.slice(1)) {
     const row = await screen.findByText(new RegExp(`ID ${item.id}`));
     expect(row.textContent).toContain('Безопасное давление не подтверждено');
-    expect(row.textContent).toContain('исход неизвестен');
+    expect(row.textContent).toContain('завершилась с ошибкой');
   }
   expect(api.stop).not.toHaveBeenCalled();
 });
@@ -3185,6 +3410,9 @@ it.each(['notSent', 'rejected', 'failed', 'lookupRejected', 'storageUnavailable'
           : /Команда отклонена/;
     await screen.findByText(oldNotice);
     storage?.mockRestore();
+    if (firstOutcome === 'storageUnavailable') {
+      await user.click(screen.getByRole('button', { name: 'Повторить чтение команд' }));
+    }
     const retry = screen.getByRole('button', { name: /Проверить готовность/ });
     await waitFor(() => expect(retry.hasAttribute('disabled')).toBe(false));
     await user.click(retry);
@@ -4075,6 +4303,538 @@ it('keeps an unpersisted Stop observable across remount when session storage fai
   }));
   await userEvent.setup().click(screen.getByRole('button', { name: 'Проверить состояние' }));
   await waitFor(() => expect(screen.queryByText(/отслеживается только в памяти/)).toBeNull());
+});
+
+it('preserves a newer shared attempt when restoring an unpersisted Stop', async () => {
+  const browserDatabase = '10101010-1010-4010-8010-101010101010';
+  const key = `gk80.demo.pending-command.v1:${browserDatabase}`;
+  const other = savedAttempt('20202020-2020-4020-8020-202020202020', 'create', null, false);
+  const differentJSON = { ...other, originalJSON: `${other.originalJSON} ` };
+  const old = savedAttempt('30303030-3030-4030-8030-303030303030', 'start', testId, true);
+  const legacy = { id: 'legacy-other', kind: 'create', testId: null, retired: false };
+  const transient = {
+    id: 'legacy-removed',
+    kind: 'create',
+    testId: null,
+    retired: true,
+    legacyReviewed: true,
+  };
+  localStorage.setItem(key, JSON.stringify([old]));
+  const snapshot: Snapshot = {
+    apiVersion: 'v1',
+    backendRunId: backend,
+    revision: 2,
+    lastEventSequence: 2,
+    activeTest: { ...record, stage: TestRecordStage.Running },
+    pendingAction: null,
+    measurements: [],
+  };
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot,
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.exact.mockImplementation(async (_database, kind) =>
+    kind === 'stop'
+      ? { outcome: 'match', command: { commandId: stopId, status: 'accepted', testId } }
+      : { outcome: 'unknown', command: null },
+  );
+  api.stop.mockResolvedValue({ commandId: stopId, status: 'accepted', testId });
+  const originalSet = Storage.prototype.setItem;
+  const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (
+    this: Storage,
+    key,
+    value,
+  ) {
+    if (this === localStorage && key === `gk80.demo.pending-command.v1:${browserDatabase}`)
+      throw new Error('unavailable');
+    originalSet.call(this, key, value);
+  });
+  const props = {
+    session: bridge,
+    hostRunId: host,
+    backendRunId: backend,
+    databaseId: browserDatabase,
+    pendingStorage: localStorage,
+  };
+  try {
+    const mounted = render(<LiveApp {...props} />);
+    await userEvent
+      .setup()
+      .click(await screen.findByRole('button', { name: 'Остановить испытание' }));
+    expect(screen.getByText(/отслеживается только в памяти/)).toBeTruthy();
+    mounted.unmount();
+    setItem.mockRestore();
+    localStorage.setItem(key, JSON.stringify([other, differentJSON, legacy, transient]));
+    const resumed = render(<LiveApp {...props} />);
+    const failedRetry = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('still unavailable');
+    });
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Повторить чтение команд' }));
+    expect(screen.getByRole('button', { name: 'Повторить чтение команд' })).toBeTruthy();
+    failedRetry.mockRestore();
+    resumed.unmount();
+    localStorage.setItem(key, JSON.stringify([other, differentJSON, legacy]));
+    render(<LiveApp {...props} />);
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Повторить чтение команд' }));
+    await waitFor(() =>
+      expect(api.exact).toHaveBeenCalledWith(
+        browserDatabase,
+        'create',
+        '',
+        '',
+        other.id,
+        other.originalJSON,
+      ),
+    );
+    await userEvent.setup().click(
+      within(screen.getByText(new RegExp(`ID ${stopId}`))).getByRole('button', {
+        name: 'Проверить состояние',
+      }),
+    );
+    await waitFor(() =>
+      expect(api.exact).toHaveBeenCalledWith(
+        browserDatabase,
+        'stop',
+        testId,
+        '',
+        stopId,
+        JSON.stringify({ commandId: stopId }),
+      ),
+    );
+    await waitFor(() => {
+      const saved: { id: string; originalJSON?: string }[] = JSON.parse(
+        localStorage.getItem(key) ?? '[]',
+      );
+      expect(saved.map((item) => item.id)).toEqual(expect.arrayContaining([stopId, other.id]));
+      expect(saved.map((item) => item.id)).not.toContain(old.id);
+      expect(saved.map((item) => item.id)).toContain(legacy.id);
+      expect(saved.map((item) => item.id)).not.toContain(transient.id);
+      expect(saved.filter((item) => item.id === other.id).map((item) => item.originalJSON)).toEqual(
+        expect.arrayContaining([other.originalJSON, differentJSON.originalJSON]),
+      );
+    });
+    expect(api.stop).toHaveBeenCalledTimes(1);
+    expect(api.create).not.toHaveBeenCalled();
+  } finally {
+    setItem.mockRestore();
+    localStorage.removeItem(key);
+  }
+});
+
+it.each([
+  'local',
+  'other',
+  'local-fails',
+  'other-retired',
+  'other-after-absence',
+  'superseded',
+  'superseded-no-version',
+] as const)('retains a reactivated Stop after an unsuccessful removal (%s)', async (source) => {
+  const browserDatabase =
+    source === 'local'
+      ? 'abababab-abab-4bab-8bab-abababababab'
+      : source === 'other'
+        ? 'cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd'
+        : source === 'local-fails'
+          ? 'efefefef-efef-4fef-8fef-efefefefefef'
+          : source === 'other-retired'
+            ? '12121212-1212-4212-8212-121212121212'
+            : source === 'other-after-absence'
+              ? '14141414-1414-4414-8414-141414141414'
+              : source === 'superseded'
+                ? '15151515-1515-4515-8515-151515151515'
+                : '21212121-2121-4121-8121-212121212121';
+  const key = `gk80.demo.pending-command.v1:${browserDatabase}`;
+  const attempt = savedAttempt(stopId, 'stop', testId, true);
+  localStorage.setItem(key, JSON.stringify([attempt]));
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 2,
+        lastEventSequence: 2,
+        activeTest: { ...record, stage: TestRecordStage.Running },
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  const props = {
+    session: bridge,
+    hostRunId: host,
+    backendRunId: backend,
+    databaseId: browserDatabase,
+    pendingStorage: localStorage,
+  };
+  api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
+  api.stop.mockRejectedValue(new Error('response lost'));
+  const mounted = render(<LiveApp {...props} />);
+  const failure = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+    throw new Error('unavailable');
+  });
+  const random =
+    source === 'superseded-no-version'
+      ? vi.spyOn(crypto, 'randomUUID').mockImplementation(() => {
+          throw new Error('unavailable');
+        })
+      : null;
+  try {
+    await userEvent
+      .setup()
+      .click(await screen.findByRole('button', { name: 'Прекратить наблюдение' }));
+    expect(screen.getByText(new RegExp(`ID ${stopId}`))).toBeTruthy();
+    if (source !== 'local-fails' && source !== 'superseded' && source !== 'superseded-no-version')
+      failure.mockRestore();
+    if (
+      source === 'local' ||
+      source === 'local-fails' ||
+      source === 'superseded' ||
+      source === 'superseded-no-version'
+    ) {
+      await userEvent.setup().click(screen.getByRole('button', { name: 'Остановить испытание' }));
+      expect(api.stop).toHaveBeenCalledOnce();
+      if (
+        source === 'local-fails' ||
+        source === 'superseded' ||
+        source === 'superseded-no-version'
+      ) {
+        mounted.unmount();
+        failure.mockRestore();
+        if (source === 'superseded' || source === 'superseded-no-version') {
+          localStorage.setItem(
+            key,
+            JSON.stringify([
+              {
+                ...attempt,
+                retired: false,
+                observationVersion: '16161616-1616-4616-8616-161616161616',
+              },
+            ]),
+          );
+          const intermediate = render(<LiveApp {...props} />);
+          intermediate.unmount();
+        }
+        random?.mockRestore();
+        localStorage.setItem(key, '[]');
+        render(<LiveApp {...props} />);
+        await userEvent
+          .setup()
+          .click(screen.getByRole('button', { name: 'Повторить чтение команд' }));
+      }
+    } else {
+      mounted.unmount();
+      if (source === 'other-after-absence') {
+        localStorage.setItem(key, '[]');
+        const intermediate = render(<LiveApp {...props} />);
+        intermediate.unmount();
+      }
+      localStorage.setItem(
+        key,
+        JSON.stringify([
+          {
+            ...attempt,
+            retired: source === 'other-retired' || source === 'other-after-absence',
+            observationVersion: '13131313-1313-4313-8313-131313131313',
+          },
+        ]),
+      );
+      render(<LiveApp {...props} />);
+      await userEvent
+        .setup()
+        .click(screen.getByRole('button', { name: 'Повторить чтение команд' }));
+    }
+    const saved: { id: string; retired: boolean }[] = JSON.parse(localStorage.getItem(key) ?? '[]');
+    if (source === 'superseded' || source === 'superseded-no-version') {
+      expect(saved).toEqual([]);
+      expect(screen.queryByText(new RegExp(`ID ${stopId}`))).toBeNull();
+      return;
+    }
+    expect(saved).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: stopId,
+          retired: source === 'other-retired' || source === 'other-after-absence',
+        }),
+      ]),
+    );
+    expect(screen.getByText(new RegExp(`ID ${stopId}`))).toBeTruthy();
+  } finally {
+    failure.mockRestore();
+    random?.mockRestore();
+    localStorage.removeItem(key);
+  }
+});
+
+it('retains a new Stop when an initially unreadable older observation is later removed', async () => {
+  const browserDatabase = '19191919-1919-4919-8919-191919191919';
+  const key = `gk80.demo.pending-command.v1:${browserDatabase}`;
+  const attempt = savedAttempt(stopId, 'stop', testId, true);
+  localStorage.setItem(
+    key,
+    JSON.stringify([{ ...attempt, observationVersion: '20202020-2020-4020-8020-202020202020' }]),
+  );
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 2,
+        lastEventSequence: 2,
+        activeTest: { ...record, stage: TestRecordStage.Running },
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  const originalGet = Storage.prototype.getItem;
+  let unreadable = true;
+  const read = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (
+    this: Storage,
+    itemKey,
+  ) {
+    if (this === localStorage && itemKey === key && unreadable) throw new Error('unavailable');
+    return originalGet.call(this, itemKey);
+  });
+  const write = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+    throw new Error('unavailable');
+  });
+  api.stop.mockRejectedValue(new Error('response lost'));
+  api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
+  const props = {
+    session: bridge,
+    hostRunId: host,
+    backendRunId: backend,
+    databaseId: browserDatabase,
+    pendingStorage: localStorage,
+  };
+  try {
+    const mounted = render(<LiveApp {...props} />);
+    await userEvent
+      .setup()
+      .click(await screen.findByRole('button', { name: 'Остановить испытание' }));
+    unreadable = false;
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Повторить чтение команд' }));
+    mounted.unmount();
+    write.mockRestore();
+    localStorage.setItem(key, '[]');
+    render(<LiveApp {...props} />);
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Повторить чтение команд' }));
+    const saved: { id: string; retired: boolean }[] = JSON.parse(localStorage.getItem(key) ?? '[]');
+    expect(saved).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: stopId, retired: false })]),
+    );
+    expect(api.stop).toHaveBeenCalledOnce();
+  } finally {
+    read.mockRestore();
+    write.mockRestore();
+    localStorage.removeItem(key);
+  }
+});
+
+it('still sends Stop when the observation version cannot be generated', async () => {
+  const browserDatabase = '18181818-1818-4818-8818-181818181818';
+  const key = `gk80.demo.pending-command.v1:${browserDatabase}`;
+  localStorage.setItem(
+    key,
+    JSON.stringify([{ id: 'legacy-rng', kind: 'create', testId: null, retired: false }]),
+  );
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 2,
+        lastEventSequence: 2,
+        activeTest: { ...record, stage: TestRecordStage.Running },
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.stop.mockRejectedValue(new Error('response lost'));
+  const random = vi.spyOn(crypto, 'randomUUID').mockImplementation(() => {
+    throw new Error('unavailable');
+  });
+  try {
+    render(
+      <LiveApp
+        session={bridge}
+        hostRunId={host}
+        backendRunId={backend}
+        databaseId={browserDatabase}
+        pendingStorage={localStorage}
+      />,
+    );
+    const stop = await screen.findByRole('button', { name: 'Остановить испытание' });
+    await userEvent.setup().click(stop);
+    await userEvent.setup().click(stop);
+    expect(api.stop).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole('button', { name: 'Повторить чтение команд' })).toBeTruthy();
+    expect(screen.getByText(new RegExp(`ID ${stopId}`))).toBeTruthy();
+    expect(localStorage.getItem(key)).not.toContain(stopId);
+    random.mockRestore();
+    const failedWrite = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('unavailable');
+    });
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Я проверил эту команду' }));
+    failedWrite.mockRestore();
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Повторить чтение команд' }));
+    const saved: { id: string; observationVersion?: string }[] = JSON.parse(
+      localStorage.getItem(key) ?? '[]',
+    );
+    expect(saved).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: stopId, observationVersion: expect.any(String) }),
+      ]),
+    );
+    expect(api.stop).toHaveBeenCalledTimes(2);
+  } finally {
+    random.mockRestore();
+    localStorage.removeItem(key);
+  }
+});
+
+it('retains overflow until multiple requested removals can be saved, while Stop remains available', async () => {
+  const browserDatabase = '40404040-4040-4040-8040-404040404040';
+  const key = `gk80.demo.pending-command.v1:${browserDatabase}`;
+  const secondTest = '50505050-5050-4050-8050-505050505050';
+  const secondStop = '60606060-6060-4060-8060-606060606060';
+  let active = { ...record, stage: TestRecordStage.Running };
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: backend,
+        revision: 2,
+        lastEventSequence: 2,
+        activeTest: active,
+        pendingAction: null,
+        measurements: [],
+      },
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  const props = {
+    session: bridge,
+    hostRunId: host,
+    backendRunId: backend,
+    databaseId: browserDatabase,
+    pendingStorage: localStorage,
+  };
+  api.stop.mockRejectedValue(new Error('response lost'));
+  api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
+  const failure = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+    throw new Error('unavailable');
+  });
+  try {
+    const first = render(<LiveApp {...props} />);
+    await userEvent
+      .setup()
+      .click(await screen.findByRole('button', { name: 'Остановить испытание' }));
+    first.unmount();
+    active = { ...active, testId: secondTest, stopCommandId: secondStop };
+    const second = render(<LiveApp {...props} />);
+    await userEvent
+      .setup()
+      .click(await screen.findByRole('button', { name: 'Остановить испытание' }));
+    second.unmount();
+    failure.mockRestore();
+    const old = Array.from({ length: 65 }, (_, index) => ({
+      id: `overflow-${index}`,
+      kind: 'create',
+      testId: null,
+      retired: true,
+      legacyReviewed: true,
+    }));
+    localStorage.setItem(key, JSON.stringify(old));
+    render(<LiveApp {...props} />);
+    await screen.findByText(/ID overflow-0\./);
+    expect(screen.getByText(new RegExp(`ID ${stopId}`))).toBeTruthy();
+    expect(screen.getByText(new RegExp(`ID ${secondStop}`))).toBeTruthy();
+    await userEvent.setup().click(
+      within(screen.getByText(/ID overflow-0\./)).getByRole('button', {
+        name: 'Удалить запись наблюдения',
+      }),
+    );
+    expect(screen.getByText(/ID overflow-0\./)).toBeTruthy();
+    expect(JSON.parse(localStorage.getItem(key) ?? '[]')).toHaveLength(65);
+    await userEvent.setup().click(
+      within(screen.getByText(/ID overflow-1\./)).getByRole('button', {
+        name: 'Удалить запись наблюдения',
+      }),
+    );
+    expect(screen.queryByText(/ID overflow-0\./)).toBeNull();
+    expect(screen.queryByText(/ID overflow-1\./)).toBeNull();
+    const saved: { id: string }[] = JSON.parse(localStorage.getItem(key) ?? '[]');
+    expect(saved).toHaveLength(65);
+    expect(saved.map((item) => item.id)).toEqual(expect.arrayContaining([stopId, secondStop]));
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Остановить испытание' }));
+    expect(api.stop).toHaveBeenCalledTimes(3);
+  } finally {
+    failure.mockRestore();
+    localStorage.removeItem(key);
+  }
 });
 
 it('merges the previously unread command list before storing an emergency Stop', async () => {
