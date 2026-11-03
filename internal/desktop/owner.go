@@ -27,41 +27,25 @@ var errOwnerShutdownUnconfirmed = errors.New("desktop owner shutdown could not b
 
 // Owner serializes startup, observation and shutdown of its own core process.
 type Owner struct {
-	mu                sync.Mutex
-	status            contract.DesktopStatus
-	process           ownedCore
-	session           *demoSession
-	cleanupErr        error
-	sessionErr        error
-	coreExitLogged    bool
-	backendID         uuid.UUID
-	databaseID        uuid.UUID
-	verifyGate        chan struct{}
-	starter           startCore
-	log               *slog.Logger
-	notify            func(contract.DesktopStatus)
-	notifications     chan struct{}
-	connectionChanges chan struct{}
-	connectionMu      sync.Mutex
-	connectionEmitter func(contract.ConnectionState)
-	connectionActive  bool
-	connectionPending *contract.ConnectionState
-	connectionDirty   bool
-	eventChanges      chan struct{}
-	eventMu           sync.Mutex
-	eventEmitter      func(contract.Event)
-	eventPending      *contract.Event
-	eventLatest       *contract.Event
-	watchMu           sync.Mutex
-	watchChanges      chan struct{}
-	stopNotifications chan struct{}
-	hostDegraded      <-chan struct{}
-	ctx               context.Context
-	cancel            context.CancelFunc
-	workerDone        chan struct{}
-	startOnce         sync.Once
-	closeOnce         sync.Once
-	notifyStopOnce    sync.Once
+	delivery       *observationDelivery
+	mu             sync.Mutex
+	status         contract.DesktopStatus
+	process        ownedCore
+	session        *demoSession
+	cleanupErr     error
+	sessionErr     error
+	coreExitLogged bool
+	backendID      uuid.UUID
+	databaseID     uuid.UUID
+	verifyGate     chan struct{}
+	starter        startCore
+	log            *slog.Logger
+	hostDegraded   <-chan struct{}
+	ctx            context.Context
+	cancel         context.CancelFunc
+	workerDone     chan struct{}
+	startOnce      sync.Once
+	closeOnce      sync.Once
 }
 
 // NewOwner uses the production native-process transport.
@@ -80,258 +64,24 @@ func NewOwner(hostID uuid.UUID, executable, profileDir, profileID, version strin
 
 func newOwner(hostID uuid.UUID, starter startCore, log *slog.Logger, degraded bool, notify func(contract.DesktopStatus)) *Owner {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Owner{
+	owner := &Owner{
 		status:  contract.DesktopStatus{HostRunId: hostID, Revision: 1, Status: contract.DesktopStatusStatusStarting, DiagnosticsDegraded: degraded},
-		starter: starter, log: log, notify: notify, notifications: make(chan struct{}, 1), connectionChanges: make(chan struct{}, 1), eventChanges: make(chan struct{}, 1), watchChanges: make(chan struct{}), stopNotifications: make(chan struct{}),
+		starter: starter, log: log,
 		ctx: ctx, cancel: cancel, workerDone: make(chan struct{}),
 		verifyGate: make(chan struct{}, 1),
 	}
+	owner.delivery = newObservationDelivery(ctx, owner.Status, owner.deliveryConnection, owner.SessionView, notify)
+	return owner
 }
 
 func (o *Owner) Start() {
 	o.startOnce.Do(func() {
-		go o.notifyLoop()
-		go o.connectionLoop()
-		go o.eventLoop()
+		o.delivery.start()
 		go o.run()
 		if o.hostDegraded != nil {
 			go o.watchHostDiagnostics()
 		}
 	})
-}
-
-func (o *Owner) SetCoreEventEmitter(emit func(contract.Event)) {
-	o.eventMu.Lock()
-	o.eventEmitter = emit
-	o.eventMu.Unlock()
-}
-
-func (o *Owner) observeCoreEvent(event contract.Event) {
-	if event.Sequence <= 0 {
-		return
-	}
-	o.eventMu.Lock()
-	copy := event
-	o.eventLatest = &copy
-	o.eventMu.Unlock()
-	select {
-	case o.eventChanges <- struct{}{}:
-	default:
-	}
-}
-
-func (o *Owner) eventLoop() {
-	for {
-		select {
-		case <-o.ctx.Done():
-			return
-		case <-o.eventChanges:
-			o.connectionMu.Lock()
-			active := o.connectionActive
-			o.connectionMu.Unlock()
-			o.eventMu.Lock()
-			if !active || o.eventEmitter == nil || o.eventLatest == nil || o.eventPending != nil {
-				o.eventMu.Unlock()
-				continue
-			}
-			copy := *o.eventLatest
-			o.eventPending = &copy
-			emit := o.eventEmitter
-			o.eventMu.Unlock()
-			emit(copy)
-		}
-	}
-}
-
-func (o *Owner) AcknowledgeCoreEvent(_ context.Context, backend string, sequence int64) error {
-	o.eventMu.Lock()
-	if o.eventPending == nil || o.eventPending.BackendRunId.String() != backend || o.eventPending.Sequence != sequence {
-		o.eventMu.Unlock()
-		return errSessionUnavailable
-	}
-	o.eventPending = nil
-	more := o.eventLatest != nil && o.eventLatest.Sequence > sequence
-	o.eventMu.Unlock()
-	if more {
-		select {
-		case o.eventChanges <- struct{}{}:
-		default:
-		}
-	}
-	return nil
-}
-
-func (o *Owner) connectionNotice(view contract.SessionView, afterSequence int64) contract.ConnectionNotice {
-	result := contract.ConnectionNotice{Connection: view.Connection}
-	if view.Snapshot != nil {
-		result.SnapshotBoundary = view.Snapshot.LastEventSequence
-	}
-	o.eventMu.Lock()
-	defer o.eventMu.Unlock()
-	if o.eventLatest != nil && o.eventLatest.Sequence > afterSequence {
-		copy := *o.eventLatest
-		result.Event = &copy
-		result.Gap = copy.Sequence-afterSequence > 1
-	}
-	if result.SnapshotBoundary > afterSequence && (result.Event == nil || result.SnapshotBoundary > result.Event.Sequence) {
-		result.Gap = true
-	}
-	return result
-}
-
-// SetConnectionEmitter installs the native UI notification sink before Start.
-func (o *Owner) SetConnectionEmitter(emit func(contract.ConnectionState)) {
-	o.connectionMu.Lock()
-	o.connectionEmitter = emit
-	o.connectionMu.Unlock()
-}
-
-func (o *Owner) signalConnection() {
-	o.watchMu.Lock()
-	if o.watchChanges != nil {
-		close(o.watchChanges)
-	}
-	o.watchChanges = make(chan struct{})
-	o.watchMu.Unlock()
-	select {
-	case o.connectionChanges <- struct{}{}:
-	default:
-	}
-}
-
-// WaitConnection is a bounded fallback when an emitted event was lost during reload.
-func (o *Owner) WaitConnection(ctx context.Context, after, afterSequence int64) (contract.ConnectionNotice, error) {
-	if after < 0 || afterSequence < 0 {
-		return contract.ConnectionNotice{}, errSessionUnavailable
-	}
-	waitCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	for {
-		if err := ctx.Err(); err != nil {
-			return contract.ConnectionNotice{}, err
-		}
-		o.watchMu.Lock()
-		changes := o.watchChanges
-		o.watchMu.Unlock()
-		view, err := o.SessionView(waitCtx)
-		if callerErr := ctx.Err(); callerErr != nil {
-			return contract.ConnectionNotice{}, callerErr
-		}
-		if err != nil {
-			return contract.ConnectionNotice{}, err
-		}
-		state := view.Connection
-		if state.Revision > after {
-			notice := o.connectionNotice(view, afterSequence)
-			if err := ctx.Err(); err != nil {
-				return contract.ConnectionNotice{}, err
-			}
-			return notice, nil
-		}
-		select {
-		case <-changes:
-		case <-waitCtx.Done():
-			if err := ctx.Err(); err != nil {
-				return contract.ConnectionNotice{}, err
-			}
-			if errors.Is(waitCtx.Err(), context.DeadlineExceeded) {
-				view, err := o.SessionView(ctx)
-				if callerErr := ctx.Err(); callerErr != nil {
-					return contract.ConnectionNotice{}, callerErr
-				}
-				if err != nil {
-					return contract.ConnectionNotice{}, err
-				}
-				notice := o.connectionNotice(view, afterSequence)
-				if err := ctx.Err(); err != nil {
-					return contract.ConnectionNotice{}, err
-				}
-				return notice, nil
-			}
-			return contract.ConnectionNotice{}, waitCtx.Err()
-		case <-o.ctx.Done():
-			return contract.ConnectionNotice{}, errSessionUnavailable
-		}
-	}
-}
-
-func (o *Owner) connectionLoop() {
-	for {
-		select {
-		case <-o.ctx.Done():
-			return
-		case <-o.connectionChanges:
-			o.mu.Lock()
-			session := o.session
-			o.mu.Unlock()
-			if session == nil {
-				continue
-			}
-			state := session.connectionState()
-			o.connectionMu.Lock()
-			if !o.connectionActive || o.connectionEmitter == nil {
-				o.connectionMu.Unlock()
-				continue
-			}
-			if o.connectionPending != nil {
-				o.connectionDirty = true
-				o.connectionMu.Unlock()
-				continue
-			}
-			copy := state
-			o.connectionPending = &copy
-			emit := o.connectionEmitter
-			o.connectionMu.Unlock()
-			emit(state)
-		}
-	}
-}
-
-func (o *Owner) EnableConnectionEvents(context.Context) error {
-	o.connectionMu.Lock()
-	o.connectionActive = true
-	o.connectionMu.Unlock()
-	o.signalConnection()
-	select {
-	case o.eventChanges <- struct{}{}:
-	default:
-	}
-	return nil
-}
-
-func (o *Owner) AcknowledgeConnection(_ context.Context, host string, revision int64) error {
-	o.connectionMu.Lock()
-	pending := o.connectionPending
-	if pending == nil || pending.HostRunId.String() != host || pending.Revision != revision {
-		o.connectionMu.Unlock()
-		return errSessionUnavailable
-	}
-	o.connectionPending = nil
-	dirty := o.connectionDirty
-	o.connectionDirty = false
-	o.connectionMu.Unlock()
-	if dirty {
-		o.signalConnection()
-	}
-	return nil
-}
-
-func (o *Owner) notifyLoop() {
-	for {
-		select {
-		case <-o.notifications:
-			o.notify(o.Status())
-		case <-o.stopNotifications:
-			return
-		}
-	}
-}
-
-func (o *Owner) signal() {
-	select {
-	case o.notifications <- struct{}{}:
-	default:
-	}
 }
 
 func (o *Owner) watchHostDiagnostics() {
@@ -617,7 +367,7 @@ func (o *Owner) Close() error {
 		}
 		return errors.Join(errOwnerShutdownUnconfirmed, transport.ErrCleanupUnconfirmed, sessionErr)
 	}
-	o.notifyStopOnce.Do(func() { close(o.stopNotifications) })
+	o.delivery.stopStatusNotifications()
 	select {
 	case <-o.hostDegraded:
 		o.markDegraded()
@@ -650,3 +400,34 @@ func (o *Owner) Close() error {
 	}
 	return sessionErr
 }
+
+// deliveryConnection preserves the raw session observation used by native push.
+// Unlike the public read path, it does not require bootstrap ready.
+func (o *Owner) deliveryConnection() (contract.ConnectionState, bool) {
+	o.mu.Lock()
+	session := o.session
+	o.mu.Unlock()
+	if session == nil {
+		return contract.ConnectionState{}, false
+	}
+	return session.connectionState(), true
+}
+func (o *Owner) SetCoreEventEmitter(emit func(contract.Event)) { o.delivery.setCoreEventEmitter(emit) }
+func (o *Owner) SetConnectionEmitter(emit func(contract.ConnectionState)) {
+	o.delivery.setConnectionEmitter(emit)
+}
+func (o *Owner) AcknowledgeCoreEvent(_ context.Context, backend string, sequence int64) error {
+	return o.delivery.acknowledgeCoreEvent(backend, sequence)
+}
+func (o *Owner) AcknowledgeConnection(_ context.Context, host string, revision int64) error {
+	return o.delivery.acknowledgeConnection(host, revision)
+}
+func (o *Owner) EnableConnectionEvents(context.Context) error {
+	return o.delivery.enableConnectionEvents()
+}
+func (o *Owner) WaitConnection(ctx context.Context, after, afterSequence int64) (contract.ConnectionNotice, error) {
+	return o.delivery.waitConnection(ctx, after, afterSequence)
+}
+func (o *Owner) signalConnection()                     { o.delivery.signalConnection() }
+func (o *Owner) observeCoreEvent(event contract.Event) { o.delivery.observeCoreEvent(event) }
+func (o *Owner) signal()                               { o.delivery.signalStatus() }

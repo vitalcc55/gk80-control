@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -114,21 +113,12 @@ func (o *Owner) Test(ctx context.Context, value string) (contract.TestRecord, er
 		return contract.TestRecord{}, err
 	}
 	session.mu.Lock()
-	generation := session.activeGeneration
+	generation := session.historyGeneration()
 	session.mu.Unlock()
 	record, err := session.client.Test(ctx, lease, id)
 	if err == nil {
 		session.mu.Lock()
-		if record.TestId == id {
-			session.rememberSavedLocked(record)
-		}
-		finishedInSnapshot := session.snapshot != nil && session.snapshot.ActiveTest != nil && session.snapshot.ActiveTest.TestId == record.TestId && session.snapshot.ActiveTest.Stage == "finished"
-		differentActive := session.snapshot != nil && session.snapshot.ActiveTest != nil && session.snapshot.ActiveTest.TestId != record.TestId && session.snapshot.ActiveTest.Stage != "finished"
-		if !finishedInSnapshot && !differentActive && (session.activeGeneration == generation || session.activeTestID == record.TestId) {
-			session.rememberStopLocked(record)
-		} else {
-			session.rememberStopPairLocked(record)
-		}
+		session.applyHistory(record, id, generation, session.snapshot)
 		session.mu.Unlock()
 	}
 	return record, err
@@ -196,9 +186,10 @@ func (o *Owner) Command(ctx context.Context, value string) (contract.CommandStat
 		return contract.CommandStatus{}, err
 	}
 	session.mu.Lock()
-	if status, isStop := session.stopStatusLocked(id); isStop {
-		identity := session.commandPayloads[id]
-		lookup := status.TestId != nil && strings.HasPrefix(identity, "stop:") && !terminalCommand(status.Status) && !session.inFlight[id] && !session.ambiguous[id]
+	plan := session.planCommandStatus(id, session.snapshot)
+	status, identity := plan.status, plan.identity
+	if plan.isStop {
+		lookup := plan.lookup
 		session.mu.Unlock()
 		if lookup {
 			resolved, lookupErr := session.lookupStop(ctx, lease, *status.TestId, id)
@@ -220,40 +211,23 @@ func (o *Owner) Command(ctx context.Context, value string) (contract.CommandStat
 				o.mu.Unlock()
 				return contract.CommandStatus{}, errSessionUnavailable
 			}
-			if current, tracked := session.commands[id]; tracked && session.commandPayloads[id] == identity && !session.inFlight[id] && !session.ambiguous[id] {
-				status = mergeCommandStatus(current, resolved)
-				session.commands[id] = status
-			} else if current, stillStop := session.stopStatusLocked(id); stillStop {
-				status = current
-			}
+			status = session.applyStopStatus(id, identity, status, resolved, session.snapshot)
 			session.mu.Unlock()
 			o.mu.Unlock()
 		}
 		return status, nil
 	}
-	identity := session.commandPayloads[id]
-	if current, tracked := session.commands[id]; tracked && (session.inFlight[id] || session.ambiguous[id]) {
+	if plan.cached {
 		session.mu.Unlock()
-		return current, nil
+		return status, nil
 	}
 	session.mu.Unlock()
-	status, err := session.client.Command(ctx, lease, id)
+	status, err = session.client.Command(ctx, lease, id)
 	if err != nil {
 		return contract.CommandStatus{}, err
 	}
 	session.mu.Lock()
-	if status, isStop := session.stopStatusLocked(id); isStop {
-		session.mu.Unlock()
-		return status, nil
-	}
-	if current, tracked := session.commands[id]; tracked {
-		if session.commandPayloads[id] != identity || session.inFlight[id] || session.ambiguous[id] {
-			status = current
-		} else {
-			status = mergeCommandStatus(current, status)
-			session.commands[id] = status
-		}
-	}
+	status = session.applyGenericStatus(id, identity, status, session.snapshot)
 	session.mu.Unlock()
 	return status, nil
 }
@@ -462,23 +436,10 @@ func (o *Owner) stopSessionCommand(ctx context.Context, id, commandID uuid.UUID,
 		return contract.CommandStatus{}, err
 	}
 	session.mu.Lock()
-	var active *contract.TestRecord
-	if session.snapshot != nil {
-		active = session.snapshot.ActiveTest
-	}
-	valid := (active != nil && active.Stage != "finished" && active.TestId == id && active.StopCommandId == commandID) || (session.activeTestID == id && session.activeStopID == commandID)
-	previous, tracked := session.commands[commandID]
-	knownRepeat := tracked && session.commandPayloads[commandID] == identity
-	reservedTest, reserved := session.reservedStopTestLocked(commandID)
+	previous, valid, admissionErr := session.stopAdmission(id, commandID, identity, session.snapshot)
 	session.mu.Unlock()
 	if !valid {
-		if knownRepeat {
-			return previous, nil
-		}
-		if reserved && reservedTest != id {
-			return contract.CommandStatus{}, ErrCommandConflict
-		}
-		return contract.CommandStatus{}, errSessionUnavailable
+		return previous, admissionErr
 	}
 	return session.command(ctx, commandID, identity, true, func(ctx context.Context, lease uuid.UUID) (contract.CommandStatus, error) {
 		return send(ctx, session, session.client, lease)

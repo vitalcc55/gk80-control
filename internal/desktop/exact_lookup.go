@@ -132,24 +132,11 @@ func (o *Owner) LookupCommandExact(ctx context.Context, databaseValue, kind, tes
 	session.mu.Lock()
 	valid = valid && !session.closed && !session.closing && session.leaseConfirmed && session.leaseID == lease && time.Now().Before(session.leaseUntil)
 	busy := false
-	if displaced := session.displaced; valid && readCtx.Err() == nil && displaced != nil && displaced.id == commandID && displaced.identity == identity {
-		if displaced.inFlight {
-			busy = true
-		} else if conflict || (err == nil && status.Status != contract.CommandStatusStatusUnknown) {
-			session.displaced = nil
-		}
+	if valid && readCtx.Err() == nil {
+		busy = session.applyDisplacedExact(commandID, identity, status, conflict, err)
 	}
-	if current, ok := session.commands[commandID]; valid && readCtx.Err() == nil && ok && session.commandPayloads[commandID] == identity {
-		if session.inFlight[commandID] {
-			busy = true
-		} else if conflict && kind != "stop" {
-			delete(session.commands, commandID)
-			delete(session.commandPayloads, commandID)
-			delete(session.ambiguous, commandID)
-		} else if err == nil && status.Status != contract.CommandStatusStatusUnknown {
-			session.commands[commandID] = mergeCommandStatus(current, status)
-			delete(session.ambiguous, commandID)
-		}
+	if valid && readCtx.Err() == nil {
+		busy = session.applyTrackedExact(commandID, identity, kind, status, conflict, err) || busy
 	}
 	session.mu.Unlock()
 	o.mu.Unlock()
