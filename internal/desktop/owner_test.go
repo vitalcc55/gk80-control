@@ -72,7 +72,7 @@ func TestConnectionNotificationsWaitForDeliveryAcknowledgement(t *testing.T) {
 	owner.session = session
 	events := make(chan contract.ConnectionState, 4)
 	owner.SetConnectionEmitter(func(state contract.ConnectionState) { events <- state })
-	go owner.connectionLoop()
+	go owner.delivery.connectionLoop()
 	if err := owner.EnableConnectionEvents(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +216,7 @@ func TestWaitConnectionRejectsCancellationWhilePreparingNotice(t *testing.T) {
 	defer cancel()
 	ctx := &cancellationAfterView{Context: parent, checked: make(chan struct{}), proceed: make(chan struct{})}
 	result := make(chan error, 1)
-	owner.eventMu.Lock()
+	owner.delivery.eventMu.Lock()
 	go func() {
 		_, err := owner.WaitConnection(ctx, 0, 0)
 		result <- err
@@ -224,13 +224,13 @@ func TestWaitConnectionRejectsCancellationWhilePreparingNotice(t *testing.T) {
 	select {
 	case <-ctx.checked:
 	case <-time.After(time.Second):
-		owner.eventMu.Unlock()
+		owner.delivery.eventMu.Unlock()
 		close(ctx.proceed)
 		t.Fatal("caller check not reached")
 	}
 	cancel()
 	close(ctx.proceed)
-	owner.eventMu.Unlock()
+	owner.delivery.eventMu.Unlock()
 	if err := <-result; !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled caller received a notice: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestCoreEventDeliveryIsBoundedAndReportsGap(t *testing.T) {
 	defer owner.cancel()
 	events := make(chan contract.Event, 3)
 	owner.SetCoreEventEmitter(func(event contract.Event) { events <- event })
-	go owner.eventLoop()
+	go owner.delivery.eventLoop()
 	if err := owner.EnableConnectionEvents(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -281,11 +281,11 @@ func TestCoreEventDeliveryIsBoundedAndReportsGap(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("event not sent after acknowledgement")
 	}
-	notice := owner.connectionNotice(contract.SessionView{}, 1)
+	notice := owner.delivery.connectionNotice(contract.SessionView{}, 1)
 	if !notice.Gap || notice.Event == nil || notice.Event.Sequence != 3 {
 		t.Fatalf("gap not exposed: %+v", notice)
 	}
-	covered := owner.connectionNotice(contract.SessionView{Snapshot: &contract.Snapshot{LastEventSequence: 4}}, 3)
+	covered := owner.delivery.connectionNotice(contract.SessionView{Snapshot: &contract.Snapshot{LastEventSequence: 4}}, 3)
 	if !covered.Gap || covered.SnapshotBoundary != 4 {
 		t.Fatalf("snapshot-covered event loss not exposed: %+v", covered)
 	}
