@@ -16,7 +16,7 @@ govulncheck -version
 
 ## Подготовка другого Windows-ПК
 
-Откройте ветку `codex/first-core-demo`: текущие реализация, [план](first-core-demo-plan.md) и [журнал проверок](first-core-demo-verification.md) находятся в ней, а не в `main`. На новом ПК установите Git и WebView2 Runtime, затем подготовьте версии из таблицы ниже. Сверяйте SHA-256 архивов с опубликованными у их поставщиков. Для Windows x64 распакуйте архивы Node.js, Go и golangci-lint в общий каталог `%LOCALAPPDATA%\gk80-control\tools`: каждый архив уже содержит свой корневой каталог. Проверьте получившиеся пути исполняемых файлов по `scripts/use-dev-tools.ps1` и версию npm.
+Откройте актуальный `main`: реализация первого демонстрационного прохода, [план](first-core-demo-plan.md) и [журнал проверок](first-core-demo-verification.md) находятся в нём. На новом ПК установите Git и WebView2 Runtime, затем подготовьте версии из таблицы ниже. Сверяйте SHA-256 архивов с опубликованными у их поставщиков. Для Windows x64 распакуйте архивы Node.js, Go и golangci-lint в общий каталог `%LOCALAPPDATA%\gk80-control\tools`: каждый архив уже содержит свой корневой каталог. Проверьте получившиеся пути исполняемых файлов по `scripts/use-dev-tools.ps1` и версию npm.
 
 До первого запуска этого скрипта установите Wails и govulncheck в его каталог Go, используя подготовленный Go в текущей сессии PowerShell:
 
