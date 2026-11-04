@@ -13,12 +13,15 @@ import (
 )
 
 // Start records the operator's confirmations and the pending demo action atomically.
-func (s *Store) Start(ctx context.Context, testID uuid.UUID, command contract.StartTestCommand, action contract.PendingAction) (contract.CommandStatus, error) {
+func (s *Store) Start(ctx context.Context, testID uuid.UUID, command contract.StartTestCommand, action contract.PendingAction) (OperationResult, error) {
 	request, err := startRequest(testID, command)
 	if err != nil {
-		return contract.CommandStatus{}, ErrInvalidCommand
+		return OperationResult{}, ErrInvalidCommand
 	}
-	return s.operatorCommand(ctx, command.CommandId, testID, nil, "start", request, func(tx *sql.Tx, wrote *bool) error {
+	var prepared *SavedState
+	attempted := false
+	status, err := s.operatorCommand(ctx, command.CommandId, testID, nil, "start", request, func(tx *sql.Tx, wrote *bool) error {
+		attempted = true
 		if command.CommandId == uuid.Nil || testID == uuid.Nil || command.ExpectedRevision < 0 || !command.ValveClosed || !command.ConnectionConfirmed || action.TestId != testID || action.ActionId == uuid.Nil || action.Instruction == "" {
 			return ErrInvalidCommand
 		}
@@ -40,8 +43,13 @@ func (s *Store) Start(ctx context.Context, testID uuid.UUID, command contract.St
 			return err
 		}
 		record.Stage = "running"
-		return saveTransition(ctx, tx, record, revision+1, operatorID, "start", "accepted", &command.CommandId, &action.ActionId)
+		if err := saveTransition(ctx, tx, record, revision+1, operatorID, "start", "accepted", &command.CommandId, &action.ActionId); err != nil {
+			return err
+		}
+		prepared = &SavedState{Record: record, Revision: revision + 1, PendingAction: &action}
+		return nil
 	})
+	return operatorResult(status, prepared, attempted, err)
 }
 
 func startRequest(testID uuid.UUID, command contract.StartTestCommand) ([]byte, error) {
@@ -106,12 +114,15 @@ func (s *Store) RejectStartUnavailable(ctx context.Context, testID uuid.UUID, co
 }
 
 // Confirm records confirmation of the current action, scoped to its test and action IDs.
-func (s *Store) Confirm(ctx context.Context, testID, actionID uuid.UUID, command contract.ConfirmActionCommand) (contract.CommandStatus, error) {
+func (s *Store) Confirm(ctx context.Context, testID, actionID uuid.UUID, command contract.ConfirmActionCommand) (OperationResult, error) {
 	request, err := confirmRequest(testID, actionID, command)
 	if err != nil {
-		return contract.CommandStatus{}, ErrInvalidCommand
+		return OperationResult{}, ErrInvalidCommand
 	}
-	return s.operatorCommand(ctx, command.CommandId, testID, &actionID, "confirm", request, func(tx *sql.Tx, wrote *bool) error {
+	var prepared *SavedState
+	attempted := false
+	status, err := s.operatorCommand(ctx, command.CommandId, testID, &actionID, "confirm", request, func(tx *sql.Tx, wrote *bool) error {
+		attempted = true
 		if command.CommandId == uuid.Nil || testID == uuid.Nil || actionID == uuid.Nil || command.ExpectedRevision < 0 {
 			return ErrInvalidCommand
 		}
@@ -140,8 +151,13 @@ func (s *Store) Confirm(ctx context.Context, testID, actionID uuid.UUID, command
 		if _, err := tx.ExecContext(ctx, `UPDATE test_actions SET state = 'confirmed' WHERE test_id = ? AND state = 'pending'`, testID.String()); err != nil {
 			return err
 		}
-		return saveTransition(ctx, tx, record, revision+1, operatorID, "confirm", "completed", &command.CommandId, &actionID)
+		if err := saveTransition(ctx, tx, record, revision+1, operatorID, "confirm", "completed", &command.CommandId, &actionID); err != nil {
+			return err
+		}
+		prepared = &SavedState{Record: record, Revision: revision + 1, PendingAction: nil}
+		return nil
 	})
+	return operatorResult(status, prepared, attempted, err)
 }
 
 func confirmRequest(testID, actionID uuid.UUID, command contract.ConfirmActionCommand) ([]byte, error) {
@@ -537,48 +553,48 @@ func (s *Store) MeasurementsPage(ctx context.Context, testID uuid.UUID, after in
 }
 
 // Complete receives the elapsed interval measured by the engine's monotonic clock.
-func (s *Store) Complete(ctx context.Context, testID uuid.UUID, elapsed time.Duration) error {
+func (s *Store) Complete(ctx context.Context, testID uuid.UUID, elapsed time.Duration) (OperationResult, error) {
 	if elapsed < 0 || elapsed > 24*time.Hour {
-		return ErrInvalidCommand
+		return OperationResult{}, ErrInvalidCommand
 	}
 	if err := s.lockWrite(ctx); err != nil {
-		return err
+		return OperationResult{}, err
 	}
 	defer s.unlockWrite()
 	if err := ctx.Err(); err != nil {
-		return err
+		return OperationResult{}, err
 	}
 	if s.failed {
-		return ErrStorageUnavailable
+		return OperationResult{}, ErrStorageUnavailable
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		if ctx.Err() == nil {
 			s.failed = true
 		}
-		return err
+		return OperationResult{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	record, revision, err := currentRecord(ctx, tx, testID)
 	if err != nil {
 		s.noteWriteError(ctx, err, false)
-		return err
+		return OperationResult{}, err
 	}
 	if record.Stage != "running" {
-		return ErrInvalidState
+		return OperationResult{}, ErrInvalidState
 	}
 	var pending int
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM test_actions WHERE test_id = ? AND state = 'pending'`, testID.String()).Scan(&pending); err != nil {
 		s.noteWriteError(ctx, err, false)
-		return err
+		return OperationResult{}, err
 	}
 	if pending != 0 {
-		return ErrInvalidState
+		return OperationResult{}, ErrInvalidState
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT payload, elapsed_ns FROM measurements WHERE test_id = ? AND channel = 'dd1' ORDER BY sequence`, testID.String())
 	if err != nil {
 		s.noteWriteError(ctx, err, false)
-		return err
+		return OperationResult{}, err
 	}
 	var first, last int64
 	count := 0
@@ -588,23 +604,23 @@ func (s *Store) Complete(ctx context.Context, testID uuid.UUID, elapsed time.Dur
 		if err := rows.Scan(&body, &offset); err != nil {
 			_ = rows.Close()
 			s.noteWriteError(ctx, err, false)
-			return err
+			return OperationResult{}, err
 		}
 		var sample contract.Measurement
 		if err := json.Unmarshal(body, &sample); err != nil || !validMeasurement(sample) {
 			_ = rows.Close()
 			s.failed = true
-			return errors.New("invalid stored measurement")
+			return OperationResult{}, errors.New("invalid stored measurement")
 		}
 		if sample.Quality != "valid" || sample.MeasuredAt == nil {
 			_ = rows.Close()
-			return ErrInvalidState
+			return OperationResult{}, ErrInvalidState
 		}
 		if count == 0 {
 			first = offset
 		} else if offset < last {
 			_ = rows.Close()
-			return ErrInvalidState
+			return OperationResult{}, ErrInvalidState
 		}
 		last = offset
 		count++
@@ -612,17 +628,17 @@ func (s *Store) Complete(ctx context.Context, testID uuid.UUID, elapsed time.Dur
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()
 		s.noteWriteError(ctx, err, false)
-		return err
+		return OperationResult{}, err
 	}
 	if err := rows.Close(); err != nil {
 		s.noteWriteError(ctx, err, false)
-		return err
+		return OperationResult{}, err
 	}
 	if count < 2 || last > int64(elapsed) || float64(last-first)/float64(time.Second) < record.Parameters.MeasurementSeconds || elapsed.Seconds() < record.Parameters.MeasurementSeconds {
-		return ErrInvalidState
+		return OperationResult{}, ErrInvalidState
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return OperationResult{}, err
 	}
 	now := time.Now().UTC()
 	record.Stage = "finished"
@@ -631,17 +647,17 @@ func (s *Store) Complete(ctx context.Context, testID uuid.UUID, elapsed time.Dur
 	record.FinishedAt = &now
 	if err := saveTransition(ctx, tx, record, revision+1, "system", "complete", "completed", nil, nil); err != nil {
 		s.noteWriteError(ctx, err, false)
-		return err
+		return OperationResult{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE tests SET measurement_elapsed_ns = ? WHERE id = ?`, int64(elapsed), testID.String()); err != nil {
 		s.noteWriteError(ctx, err, false)
-		return err
+		return OperationResult{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		s.noteWriteError(ctx, err, false)
-		return err
+		return OperationResult{}, err
 	}
-	return nil
+	return OperationResult{Applied: true, Saved: &SavedState{Record: record, Revision: revision + 1}}, nil
 }
 
 // Recover records that unfinished procedures have an unknown outcome; it never runs them.
@@ -732,72 +748,75 @@ func (s *Store) Recover(ctx context.Context) error {
 }
 
 // CompleteStart confirms that the simulator has accepted the starting action.
-func (s *Store) CompleteStart(ctx context.Context, testID, commandID uuid.UUID) error {
+func (s *Store) CompleteStart(ctx context.Context, testID, commandID uuid.UUID) (OperationResult, error) {
 	if err := s.lockWrite(ctx); err != nil {
-		return err
+		return OperationResult{}, err
 	}
 	defer s.unlockWrite()
 	if err := ctx.Err(); err != nil {
-		return err
+		return OperationResult{}, err
 	}
 	if s.failed {
-		return ErrStorageUnavailable
+		return OperationResult{}, ErrStorageUnavailable
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		if ctx.Err() == nil {
 			s.failed = true
 		}
-		return err
+		return OperationResult{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	record, revision, err := currentRecord(ctx, tx, testID)
 	if err != nil {
 		s.noteWriteError(ctx, err, false)
-		return err
+		return OperationResult{}, err
 	}
 	var operation, state string
 	var linked sql.NullString
 	if err := tx.QueryRowContext(ctx, `SELECT operation, status, test_id FROM commands WHERE id = ?`, commandID.String()).Scan(&operation, &state, &linked); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return ErrCommandConflict
+			return OperationResult{}, ErrCommandConflict
 		}
 		s.noteWriteError(ctx, err, false)
-		return err
+		return OperationResult{}, err
 	}
 	if operation != "start" || !linked.Valid || linked.String != testID.String() {
-		return ErrCommandConflict
+		return OperationResult{}, ErrCommandConflict
 	}
 	if state == "completed" {
-		return nil
+		// This is the current record read above, not the historical Start state.
+		status := contract.CommandStatus{CommandId: commandID, Status: "completed", TestId: &testID}
+		return OperationResult{Command: &status, Replayed: true, Saved: &SavedState{Record: record, Revision: revision}}, nil
 	}
 	if state != "accepted" || record.Stage != "running" {
-		return ErrInvalidState
+		return OperationResult{}, ErrInvalidState
 	}
 	var pending int
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM test_actions WHERE test_id = ? AND state = 'pending'`, testID.String()).Scan(&pending); err != nil {
 		s.noteWriteError(ctx, err, false)
-		return err
+		return OperationResult{}, err
 	}
 	if pending != 0 {
-		return ErrInvalidState
+		return OperationResult{}, ErrInvalidState
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return OperationResult{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE commands SET status = 'completed' WHERE id = ?`, commandID.String()); err != nil {
 		s.noteWriteError(ctx, err, false)
-		return err
+		return OperationResult{}, err
 	}
 	if err := saveTransition(ctx, tx, record, revision+1, "system", "start", "completed", &commandID, nil); err != nil {
 		s.noteWriteError(ctx, err, false)
-		return err
+		return OperationResult{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		s.noteWriteError(ctx, err, false)
-		return err
+		return OperationResult{}, err
 	}
-	return nil
+	status := contract.CommandStatus{CommandId: commandID, Status: "completed", TestId: &testID}
+	return OperationResult{Command: &status, Applied: true, Saved: &SavedState{Record: record, Revision: revision + 1}}, nil
 }
 
 var errStopLinkUnavailable = errors.New("stop command has no valid linked test")
@@ -851,81 +870,81 @@ type StopDetails struct {
 }
 
 // FinishStop persists a simulator-confirmed stop. The engine must invoke the port before this call.
-func (s *Store) FinishStop(ctx context.Context, testID, commandID uuid.UUID, details StopDetails) (contract.CommandStatus, error) {
+func (s *Store) FinishStop(ctx context.Context, testID, commandID uuid.UUID, details StopDetails) (OperationResult, error) {
 	if testID == uuid.Nil || commandID == uuid.Nil || details.AcceptedAt.IsZero() || (details.Actor != operatorID && details.Actor != "system") || details.Reason == "" {
-		return contract.CommandStatus{}, ErrInvalidCommand
+		return OperationResult{}, ErrInvalidCommand
 	}
 	if err := s.lockWrite(ctx); err != nil {
-		return contract.CommandStatus{}, err
+		return OperationResult{}, err
 	}
 	defer s.unlockWrite()
 	if err := ctx.Err(); err != nil {
-		return contract.CommandStatus{}, err
+		return OperationResult{}, err
 	}
 	var operation, state string
 	var linked, previousReason sql.NullString
 	err := s.db.QueryRowContext(ctx, `SELECT operation, status, test_id, reason FROM commands WHERE id = ?`, commandID.String()).Scan(&operation, &state, &linked, &previousReason)
 	if errors.Is(err, sql.ErrNoRows) {
-		return contract.CommandStatus{}, ErrCommandConflict
+		return OperationResult{}, ErrCommandConflict
 	}
 	if err != nil {
 		if ctx.Err() == nil {
 			s.failed = true
 		}
-		return contract.CommandStatus{}, err
+		return OperationResult{}, err
 	}
 	if operation != "stop" || !linked.Valid || linked.String != testID.String() {
-		return contract.CommandStatus{}, ErrCommandConflict
+		return OperationResult{}, ErrCommandConflict
 	}
 	if state == "completed" || state == "failed" {
 		result := contract.CommandStatus{CommandId: commandID, Status: contract.CommandStatusStatus(state), TestId: &testID}
 		if previousReason.Valid {
 			result.Reason = &previousReason.String
 		}
-		return result, nil
+		return OperationResult{Command: &result, Replayed: true}, nil
 	}
 	if state != "reserved" {
-		return contract.CommandStatus{}, ErrInvalidState
+		return OperationResult{}, ErrInvalidState
 	}
 	if s.failed {
-		return contract.CommandStatus{}, ErrStorageUnavailable
+		return OperationResult{}, ErrStorageUnavailable
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		if ctx.Err() == nil {
 			s.failed = true
 		}
-		return contract.CommandStatus{}, err
+		return OperationResult{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	record, revision, err := currentRecord(ctx, tx, testID)
 	if err != nil {
 		s.noteWriteError(ctx, err, false)
-		return contract.CommandStatus{}, err
+		return OperationResult{}, err
 	}
 	if record.Stage == "finished" {
-		return contract.CommandStatus{}, ErrInvalidState
+		return OperationResult{}, ErrInvalidState
 	}
 	if err := ctx.Err(); err != nil {
-		return contract.CommandStatus{}, err
+		return OperationResult{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE test_actions SET state = 'canceled' WHERE test_id = ? AND state = 'pending'`, testID.String()); err != nil {
 		s.noteWriteError(ctx, err, false)
-		return contract.CommandStatus{}, err
+		return OperationResult{}, err
 	}
 	record.Stage = "stopping"
 	if err := saveTransition(ctx, tx, record, revision+1, details.Actor, "stop", "accepted", &commandID, nil); err != nil {
 		s.noteWriteError(ctx, err, false)
-		return contract.CommandStatus{}, err
+		return OperationResult{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE audit SET occurred_at = ?, reason = ? WHERE sequence = last_insert_rowid()`, details.AcceptedAt.UTC().Format(time.RFC3339Nano), details.Reason); err != nil {
 		s.noteWriteError(ctx, err, false)
-		return contract.CommandStatus{}, err
+		return OperationResult{}, err
 	}
 	revision++
 	if err := finalizeAcceptedCommands(ctx, tx, testID, &revision, true); err != nil {
 		s.noteWriteError(ctx, err, false)
-		return contract.CommandStatus{}, err
+		return OperationResult{}, err
 	}
 	status := "completed"
 	var reason *string
@@ -936,7 +955,7 @@ func (s *Store) FinishStop(ctx context.Context, testID, commandID uuid.UUID, det
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE commands SET status = ?, reason = ? WHERE id = ?`, status, reason, commandID.String()); err != nil {
 		s.noteWriteError(ctx, err, false)
-		return contract.CommandStatus{}, err
+		return OperationResult{}, err
 	}
 	now := time.Now().UTC()
 	record.Stage = "finished"
@@ -953,13 +972,14 @@ func (s *Store) FinishStop(ctx context.Context, testID, commandID uuid.UUID, det
 	}
 	if err := saveTransition(ctx, tx, record, revision+1, details.Actor, "stop", status, &commandID, nil); err != nil {
 		s.noteWriteError(ctx, err, false)
-		return contract.CommandStatus{}, err
+		return OperationResult{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		s.noteWriteError(ctx, err, false)
-		return contract.CommandStatus{}, err
+		return OperationResult{}, err
 	}
-	return contract.CommandStatus{CommandId: commandID, Status: contract.CommandStatusStatus(status), TestId: &testID, Reason: reason}, nil
+	commandStatus := contract.CommandStatus{CommandId: commandID, Status: contract.CommandStatusStatus(status), TestId: &testID, Reason: reason}
+	return OperationResult{Command: &commandStatus, Applied: true, Saved: &SavedState{Record: record, Revision: revision + 1}}, nil
 }
 
 func finalizeAcceptedCommands(ctx context.Context, tx *sql.Tx, testID uuid.UUID, revision *int64, stopping bool) error {

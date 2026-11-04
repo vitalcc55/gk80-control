@@ -724,8 +724,8 @@ func TestUnknownCreateThenConfirmedSnapshot(t *testing.T) {
 
 type failedStopWrite struct{ *storage.Store }
 
-func (s *failedStopWrite) FinishStop(context.Context, uuid.UUID, uuid.UUID, storage.StopDetails) (contract.CommandStatus, error) {
-	return contract.CommandStatus{}, context.DeadlineExceeded
+func (s *failedStopWrite) FinishStop(context.Context, uuid.UUID, uuid.UUID, storage.StopDetails) (storage.OperationResult, error) {
+	return storage.OperationResult{}, context.DeadlineExceeded
 }
 
 func (s *failedStopWrite) LookupStop(context.Context, uuid.UUID, uuid.UUID) (contract.CommandStatus, error) {

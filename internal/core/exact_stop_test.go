@@ -118,7 +118,7 @@ func TestExactStopRouteReadsIdentityWithoutStartingEquipment(t *testing.T) {
 		t.Fatalf("lookup started equipment: %+v", state.Record)
 	}
 	result, err := store.FinishStop(ctx, record.TestId, record.StopCommandId, storage.StopDetails{Actor: "demo-operator", Reason: "operator", AcceptedAt: time.Now()})
-	if err != nil || result.Status != contract.CommandStatusStatusCompleted {
+	if err != nil || result.Command.Status != contract.CommandStatusStatusCompleted {
 		t.Fatalf("finish: %+v %v", result, err)
 	}
 	before, err := store.AuditPage(ctx, record.TestId, 0, 100)

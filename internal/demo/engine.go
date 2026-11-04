@@ -21,18 +21,17 @@ type Repository interface {
 	LookupCreateExact(context.Context, contract.CreateTestCommand, []byte) (contract.CommandStatus, error)
 	Revision(context.Context) (int64, error)
 	Test(context.Context, uuid.UUID) (contract.TestRecord, error)
-	Start(context.Context, uuid.UUID, contract.StartTestCommand, contract.PendingAction) (contract.CommandStatus, error)
+	Start(context.Context, uuid.UUID, contract.StartTestCommand, contract.PendingAction) (storage.OperationResult, error)
 	LookupStart(context.Context, uuid.UUID, contract.StartTestCommand) (contract.CommandStatus, error)
 	RejectStartNotReady(context.Context, uuid.UUID, contract.StartTestCommand) (contract.CommandStatus, error)
 	RejectStartUnavailable(context.Context, uuid.UUID, contract.StartTestCommand) (contract.CommandStatus, error)
-	Confirm(context.Context, uuid.UUID, uuid.UUID, contract.ConfirmActionCommand) (contract.CommandStatus, error)
+	Confirm(context.Context, uuid.UUID, uuid.UUID, contract.ConfirmActionCommand) (storage.OperationResult, error)
 	LookupConfirm(context.Context, uuid.UUID, uuid.UUID, contract.ConfirmActionCommand) (contract.CommandStatus, error)
 	RejectConfirmUnavailable(context.Context, uuid.UUID, uuid.UUID, contract.ConfirmActionCommand) (contract.CommandStatus, error)
-	PendingAction(context.Context, uuid.UUID) (*contract.PendingAction, error)
-	CompleteStart(context.Context, uuid.UUID, uuid.UUID) error
+	CompleteStart(context.Context, uuid.UUID, uuid.UUID) (storage.OperationResult, error)
 	RecordMeasurements(context.Context, uuid.UUID, []storage.TimedMeasurement) error
-	Complete(context.Context, uuid.UUID, time.Duration) error
-	FinishStop(context.Context, uuid.UUID, uuid.UUID, storage.StopDetails) (contract.CommandStatus, error)
+	Complete(context.Context, uuid.UUID, time.Duration) (storage.OperationResult, error)
+	FinishStop(context.Context, uuid.UUID, uuid.UUID, storage.StopDetails) (storage.OperationResult, error)
 	LookupStop(context.Context, uuid.UUID, uuid.UUID) (contract.CommandStatus, error)
 }
 
@@ -830,36 +829,57 @@ func (e *Engine) refreshFinished(ctx context.Context) error {
 	testID, stopID, details, elapsed := current.record.TestId, current.record.StopCommandId, current.stopDetails, current.finishElapsed
 	stopping := current.stopping
 	e.mu.Unlock()
+	var saved *storage.SavedState
 	if stopping {
 		status, err := e.store.LookupStop(ctx, testID, stopID)
 		if err != nil {
 			return err
 		}
 		if status.Status == "unknown" {
-			if _, err := e.store.FinishStop(ctx, testID, stopID, details); err != nil {
+			result, err := e.store.FinishStop(ctx, testID, stopID, details)
+			if err != nil {
 				return err
 			}
+			saved = result.Saved
 		}
 	}
-	record, err := e.store.Test(ctx, testID)
-	if err != nil {
-		return err
-	}
-	if !stopping && record.Stage != "finished" {
-		if err := e.store.Complete(ctx, testID, elapsed); err != nil {
-			return err
-		}
+	var record contract.TestRecord
+	if saved != nil {
+		record = saved.Record
+	} else {
+		var err error
 		record, err = e.store.Test(ctx, testID)
 		if err != nil {
 			return err
 		}
 	}
+	if !stopping && record.Stage != "finished" {
+		result, err := e.store.Complete(ctx, testID, elapsed)
+		if err != nil {
+			return err
+		}
+		saved = result.Saved
+		if saved != nil {
+			record = saved.Record
+		} else {
+			record, err = e.store.Test(ctx, testID)
+			if err != nil {
+				return err
+			}
+		}
+	}
 	if !stopping && record.Outcome != "completed" {
 		return storage.ErrInvalidState
 	}
-	revision, err := e.store.Revision(ctx)
-	if err != nil {
-		return err
+	var revision int64
+	if saved != nil {
+		revision = saved.Revision
+	} else {
+		var err error
+		revision, err = e.store.Revision(ctx)
+		if err != nil {
+			return err
+		}
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -1026,7 +1046,7 @@ func (e *Engine) start(ctx context.Context, testID uuid.UUID, command contract.S
 			if !e.allowed(control) {
 				return contract.CommandStatus{}, ErrControlRevoked
 			}
-			return result, err
+			return result.CommandStatus(), err
 		}
 		e.mu.Unlock()
 		if err := waitForStop(ctx, done); err != nil {
@@ -1039,7 +1059,8 @@ func (e *Engine) start(ctx context.Context, testID uuid.UUID, command contract.S
 			return contract.CommandStatus{}, storage.ErrStorageUnavailable
 		}
 		action := contract.PendingAction{ActionId: uuid.New(), TestId: testID, Instruction: "Подтвердите начало демонстрационного измерения"}
-		return e.store.Start(ctx, testID, command, action)
+		result, err := e.store.Start(ctx, testID, command, action)
+		return result.CommandStatus(), err
 	}
 	notReady := current.record.Stage == "preparing" && !e.equipment.Ready()
 	baseCtx, cancelBase := context.WithTimeout(current.ctx, 2*time.Second)
@@ -1054,7 +1075,11 @@ func (e *Engine) start(ctx context.Context, testID uuid.UUID, command contract.S
 		return result, err
 	}
 	action := contract.PendingAction{ActionId: uuid.New(), TestId: testID, Instruction: "Подтвердите начало демонстрационного измерения"}
-	status, err := e.store.Start(opCtx, testID, command, action)
+	result, err := e.store.Start(opCtx, testID, command, action)
+	status := result.CommandStatus()
+	if replayed != nil && result.Replayed {
+		*replayed = true
+	}
 	err = operationError(opCtx, err)
 	if err != nil {
 		if unexpectedStorageError(err) {
@@ -1065,11 +1090,11 @@ func (e *Engine) start(ctx context.Context, testID uuid.UUID, command contract.S
 	e.emitCommand(status, nil)
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.active == current && !current.stopping {
-		current.record.Stage = "running"
-		current.revision = command.ExpectedRevision + 1
+	if result.Applied && result.Saved != nil && e.active == current && !current.stopping {
+		current.record = result.Saved.Record
+		current.revision = result.Saved.Revision
 		e.revision = current.revision
-		current.pending = &action
+		current.pending = result.Saved.PendingAction
 		current.startID = command.CommandId
 		e.signal()
 	}
@@ -1141,7 +1166,7 @@ func (e *Engine) confirm(ctx context.Context, testID, actionID uuid.UUID, comman
 			if !e.allowed(control) {
 				return contract.CommandStatus{}, ErrControlRevoked
 			}
-			return result, err
+			return result.CommandStatus(), err
 		}
 		e.mu.Unlock()
 		if err := waitForStop(ctx, done); err != nil {
@@ -1153,14 +1178,19 @@ func (e *Engine) confirm(ctx context.Context, testID, actionID uuid.UUID, comman
 		if !saved {
 			return contract.CommandStatus{}, storage.ErrStorageUnavailable
 		}
-		return e.store.Confirm(ctx, testID, actionID, command)
+		result, err := e.store.Confirm(ctx, testID, actionID, command)
+		return result.CommandStatus(), err
 	}
 	baseCtx, cancelBase := context.WithTimeout(current.ctx, 2*time.Second)
 	opCtx, cancel := operationContextLocked(baseCtx, control)
 	e.mu.Unlock()
 	defer cancel()
 	defer cancelBase()
-	status, err := e.store.Confirm(opCtx, testID, actionID, command)
+	result, err := e.store.Confirm(opCtx, testID, actionID, command)
+	status := result.CommandStatus()
+	if replayed != nil && result.Replayed {
+		*replayed = true
+	}
 	err = operationError(opCtx, err)
 	if err != nil {
 		if unexpectedStorageError(err) {
@@ -1170,7 +1200,7 @@ func (e *Engine) confirm(ctx context.Context, testID, actionID uuid.UUID, comman
 	}
 	e.emitCommand(status, &actionID)
 	e.mu.Lock()
-	if e.active != current || current.stopping || current.started || !e.allowedLocked(control) {
+	if !result.Applied || result.Saved == nil || e.active != current || current.stopping || current.started || !e.allowedLocked(control) {
 		e.mu.Unlock()
 		return status, nil
 	}
@@ -1184,9 +1214,10 @@ func (e *Engine) confirm(ctx context.Context, testID, actionID uuid.UUID, comman
 		go e.finishStop(current)
 		return status, err
 	}
-	current.pending = nil
+	current.record = result.Saved.Record
+	current.pending = result.Saved.PendingAction
 	current.started = true
-	current.revision = command.ExpectedRevision + 1
+	current.revision = result.Saved.Revision
 	e.revision = current.revision
 	current.record.SaveStatus = "pending"
 	e.signal()
@@ -1195,13 +1226,13 @@ func (e *Engine) confirm(ctx context.Context, testID, actionID uuid.UUID, comman
 	completeDone := make(chan startCompletion, 1)
 	deadline, _ := completeCtx.Deadline()
 	go func() {
-		err := e.store.CompleteStart(completeCtx, testID, current.startID)
-		completeDone <- startCompletion{err: err, at: time.Now()}
+		result, err := e.store.CompleteStart(completeCtx, testID, current.startID)
+		completeDone <- startCompletion{result: result, err: err, at: time.Now()}
 	}()
 	completed, timedOut := waitStartCompletion(completeCtx, deadline, completeDone, func() { e.requestStop(current, "storage_error") })
 	if timedOut {
-		if completed.err == nil {
-			e.emitCommand(contract.CommandStatus{CommandId: current.startID, TestId: &testID, Status: "completed"}, &actionID)
+		if completed.result.Command != nil {
+			e.emitCommand(*completed.result.Command, &actionID)
 		}
 		completeCancel()
 		return status, context.DeadlineExceeded
@@ -1212,14 +1243,17 @@ func (e *Engine) confirm(ctx context.Context, testID, actionID uuid.UUID, comman
 		e.requestStop(current, "storage_error")
 		return status, err
 	}
-	e.emitCommand(contract.CommandStatus{CommandId: current.startID, TestId: &testID, Status: "completed"}, &actionID)
+	if completed.result.Command != nil {
+		e.emitCommand(*completed.result.Command, &actionID)
+	}
 	e.mu.Lock()
-	if e.active != current || current.stopping {
+	if completed.result.Saved == nil || e.active != current || current.stopping || !e.allowedLocked(control) || completed.result.Saved.Record.Stage != "running" {
 		e.mu.Unlock()
 		return status, nil
 	}
-	current.record.SaveStatus = "saved"
-	current.revision++
+	current.record = completed.result.Saved.Record
+	current.pending = completed.result.Saved.PendingAction
+	current.revision = completed.result.Saved.Revision
 	e.revision = current.revision
 	e.signal()
 	e.mu.Unlock()
@@ -1385,28 +1419,34 @@ func (e *Engine) finishStop(current *run) {
 	}
 	stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_, err = e.store.FinishStop(stopCtx, testID, stopID, current.stopDetails)
-	committed := err == nil
-	var persisted contract.TestRecord
-	var revision int64
-	if err == nil {
-		persisted, err = e.store.Test(stopCtx, testID)
-	}
-	if err == nil {
-		revision, err = e.store.Revision(stopCtx)
+	result, err := e.store.FinishStop(stopCtx, testID, stopID, current.stopDetails)
+	confirmed := result.Command != nil || result.Saved != nil
+	saved := result.Saved
+	// Replay confirms the command, not a current record. Reconcile that case
+	// separately; a new committed transition already supplies its state.
+	if err == nil && saved == nil {
+		var record contract.TestRecord
+		var revision int64
+		record, err = e.store.Test(stopCtx, testID)
+		if err == nil {
+			revision, err = e.store.Revision(stopCtx)
+		}
+		if err == nil {
+			saved = &storage.SavedState{Record: record, Revision: revision}
+		}
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.active != current {
 		return
 	}
-	if err != nil {
-		current.record.SaveStatus = saveFailure(err, committed)
+	if err != nil || saved == nil {
+		current.record.SaveStatus = saveFailure(err, confirmed)
 	} else {
-		current.record = persisted
+		current.record = saved.Record
 		current.finalized = true
-		current.revision = revision
-		e.revision = revision
+		current.revision = saved.Revision
+		e.revision = saved.Revision
 	}
 	e.signal()
 }
@@ -1426,8 +1466,9 @@ const measurementWriteTimeout = 2 * time.Second
 type samplePacket []storage.TimedMeasurement
 
 type startCompletion struct {
-	err error
-	at  time.Time
+	result storage.OperationResult
+	err    error
+	at     time.Time
 }
 
 func waitStartCompletion(ctx context.Context, deadline time.Time, done <-chan startCompletion, onTimeout func()) (startCompletion, bool) {
@@ -1584,29 +1625,20 @@ flush:
 	e.mu.Unlock()
 	completeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	err := e.store.Complete(completeCtx, testID, elapsed)
-	committed := err == nil
-	var persisted contract.TestRecord
-	var revision int64
-	if err == nil {
-		persisted, err = e.store.Test(completeCtx, testID)
-	}
-	if err == nil {
-		revision, err = e.store.Revision(completeCtx)
-	}
+	result, err := e.store.Complete(completeCtx, testID, elapsed)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.active != current {
 		return
 	}
-	if err != nil {
-		current.record.SaveStatus = saveFailure(err, committed)
+	if err != nil || result.Saved == nil {
+		current.record.SaveStatus = saveFailure(err, false)
 		current.record.DataQuality = "unknown"
 	} else {
-		current.record = persisted
+		current.record = result.Saved.Record
 		current.finalized = true
-		current.revision = revision
-		e.revision = revision
+		current.revision = result.Saved.Revision
+		e.revision = result.Saved.Revision
 	}
 	e.signal()
 }
