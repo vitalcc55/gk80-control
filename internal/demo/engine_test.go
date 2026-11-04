@@ -722,7 +722,7 @@ func (s *blockedSamples) RecordMeasurements(ctx context.Context, id uuid.UUID, s
 	s.once.Do(func() { close(s.entered); <-s.release })
 	return s.Store.RecordMeasurements(ctx, id, samples)
 }
-func (s *blockedSamples) FinishStop(ctx context.Context, testID, commandID uuid.UUID, details storage.StopDetails) (contract.CommandStatus, error) {
+func (s *blockedSamples) FinishStop(ctx context.Context, testID, commandID uuid.UUID, details storage.StopDetails) (storage.OperationResult, error) {
 	s.gate.Lock()
 	defer s.gate.Unlock()
 	return s.Store.FinishStop(ctx, testID, commandID, details)
@@ -802,9 +802,9 @@ type delayedCompleteCommit struct {
 	calls atomic.Int32
 }
 
-func (s *delayedCompleteCommit) Complete(ctx context.Context, id uuid.UUID, elapsed time.Duration) error {
+func (s *delayedCompleteCommit) Complete(ctx context.Context, id uuid.UUID, elapsed time.Duration) (storage.OperationResult, error) {
 	if s.calls.Add(1) == 1 {
-		return context.DeadlineExceeded
+		return storage.OperationResult{}, context.DeadlineExceeded
 	}
 	return s.Store.Complete(ctx, id, elapsed)
 }
@@ -853,9 +853,9 @@ func TestRefreshPersistsCompletedRunAfterWriteDeadline(t *testing.T) {
 	}
 }
 
-func (s *delayedStopCommit) FinishStop(ctx context.Context, testID, commandID uuid.UUID, details storage.StopDetails) (contract.CommandStatus, error) {
+func (s *delayedStopCommit) FinishStop(ctx context.Context, testID, commandID uuid.UUID, details storage.StopDetails) (storage.OperationResult, error) {
 	if s.calls.Add(1) == 1 {
-		return contract.CommandStatus{}, context.DeadlineExceeded
+		return storage.OperationResult{}, context.DeadlineExceeded
 	}
 	return s.Store.FinishStop(ctx, testID, commandID, details)
 }
@@ -964,8 +964,8 @@ func TestInvalidMeasurementRecordsSystemStop(t *testing.T) {
 func (*failingSamples) RecordMeasurements(context.Context, uuid.UUID, []storage.TimedMeasurement) error {
 	return storage.ErrStorageUnavailable
 }
-func (*failingSamples) FinishStop(context.Context, uuid.UUID, uuid.UUID, storage.StopDetails) (contract.CommandStatus, error) {
-	return contract.CommandStatus{}, storage.ErrStorageUnavailable
+func (*failingSamples) FinishStop(context.Context, uuid.UUID, uuid.UUID, storage.StopDetails) (storage.OperationResult, error) {
+	return storage.OperationResult{}, storage.ErrStorageUnavailable
 }
 
 func TestStorageFailureStopsSimulatorWithoutClaimingSaved(t *testing.T) {
@@ -1358,7 +1358,7 @@ type heldComplete struct {
 	release chan struct{}
 }
 
-func (s *heldComplete) Complete(ctx context.Context, id uuid.UUID, elapsed time.Duration) error {
+func (s *heldComplete) Complete(ctx context.Context, id uuid.UUID, elapsed time.Duration) (storage.OperationResult, error) {
 	close(s.entered)
 	<-s.release
 	return s.Store.Complete(ctx, id, elapsed)
