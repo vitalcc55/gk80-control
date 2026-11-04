@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useLayoutEffect, useRef } from 'react';
 import uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
 import { formatNumber } from '../fixtureAdapter';
@@ -34,6 +34,89 @@ function formatAxisValues(splits: number[]): string[] {
   return splits.map((value) => String(value));
 }
 
+type ChartProjection = {
+  data: uPlot.AlignedData;
+  timeScale: number | undefined;
+  pressureScale: number | undefined;
+  rangeSeconds: number | undefined;
+};
+
+function restoredValues(splits: number[], scale: number) {
+  const actual = splits.map((value) => value * scale);
+  return formatAxisValues(actual).map((label, index) =>
+    !Number.isFinite(actual[index]) || (index > 0 && actual[index] === actual[index - 1])
+      ? null
+      : label,
+  );
+}
+
+function projectChart({
+  points,
+  target,
+  tolerance,
+  rangeSeconds,
+}: MeasurementChartProps): ChartProjection {
+  // uPlot отвергает x-диапазон менее 1e-16; нормализуем его только для рисования.
+  const timeScale =
+    rangeSeconds !== undefined && rangeSeconds > 0 && rangeSeconds < 1e-16
+      ? rangeSeconds
+      : undefined;
+  // uPlot теряет шкалу и когда сами значения больше 1e-16, а их размах меньше.
+  const pressureRange = points.reduce(
+    (range, point) =>
+      point.pressure === null
+        ? range
+        : {
+            min: Math.min(range.min, point.pressure),
+            max: Math.max(range.max, point.pressure),
+            hasMeasurement: true,
+          },
+    { min: target, max: target, hasMeasurement: false },
+  );
+  const pressureScale =
+    target > 0 &&
+    (target <= 1e-16 ||
+      target >= 1e150 ||
+      (pressureRange.hasMeasurement && pressureRange.max - pressureRange.min < 1e-16))
+      ? target
+      : undefined;
+  const plottedTarget = pressureScale === undefined ? target : target / pressureScale;
+
+  const data: uPlot.AlignedData = [
+    points.map((point) => (timeScale === undefined ? point.seconds : point.seconds / timeScale)),
+    points.map((point) =>
+      point.pressure === null || pressureScale === undefined
+        ? point.pressure
+        : point.pressure / pressureScale,
+    ),
+    points.map(() => plottedTarget),
+    points.map((point) => point.differential),
+    points.map(() => (tolerance === undefined ? null : plottedTarget * (1 + tolerance / 100))),
+    points.map(() => (tolerance === undefined ? null : plottedTarget * (1 - tolerance / 100))),
+  ];
+  return { data, timeScale, pressureScale, rangeSeconds };
+}
+
+function updateChart(chart: uPlot, projection: ChartProjection) {
+  chart.batch(() => {
+    // Штатный reset также обновляет наведённый курсор, даже если шкалы не изменились.
+    chart.setData(projection.data);
+    if (projection.rangeSeconds !== undefined) {
+      chart.setScale('x', {
+        min: 0,
+        max: projection.timeScale === undefined ? projection.rangeSeconds : 1,
+      });
+    }
+    // setData уже сбросил пути. true здесь вернул бы ожидающий x к прежним границам.
+    // Пересчёт осей нужен и при численно одинаковых нормализованных данных.
+    chart.redraw(false, true);
+  });
+  // uPlot сохраняет прежний auto-x при пустом ряде; новый пустой график осей не рисует.
+  // Сохраняем этот вид без уничтожения экземпляра и без записи в private scale fields.
+  chart.root.style.visibility =
+    projection.data[0].length === 0 && projection.rangeSeconds === undefined ? 'hidden' : '';
+}
+
 /** График отображает только переданные отсчёты; пропуски остаются разрывами. */
 export function MeasurementChart({
   points,
@@ -43,10 +126,19 @@ export function MeasurementChart({
   live = false,
 }: MeasurementChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<uPlot | null>(null);
+  const projectionRef = useRef<ChartProjection | null>(null);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    const projection = projectChart({ points, target, tolerance, rangeSeconds });
+    projectionRef.current = projection;
+    if (chartRef.current) updateChart(chartRef.current, projection);
+  }, [points, target, tolerance, rangeSeconds]);
+
+  useLayoutEffect(() => {
     const container = containerRef.current;
-    if (!container) return;
+    const projection = projectionRef.current;
+    if (!container || !projection) return;
 
     // Canvas не разрешает CSS-переменные сам: берём те же значения, что использует легенда.
     const styles = getComputedStyle(container);
@@ -62,71 +154,6 @@ export function MeasurementChart({
         ),
       );
 
-    // uPlot отвергает x-диапазон менее 1e-16; нормализуем его только для рисования.
-    const timeScale =
-      rangeSeconds !== undefined && rangeSeconds > 0 && rangeSeconds < 1e-16
-        ? rangeSeconds
-        : undefined;
-    // uPlot теряет шкалу и когда сами значения больше 1e-16, а их размах меньше.
-    const pressureRange = points.reduce(
-      (range, point) =>
-        point.pressure === null
-          ? range
-          : {
-              min: Math.min(range.min, point.pressure),
-              max: Math.max(range.max, point.pressure),
-              hasMeasurement: true,
-            },
-      { min: target, max: target, hasMeasurement: false },
-    );
-    const pressureScale =
-      target > 0 &&
-      (target <= 1e-16 ||
-        target >= 1e150 ||
-        (pressureRange.hasMeasurement && pressureRange.max - pressureRange.min < 1e-16))
-        ? target
-        : undefined;
-    const restoredValues = (splits: number[], scale: number) => {
-      const actual = splits.map((value) => value * scale);
-      return formatAxisValues(actual).map((label, index) =>
-        !Number.isFinite(actual[index]) || (index > 0 && actual[index] === actual[index - 1])
-          ? null
-          : label,
-      );
-    };
-    const timeValues = (_plot: uPlot, splits: number[]) => {
-      if (timeScale === undefined) return formatAxisValues(splits);
-      return restoredValues(splits, timeScale);
-    };
-    const plottedTarget = pressureScale === undefined ? target : target / pressureScale;
-
-    // Штатная шкала uPlot не подбирает шаги на диапазонах выше её таблицы инкрементов.
-    const wideTimeAxis =
-      rangeSeconds !== undefined && rangeSeconds >= 1e32
-        ? {
-            incrs: [rangeSeconds / 4, rangeSeconds / 2, rangeSeconds],
-            splits: () => [
-              0,
-              rangeSeconds * 0.25,
-              rangeSeconds * 0.5,
-              rangeSeconds * 0.75,
-              rangeSeconds,
-            ],
-          }
-        : {};
-
-    const data: uPlot.AlignedData = [
-      points.map((point) => (timeScale === undefined ? point.seconds : point.seconds / timeScale)),
-      points.map((point) =>
-        point.pressure === null || pressureScale === undefined
-          ? point.pressure
-          : point.pressure / pressureScale,
-      ),
-      points.map(() => plottedTarget),
-      points.map((point) => point.differential),
-      points.map(() => (tolerance === undefined ? null : plottedTarget * (1 + tolerance / 100))),
-      points.map(() => (tolerance === undefined ? null : plottedTarget * (1 - tolerance / 100))),
-    ];
     const options: uPlot.Options = {
       width: Math.max(container.clientWidth, 180),
       height: 170,
@@ -135,9 +162,13 @@ export function MeasurementChart({
       scales: {
         x: {
           time: false,
-          ...(rangeSeconds === undefined
-            ? {}
-            : { range: [0, timeScale === undefined ? rangeSeconds : 1] }),
+          // Фиксированный интервал сохраняется и при штатном autoScaleX по double-click.
+          range: (_plot, min, max) => {
+            const current = projectionRef.current;
+            return current?.rangeSeconds === undefined
+              ? [min, max]
+              : [0, current.timeScale === undefined ? current.rangeSeconds : 1];
+          },
         },
         pressure: { auto: true },
         differential: { auto: true },
@@ -145,8 +176,31 @@ export function MeasurementChart({
       axes: [
         {
           label: 'Время, с',
-          ...wideTimeAxis,
-          values: timeValues,
+          // Обе оси линейные: берём подготовленные стандартные шаги uPlot у давления,
+          // чтобы не копировать его таблицу и алгоритм для обычного времени.
+          incrs: (plot, axis, min, max, size, space) => {
+            const range = projectionRef.current?.rangeSeconds;
+            if (range !== undefined && range >= 1e32) return [range / 4, range / 2, range];
+            const defaults = plot.axes[1]?.incrs;
+            if (!defaults) throw new Error('Linear pressure axis is not initialized');
+            return typeof defaults === 'function'
+              ? defaults(plot, axis, min, max, size, space)
+              : defaults;
+          },
+          splits: (plot, axis, min, max, increment, space) => {
+            const range = projectionRef.current?.rangeSeconds;
+            if (range !== undefined && range >= 1e32)
+              return [0, range * 0.25, range * 0.5, range * 0.75, range];
+            const defaults = plot.axes[1]?.splits;
+            if (!defaults) throw new Error('Linear pressure axis is not initialized');
+            return typeof defaults === 'function'
+              ? defaults(plot, axis, min, max, increment, space)
+              : defaults;
+          },
+          values: (_plot, splits) => {
+            const scale = projectionRef.current?.timeScale;
+            return scale === undefined ? formatAxisValues(splits) : restoredValues(splits, scale);
+          },
           space: 75,
           font: '12px "Medeo Sans", sans-serif',
           labelFont: '12px "Medeo Sans", sans-serif',
@@ -159,10 +213,10 @@ export function MeasurementChart({
         {
           scale: 'pressure',
           label: 'Давление, Па',
-          values: (_plot, splits) =>
-            pressureScale === undefined
-              ? formatAxisValues(splits)
-              : restoredValues(splits, pressureScale),
+          values: (_plot, splits) => {
+            const scale = projectionRef.current?.pressureScale;
+            return scale === undefined ? formatAxisValues(splits) : restoredValues(splits, scale);
+          },
           font: '12px "Medeo Sans", sans-serif',
           labelFont: '12px "Medeo Sans", sans-serif',
           labelSize: 20,
@@ -231,24 +285,32 @@ export function MeasurementChart({
       ],
     };
 
-    const chart = new uPlot(options, data, container);
+    const chart = new uPlot(options, projection.data, container);
+    chartRef.current = chart;
+    updateChart(chart, projection);
+    let disposed = false;
     const resize = () => {
+      if (disposed) return;
       const width = container.clientWidth;
       if (width > 0) chart.setSize({ width: Math.max(width, 180), height: 170 });
     };
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(resize);
     if (observer) observer.observe(container);
     else window.addEventListener('resize', resize);
-    const refreshFonts = () => chart.redraw();
+    const refreshFonts = () => {
+      if (!disposed) chart.redraw(true, true);
+    };
     document.fonts?.addEventListener('loadingdone', refreshFonts);
 
     return () => {
+      disposed = true;
+      chartRef.current = null;
       observer?.disconnect();
       if (!observer) window.removeEventListener('resize', resize);
       document.fonts?.removeEventListener('loadingdone', refreshFonts);
       chart.destroy();
     };
-  }, [points, target, tolerance, rangeSeconds]);
+  }, []);
 
   return (
     <div>
