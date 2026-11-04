@@ -104,3 +104,35 @@ Core использует `Engine.Changes()` как объединяемое у�
 Ограничения JavaScript учитываются отдельно от OpenAPI: счётчики требуют safe integer; не представимые конечным Number значения и десятичные дроби, округлившиеся к целому/нулю, отвергаются на этапе разбора текста. Это не изменение схемы: `1.0`, `1e3` и обычное округление дробей вроде `0.1` допустимы. Корпус помечает более консервативную JS-политику отдельно. Schema-корпус сохраняет decimal через UseNumber; он не приравнивает схему к дополнительным float64-ограничениям production inputValue и последующему строгому декодированию числовой лексемы в Go integer. Parser-level случаи отдельно проверяют существующий строгий Go-разбор. `maxLength` считает Unicode code points, не UTF-16 units.
 
 Нормативные основания: [OpenAPI 3.1.2](https://spec.openapis.org/oas/v3.1.2.html#schema-object), [JSON Schema validation 2020-12](https://json-schema.org/draft/2020-12/json-schema-validation), [ECMAScript JSON.parse](https://tc39.es/ecma262/multipage/structured-data.html#sec-json.parse), [Fetch](https://fetch.spec.whatwg.org/#fetch-method). TypeScript predicates не заменяют runtime-проверки; отказ guards используется с throw, а не как доказательство обратной ветки типа. `JSON.parse context.source` и обновление TS compiler/API для этого этапа не требуются.
+
+### Фактическая проверка #20 — 5 ноября 2026 года
+
+Прикладная ревизия: `8a3c5b88ef4e629e0e2403337802908aea5b11af`, база — `ea7d08a1c581660b0eadbbf1435add924ab18127`. Последующее документирование не меняет код или корпус. Среда: Windows x64, build 26200, Go 1.27.3, Node 24.22.2, npm 11.19.1, Wails 3.0.0; настоящее окно использовало WebView2 156.0.4314.58. Зависимости и версии не обновлялись.
+
+Автоматические проверки и подмены транспорта:
+
+| Проверка | Наблюдаемый результат |
+|---|---|
+| Исходные регрессии настоящего browser adapter | До реализации оба теста падали: принимались `Snapshot.measurements:null` и `Readiness:{}`; после исправления проходят |
+| Дополнительная регрессия review | До исправления чтения байтов адаптер принимал повреждённый UTF-8 и ведущий BOM в командном receipt; после fatal-декодирования оба отклоняются без повтора |
+| Общий корпус `tests/fixtures/browser-responses.json` | 204 примера / 22 группы: 194 schema, 6 строгого JSON-разбора, 4 отдельных ограничения JavaScript; ожидания проверены в TS и Go/schema |
+| `npm test -- tests/browser-bridge.test.ts tests/contract-types.test.ts tests/live-flow.test.tsx` | 364 теста прошли; browser adapter проверяется с подменённым fetch, live-flow дополнительно подменяет Wails service, SessionBridge и компонент графика; это не оконная проверка |
+| `go test -count=1 -timeout=240s ./internal/contract ./internal/browser ./internal/desktop` на указанном SHA | Все три пакета прошли, включая общий корпус, процессные регрессии и настоящий core |
+| `npm run contract:check`, `npm run contract:test` | 14 generated-файлов совпали; изменение схемы отражается в Go/Wails. Публичные 2 сервиса, 24 метода и 3 события сохранены; generated TypeScript без diff |
+| `npm run check:host:native` | Настоящие Wails bindings и весь desktop-пакет с `desktopapp` прошли |
+| `go vet ./internal/contract ./internal/browser ./internal/desktop`; `golangci-lint run ./internal/contract/... ./internal/browser/... ./internal/desktop/...` | Код завершения 0; lint — 0 issues |
+| `npm run check:quick` / финальный `npm run check:pr` | Типы и Biome прошли; финальный общий прогон — 522 Vitest и 37 Playwright smoke |
+| `npm run build:browser`, `npm run build:desktop` | Обе frontend-сборки прошли |
+| `scripts/build-desktop.ps1` | Дополнительно собраны настоящие `gk80-core.exe` и `gk80-desktop.exe`; только desktop — с `production desktopapp`, core — без этих тегов. Это отдельный результат от frontend-сборки |
+
+В ходе работы три общих прогона получили пятисекундный timeout одного неизменённого fixture-теста `сбрасывает историю только при выборе пустого подготовленного состояния`. Отдельный целевой прогон прошёл; чистая принятая база прошла 284 теста. Корпус затем размещён в существующем `contract-types.test.ts` без дополнительного worker и DOM; финальный штатный `check:pr` прошёл. Первопричина прежних таймаутов этими наблюдениями не установлена; сроки и ожидания теста не изменялись. Это не блокировка Kaspersky.
+
+Штатные проходы отдельно от автоматических тестов:
+
+- **IAB, настоящий `iab:demo`:** отдельный demo-профиль, core/симулятор/SQLite; Create → Readiness → Start → Confirm → измерения трёх каналов → завершение с «Полные / Сохранено». Повторно открыты история, запись `5f4f87e1-4e69-47bb-82cd-05f77660c9e3`, измерения и аудит. Валидные ответы приняты, консоль IAB без warning/error. Негативные payload в этом проходе не подменялись.
+- **Windows/WebView2:** тот же профиль открыт последовательно после IAB, доступна его история. Через настоящие bindings выполнены Create/Readiness/Start, получен экран ожидающего подтверждения Start. Отдельная Stop подтвердилась ядром; запись `1a4f1d36-7a12-4a37-a2e7-b7fd1e3e39b5` показала «Прервано / Неполные / Сохранено». Это адресная проверка нативной границы; измерительный проход с Confirm выполнялся в IAB.
+- **Завершение и владение:** финальное Windows-окно закрыто штатной кнопкой; JSONL содержит `process.stopped` desktop и core, `core.stopped` с exit 0. Проверены принадлежность core PID 61800 desktop PID 77892 и отсутствие оставшихся процессов этих запусков. IAB-вкладки закрыты, Computer Use освобождён. Оба вызова IAB wrapper после Ctrl+C завершились кодом 1, без подтверждающих записей штатного shutdown; отсутствие их browser/core-процессов проверено отдельно и не называется успешным graceful shutdown.
+
+Ограничения: в финальном desktop JSONL три `ERROR framework.message` без раскрытой причины; первый скрытый запуск дал ещё один. Это прежняя неклассифицированная граница #21, а не доказанный дефект новой валидации; её расследование здесь не выполнялось. Нативный remount, новые IAB-аннотации, потеря физической сети, оборудование и полная приёмка #6/#7 не проверялись этим этапом. Полный предслиятельный `verify` не запускался: PR передаётся на приёмку без слияния; исторические исключения Kaspersky для PR #30/#31 не распространяются на будущий verify. Новых блокировок защитой в перечисленных проверках не наблюдалось.
+
+Локальные журналы, исходные воспроизведения, AX-снимки и изображения сохранены в игнорируемом `.tmp/.codex/response-validation/`; они не входят в публичный репозиторий. Внешний reviewer может повторить корпус через `npm test -- tests/contract-types.test.ts` и `go test ./internal/contract -run TestBrowserResponseExamplesMatchOpenAPI`; это не заменяет отдельные штатные проходы.
