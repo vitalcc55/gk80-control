@@ -16,6 +16,9 @@
     "iab:demo": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-iab.ps1",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "check:host": "node scripts/check-host.mjs",
+    "check:host:native": "node scripts/check-host.mjs --native",
+    "check:host:runner": "node --test scripts/verify-host-checks.mjs",
     "check:quick": "npm run typecheck && npm run lint && npm test",
     "check:pr": "npm run check:quick && npm run build && npm run test:e2e"
   },

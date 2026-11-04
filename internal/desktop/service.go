@@ -10,7 +10,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/vitalcc55/gk80-control/internal/contract"
 	"github.com/vitalcc55/gk80-control/internal/transport"
-	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 // ErrCommandConflict means that the identifier belongs to different command content.
@@ -53,11 +52,6 @@ type Service struct {
 }
 
 func NewService(core Core) *Service { return &Service{core: core} }
-
-// NewWailsService registers the domain service for the desktop application.
-func NewWailsService(core Core) application.Service {
-	return application.NewService(NewService(core))
-}
 
 func (s *Service) Handshake(ctx context.Context) (contract.Handshake, error) {
 	return s.core.Handshake(ctx)
@@ -213,9 +207,4 @@ func (s *Service) LookupCommandExact(ctx context.Context, database, kind, testID
 	}
 	defer s.lookupGate.Unlock()
 	return s.core.LookupCommandExact(ctx, database, kind, testID, actionID, commandID, originalJSON)
-}
-
-func init() {
-	application.RegisterEvent[contract.Event]("core:event")
-	application.RegisterEvent[contract.ConnectionState]("core:connection")
 }

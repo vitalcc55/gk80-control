@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+if (process.platform !== 'win32') throw new Error('Wails contract generation requires the Windows native toolchain');
 const write = process.argv.slice(2).includes('--write');
 const extraArguments = process.argv.slice(2).filter((argument) => argument !== '--write');
 if (extraArguments.length > 0) throw new Error(`Unknown arguments: ${extraArguments.join(', ')}`);
@@ -31,7 +32,7 @@ const go = process.platform === 'win32' ? 'go.exe' : 'go';
 const wails = process.platform === 'win32' ? 'wails3.exe' : 'wails3';
 if (run(wails, ['version']).trim() !== 'v3.0.0') throw new Error('Wails CLI 3.0.0 is required');
 run(go, ['tool', 'oapi-codegen', '-config', 'api/oapi-codegen.yaml', '-o', goModel, 'api/core.yaml']);
-const generationLog = run(wails, ['generate', 'bindings', '-ts', '-i', '-time-type', 'string', '-d', wailsOutput, './internal/desktop']);
+const generationLog = run(wails, ['generate', 'bindings', '-f', '-tags=desktopapp', '-ts', '-i', '-time-type', 'string', '-d', wailsOutput, './internal/desktop']);
 if (!/2 Services, 24 Methods,/.test(generationLog) || !/3 Events/.test(generationLog) || /\bWARN(?:ING)?\b/i.test(generationLog)) {
   throw new Error(`Unexpected Wails generation result: ${generationLog}`);
 }
