@@ -163,6 +163,20 @@ func TestDemoRecordTransitionsAndMeasurementsSurviveReopen(t *testing.T) {
 	if err := store.CompleteStart(ctx, testID, start.CommandId); err != nil {
 		t.Fatal(err)
 	}
+	beforeRepeat, err := store.Audit(ctx, testID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CompleteStart(ctx, testID, start.CommandId); err != nil {
+		t.Fatalf("completed start no-op: %v", err)
+	}
+	afterRepeat, err := store.Audit(ctx, testID, 0, 100)
+	if err != nil || !reflect.DeepEqual(beforeRepeat, afterRepeat) {
+		t.Fatalf("completed start changed audit: %+v %v", afterRepeat, err)
+	}
+	if revision, err := store.Revision(ctx); err != nil || revision != 4 {
+		t.Fatalf("completed start changed revision: %d %v", revision, err)
+	}
 	now := time.Now().UTC().Add(-2 * time.Second)
 	measured := now.Format(time.RFC3339Nano)
 	pressure := 12.5
@@ -293,6 +307,9 @@ func TestConfirmedStopIsPersistedOnceAndReopens(t *testing.T) {
 	stopped, err := store.FinishStop(ctx, id, record.StopCommandId, StopDetails{Actor: "demo-operator", Reason: "operator", AcceptedAt: time.Now()})
 	if err != nil || stopped.Status != "completed" {
 		t.Fatalf("stop: %+v %v", stopped, err)
+	}
+	if revision, err := store.Revision(ctx); err != nil || revision != 5 {
+		t.Fatalf("stop must include accepted, canceled start and completed transitions: %d %v", revision, err)
 	}
 	if _, err := store.FinishStop(ctx, uuid.New(), record.StopCommandId, StopDetails{Actor: "demo-operator", Reason: "operator", AcceptedAt: time.Now()}); !errors.Is(err, ErrCommandConflict) {
 		t.Fatalf("stop path conflict: %v", err)
