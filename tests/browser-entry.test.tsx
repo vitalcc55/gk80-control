@@ -1,5 +1,5 @@
 // @vitest-environment-options {"url":"http://127.0.0.1:17880/"}
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BrowserApp } from '../src/browser/BrowserApp';
 
@@ -31,6 +31,9 @@ class Socket {
   receive(value: object) {
     this.onmessage?.({ data: JSON.stringify(value) });
   }
+  receiveRaw(data: string) {
+    this.onmessage?.({ data });
+  }
 }
 
 describe('browser entry', () => {
@@ -43,6 +46,7 @@ describe('browser entry', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   it('connects automatically and restores the screen after a channel break', async () => {
@@ -65,10 +69,29 @@ describe('browser entry', () => {
   it('shows an occupied profile without automatically taking it over', async () => {
     render(<BrowserApp />);
     await waitFor(() => expect(Socket.instances).toHaveLength(1));
-    Socket.instances[0]?.receive({ busy: true });
+    Socket.instances[0]?.receive({ busy: true, channel: generation });
     expect((await screen.findByRole('alert')).textContent).toContain('уже открыта');
     await new Promise((resolve) => setTimeout(resolve, 600));
     expect(Socket.instances).toHaveLength(1);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    `{"channel":"wrong","channel":"${generation}"}`,
+    JSON.stringify({ channel: generation, retry: true }),
+    JSON.stringify({ busy: true }),
+    JSON.stringify({ channel: `${'-'.repeat(36)}:1` }),
+  ])('rejects malformed control frames before creating a connected consumer: %s', async (raw) => {
+    vi.useFakeTimers();
+    render(<BrowserApp />);
+    expect(Socket.instances).toHaveLength(1);
+    act(() => Socket.instances[0]?.receiveRaw(raw));
+    expect(screen.queryByText('Рабочий экран')).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    expect(Socket.instances).toHaveLength(2);
     expect(fetch).not.toHaveBeenCalled();
   });
 

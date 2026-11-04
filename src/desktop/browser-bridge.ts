@@ -1,176 +1,10 @@
-import type { CommandDispatch } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
-import {
-  MeasurementChannel,
-  MeasurementQuality,
-  MeasurementQuantity,
-  MeasurementSource,
-  MeasurementUnit,
-  TestParametersDirection,
-  TestRecordDataQuality,
-  TestRecordOutcome,
-  TestRecordSaveStatus,
-  TestRecordStage,
-} from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
 import type { DesktopBridge, SessionBridge } from './bridge';
+import {
+  parseBrowserJSON,
+  type ResponseGuard,
+  responseGuards as responses,
+} from './browser-responses';
 import { type DemoService, normalizeCommandDispatch } from './demo-service';
-
-function object(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-// Preserve duplicate-key evidence that JSON.parse would otherwise discard.
-function uniqueCommandKeys(body: string): boolean {
-  const containers: (Set<string> | null)[] = [];
-  const tokens = /("(?:\\.|[^"\\])*")\s*:|"(?:\\.|[^"\\])*"|[{}[\]]/g;
-  for (const match of body.matchAll(tokens)) {
-    const token = match[0];
-    if (token === '{') containers.push(new Set());
-    else if (token === '[') containers.push(null);
-    else if (token === '}' || token === ']') containers.pop();
-    else if (match[1] !== undefined) {
-      const current = containers[containers.length - 1];
-      if (!current) return false;
-      const key: unknown = JSON.parse(match[1]);
-      if (typeof key !== 'string' || current.has(key)) return false;
-      current.add(key);
-    }
-  }
-  return true;
-}
-
-function counter(value: unknown): boolean {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
-}
-
-function enumValue(value: unknown, values: object): boolean {
-  return typeof value === 'string' && value !== '' && Object.values(values).includes(value);
-}
-
-function measurement(value: unknown): boolean {
-  return (
-    object(value) &&
-    counter(value['sequence']) &&
-    enumValue(value['channel'], MeasurementChannel) &&
-    enumValue(value['quantity'], MeasurementQuantity) &&
-    enumValue(value['quality'], MeasurementQuality) &&
-    enumValue(value['source'], MeasurementSource) &&
-    enumValue(value['unit'], MeasurementUnit) &&
-    typeof value['observedAt'] === 'string' &&
-    (value['measuredAt'] === null || typeof value['measuredAt'] === 'string') &&
-    (value['value'] === null ||
-      (typeof value['value'] === 'number' && Number.isFinite(value['value'])))
-  );
-}
-
-function testRecord(value: unknown): boolean {
-  if (!object(value) || !object(value['parameters'])) return false;
-  const params = value['parameters'];
-  return (
-    typeof value['testId'] === 'string' &&
-    typeof value['stopCommandId'] === 'string' &&
-    typeof value['createdAt'] === 'string' &&
-    typeof value['operatorId'] === 'string' &&
-    typeof value['demo'] === 'boolean' &&
-    enumValue(value['stage'], TestRecordStage) &&
-    enumValue(value['outcome'], TestRecordOutcome) &&
-    enumValue(value['saveStatus'], TestRecordSaveStatus) &&
-    enumValue(value['dataQuality'], TestRecordDataQuality) &&
-    typeof params['valve'] === 'string' &&
-    typeof params['actuator'] === 'boolean' &&
-    enumValue(params['direction'], TestParametersDirection) &&
-    typeof params['areaM2'] === 'number' &&
-    Number.isFinite(params['areaM2']) &&
-    typeof params['pmaxPa'] === 'number' &&
-    Number.isFinite(params['pmaxPa']) &&
-    typeof params['measurementSeconds'] === 'number' &&
-    Number.isFinite(params['measurementSeconds'])
-  );
-}
-
-function connection(value: unknown): boolean {
-  return (
-    object(value) &&
-    typeof value['hostRunId'] === 'string' &&
-    counter(value['revision']) &&
-    counter(value['streamGeneration']) &&
-    typeof value['linkValid'] === 'boolean' &&
-    typeof value['leaseAcquireUnknown'] === 'boolean' &&
-    (value['status'] === 'live' ||
-      value['status'] === 'recovering' ||
-      value['status'] === 'disconnected')
-  );
-}
-
-function sessionView(value: unknown): boolean {
-  if (
-    !object(value) ||
-    !connection(value['connection']) ||
-    !counter(value['validForMs']) ||
-    !counter(value['linkValidForMs'])
-  )
-    return false;
-  if (value['snapshot'] === null) return true;
-  const snapshot = value['snapshot'];
-  if (
-    !object(snapshot) ||
-    typeof snapshot['apiVersion'] !== 'string' ||
-    typeof snapshot['backendRunId'] !== 'string' ||
-    !counter(snapshot['revision']) ||
-    !counter(snapshot['lastEventSequence']) ||
-    !(
-      snapshot['measurements'] === null ||
-      (Array.isArray(snapshot['measurements']) && snapshot['measurements'].every(measurement))
-    )
-  )
-    return false;
-  if (snapshot['activeTest'] !== null && !testRecord(snapshot['activeTest'])) return false;
-  return (
-    snapshot['pendingAction'] === null ||
-    (object(snapshot['pendingAction']) &&
-      typeof snapshot['pendingAction']['testId'] === 'string' &&
-      typeof snapshot['pendingAction']['actionId'] === 'string' &&
-      typeof snapshot['pendingAction']['instruction'] === 'string')
-  );
-}
-
-function notice(value: unknown): boolean {
-  if (
-    !object(value) ||
-    !connection(value['connection']) ||
-    typeof value['gap'] !== 'boolean' ||
-    !counter(value['snapshotBoundary'])
-  )
-    return false;
-  return (
-    value['event'] === null ||
-    (object(value['event']) &&
-      typeof value['event']['backendRunId'] === 'string' &&
-      counter(value['event']['sequence']))
-  );
-}
-
-function desktopStatus(value: unknown): boolean {
-  if (
-    !object(value) ||
-    typeof value['hostRunId'] !== 'string' ||
-    !counter(value['revision']) ||
-    !counter(value['connectionRevision']) ||
-    typeof value['diagnosticsDegraded'] !== 'boolean' ||
-    typeof value['status'] !== 'string' ||
-    !['starting', 'ready', 'profileInUse', 'unavailable', 'closing', 'exited'].includes(
-      value['status'],
-    )
-  )
-    return false;
-  if (value['handshake'] === null) return true;
-  return (
-    object(value['handshake']) &&
-    typeof value['handshake']['apiVersion'] === 'string' &&
-    typeof value['handshake']['backendRunId'] === 'string' &&
-    typeof value['handshake']['databaseId'] === 'string' &&
-    typeof value['handshake']['demo'] === 'boolean'
-  );
-}
 
 // The generation associates requests with the current connection; it is not an access credential.
 export function createBrowserBridge(
@@ -188,13 +22,20 @@ export function createBrowserBridge(
     body?: string;
     headers?: Record<string, string>;
     signal?: AbortSignal;
-    validate?: (value: unknown) => boolean;
-    command?: boolean;
   };
-  function request<T>(path: string, options?: RequestOptions): Promise<T>;
-  function request(path: string, options: RequestOptions & { empty: true }): Promise<void>;
+  function request<T>(
+    path: string,
+    validate: ResponseGuard<T>,
+    options?: RequestOptions,
+  ): Promise<T>;
+  function request(
+    path: string,
+    validate: null,
+    options: RequestOptions & { empty: true },
+  ): Promise<void>;
   async function request(
     path: string,
+    validate: ResponseGuard<unknown> | null,
     options: RequestOptions & { empty?: boolean } = {},
   ): Promise<unknown> {
     const controller = new AbortController();
@@ -226,21 +67,18 @@ export function createBrowserBridge(
       if (!response.ok) {
         throw new Error('browser request unavailable');
       }
+      if (response.status !== (options.empty ? 204 : 200))
+        throw new Error('invalid browser response');
+      const bytes = await response.arrayBuffer();
+      ensureActive();
+      // Preserve malformed bytes/BOM instead of silently replacing or discarding them.
+      const body = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
       if (options.empty) {
-        if (response.status !== 204) throw new Error('invalid browser response');
+        if (body !== '') throw new Error('invalid browser response');
         return;
       }
-      if (response.status === 204 || (options.command && response.status !== 200))
-        throw new Error('invalid browser response');
-      const body = options.command ? await response.text() : null;
-      ensureActive();
-      if (body !== null && !uniqueCommandKeys(body)) throw new Error('invalid browser response');
-      const result: unknown = body === null ? await response.json() : JSON.parse(body);
-      ensureActive();
-      if (typeof result !== 'object' || result === null || Array.isArray(result))
-        throw new Error('invalid browser response');
-      if (options.validate && !options.validate(result))
-        throw new Error('invalid browser response');
+      const result = parseBrowserJSON(body);
+      if (!validate?.(result)) throw new Error('invalid browser response');
       return result;
     } finally {
       clearTimeout(timeout);
@@ -257,10 +95,9 @@ export function createBrowserBridge(
     const value = query.toString();
     return value ? `?${value}` : '';
   };
-  const post = <T>(path: string, body?: unknown, command = false) =>
-    request<T>(path, {
+  const post = <T>(path: string, validate: ResponseGuard<T>, body?: unknown) =>
+    request(path, validate, {
       method: 'POST',
-      command,
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
 
@@ -268,11 +105,11 @@ export function createBrowserBridge(
   const bridge: DesktopBridge = {
     status: () => {
       statusGeneration++;
-      return request('/api/status', { validate: desktopStatus });
+      return request('/api/status', responses.DesktopStatus);
     },
     verify: () => {
       statusGeneration++;
-      return request('/api/verify', { method: 'POST', validate: desktopStatus });
+      return request('/api/verify', responses.DesktopStatus, { method: 'POST' });
     },
     subscribe: (callback, onError) => {
       const controller = new AbortController();
@@ -282,7 +119,8 @@ export function createBrowserBridge(
         try {
           const status = await request<Awaited<ReturnType<DesktopBridge['status']>>>(
             '/api/status',
-            { signal: controller.signal, validate: desktopStatus },
+            responses.DesktopStatus,
+            { signal: controller.signal },
           );
           if (
             !controller.signal.aborted &&
@@ -319,19 +157,17 @@ export function createBrowserBridge(
   };
   const session: SessionBridge = {
     beginSessionCheck: async () => {
-      const result = await post<{ ticket: string }>('/api/session/check');
-      if (typeof result.ticket !== 'string' || !result.ticket)
-        throw new Error('invalid session ticket');
+      const result = await post('/api/session/check', responses.BrowserSessionTicket);
       return result.ticket;
     },
     keepAlive: (ticket) =>
-      request('/api/session/heartbeat', {
+      request('/api/session/heartbeat', null, {
         method: 'POST',
         body: JSON.stringify({ ticket }),
         empty: true,
       }),
-    sessionView: () => request('/api/session/view', { validate: sessionView }),
-    observeSession: () => request('/api/session/observe', { validate: sessionView }),
+    sessionView: () => request('/api/session/view', responses.SessionView),
+    observeSession: () => request('/api/session/observe', responses.SessionView),
     waitConnection: (after, afterSequence) => {
       if (
         !Number.isSafeInteger(after) ||
@@ -342,31 +178,31 @@ export function createBrowserBridge(
         throw new Error('invalid event cursor');
       return request(
         `/api/session/wait?${new URLSearchParams({ after: String(after), afterSequence: String(afterSequence) })}`,
-        { validate: notice },
+        responses.ConnectionNotice,
       );
     },
   };
   const service: DemoService = {
     createTest: (command) =>
-      post<CommandDispatch>('/api/tests', command, true).then(normalizeCommandDispatch),
-    readiness: (testId) => request(`/api/tests/${segment(testId)}/readiness`),
+      post('/api/tests', responses.CommandDispatch, command).then(normalizeCommandDispatch),
+    readiness: (testId) => request(`/api/tests/${segment(testId)}/readiness`, responses.Readiness),
     startTest: (testId, command) =>
-      post<CommandDispatch>(`/api/tests/${segment(testId)}/start`, command, true).then(
+      post(`/api/tests/${segment(testId)}/start`, responses.CommandDispatch, command).then(
         normalizeCommandDispatch,
       ),
     confirmAction: (testId, actionId, command) =>
-      post<CommandDispatch>(
+      post(
         `/api/tests/${segment(testId)}/actions/${segment(actionId)}/confirm`,
+        responses.CommandDispatch,
         command,
-        true,
       ).then(normalizeCommandDispatch),
     stopTest: (testId, command) =>
-      post<CommandDispatch>(`/api/tests/${segment(testId)}/stop`, command, true).then(
+      post(`/api/tests/${segment(testId)}/stop`, responses.CommandDispatch, command).then(
         normalizeCommandDispatch,
       ),
-    command: (commandId) => request(`/api/commands/${segment(commandId)}`),
+    command: (commandId) => request(`/api/commands/${segment(commandId)}`, responses.CommandStatus),
     lookupCommandExact: (databaseId, kind, testId, actionId, commandId, originalJSON) =>
-      request(`/api/commands/${segment(commandId)}/lookup-exact`, {
+      request(`/api/commands/${segment(commandId)}/lookup-exact`, responses.ExactLookupResult, {
         method: 'POST',
         body: originalJSON,
         headers: {
@@ -376,12 +212,16 @@ export function createBrowserBridge(
           ...(actionId ? { 'X-GK80-Action': actionId } : {}),
         },
       }),
-    listTests: (params) => request(`/api/tests${page(params.after, params.limit)}`),
-    test: (testId) => request(`/api/tests/${segment(testId)}`),
+    listTests: (params) =>
+      request(`/api/tests${page(params.after, params.limit)}`, responses.TestList),
+    test: (testId) => request(`/api/tests/${segment(testId)}`, responses.TestRecord),
     measurements: (testId, after, limit) =>
-      request(`/api/tests/${segment(testId)}/measurements${page(after, limit)}`),
+      request(
+        `/api/tests/${segment(testId)}/measurements${page(after, limit)}`,
+        responses.MeasurementPage,
+      ),
     audit: (testId, after, limit) =>
-      request(`/api/tests/${segment(testId)}/audit${page(after, limit)}`),
+      request(`/api/tests/${segment(testId)}/audit${page(after, limit)}`, responses.AuditPage),
   };
   return { bridge, session, service };
 }

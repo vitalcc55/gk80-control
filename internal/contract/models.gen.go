@@ -9,6 +9,36 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+// Defines values for BrowserControlBusy.
+const (
+	BrowserControlBusyTrue BrowserControlBusy = true
+)
+
+// Valid indicates whether the value is a known member of the BrowserControlBusy enum.
+func (e BrowserControlBusy) Valid() bool {
+	switch e {
+	case BrowserControlBusyTrue:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for BrowserControlRetry.
+const (
+	BrowserControlRetryTrue BrowserControlRetry = true
+)
+
+// Valid indicates whether the value is a known member of the BrowserControlRetry enum.
+func (e BrowserControlRetry) Valid() bool {
+	switch e {
+	case BrowserControlRetryTrue:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for CommandDispatchDelivery.
 const (
 	CommandDispatchDeliveryConflict CommandDispatchDelivery = "conflict"
@@ -414,6 +444,29 @@ type AuditPage struct {
 
 	// NextAfter Последовательность последнего выданного события или null в конце.
 	NextAfter *int64 `json:"nextAfter"`
+}
+
+// BrowserChannelId Existing browser-host generation identifier, not an access credential.
+type BrowserChannelId = string
+
+// BrowserControl Existing first WebSocket control frame at /api/session/stream; no core operation or new browser API.
+type BrowserControl struct {
+	Busy *BrowserControlBusy `json:"busy,omitempty"`
+
+	// Channel Existing browser-host generation identifier, not an access credential.
+	Channel *BrowserChannelId    `json:"channel,omitempty"`
+	Retry   *BrowserControlRetry `json:"retry,omitempty"`
+}
+
+// BrowserControlBusy defines model for BrowserControl.Busy.
+type BrowserControlBusy bool
+
+// BrowserControlRetry defines model for BrowserControl.Retry.
+type BrowserControlRetry bool
+
+// BrowserSessionTicket Existing browser-host envelope for POST /api/session/check; Wails returns the ticket string directly.
+type BrowserSessionTicket struct {
+	Ticket openapi_types.UUID `json:"ticket"`
 }
 
 // CommandAccepted defines model for CommandAccepted.
