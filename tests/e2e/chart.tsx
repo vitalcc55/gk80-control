@@ -17,7 +17,9 @@ const normal: ChartProps = {
 const scaled = (target: number, rangeSeconds: number): ChartProps => ({
   points: [
     { seconds: 0, pressure: target, differential: 70 },
+    { seconds: rangeSeconds / 8, pressure: target * 0.999, differential: 72 },
     { seconds: rangeSeconds / 4, pressure: null, differential: null },
+    { seconds: (rangeSeconds * 3) / 8, pressure: target * 1.002, differential: 82 },
     { seconds: rangeSeconds / 2, pressure: target * 1.001, differential: 84 },
   ],
   target,
@@ -27,6 +29,8 @@ const scaled = (target: number, rangeSeconds: number): ChartProps => ({
 const examples: readonly { label: string; props: ChartProps }[] = [
   { label: 'Обычный', props: normal },
   { label: 'Малый', props: scaled(1e-100, 1e-100) },
+  { label: 'Другой малый период', props: scaled(1e-100, 2e-100) },
+  { label: 'Крупное давление', props: scaled(1e200, 1e-100) },
   { label: 'Большой', props: scaled(1e200, 1e307) },
   { label: 'Узкий', props: scaled(1e-15, 60) },
   { label: 'Авто', props: { points: normal.points, target: normal.target } },
