@@ -1,10 +1,278 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { createBrowserBridge } from '../src/desktop/browser-bridge';
 import { CommandConflictError } from '../src/desktop/demo-service';
+import { TestParametersDirection } from '../src/generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
+import responseExamples from './fixtures/browser-responses.json';
 
 afterEach(() => vi.useRealTimers());
 
 const channel = { generation: 'channel-generation', signal: new AbortController().signal };
+
+it('rejects readiness with matching identity but missing readiness facts', async () => {
+  const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+    Response.json({
+      testId: '10000000-0000-4000-8000-000000000003',
+      revision: 0,
+    }),
+  );
+  await expect(
+    createBrowserBridge(channel, fetcher).service.readiness('10000000-0000-4000-8000-000000000003'),
+  ).rejects.toThrow();
+  expect(fetcher).toHaveBeenCalledOnce();
+});
+const responseId = '10000000-0000-4000-8000-000000000001';
+
+it.each(['invalid UTF-8', 'leading BOM'])(
+  'rejects a command receipt with %s bytes',
+  async (kind) => {
+    const receipt = `{"delivery":"response","command":{"commandId":"${responseId}","status":"completed","reason":"`;
+    const bytes =
+      kind === 'invalid UTF-8'
+        ? new Uint8Array([...new TextEncoder().encode(receipt), 0xff, 34, 125, 125])
+        : new Uint8Array([0xef, 0xbb, 0xbf, ...new TextEncoder().encode(`${receipt}ok"}}`)]);
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(bytes));
+    const service = createBrowserBridge(channel, fetcher).service;
+    await expect(service.stopTest(responseId, { commandId: responseId })).rejects.toThrow();
+    expect(fetcher).toHaveBeenCalledOnce();
+  },
+);
+
+type Browser = ReturnType<typeof createBrowserBridge>;
+const operations: { name: string; schema: string; call: (browser: Browser) => Promise<unknown> }[] =
+  [
+    { name: 'status', schema: 'DesktopStatus', call: (b) => b.bridge.status() },
+    { name: 'verify', schema: 'DesktopStatus', call: (b) => b.bridge.verify() },
+    {
+      name: 'session ticket',
+      schema: 'BrowserSessionTicket',
+      call: (b) => b.session.beginSessionCheck(),
+    },
+    { name: 'session view', schema: 'SessionView', call: (b) => b.session.sessionView() },
+    {
+      name: 'passive session',
+      schema: 'SessionView',
+      call: (b) => {
+        if (!b.session.observeSession) throw new Error('Missing observeSession');
+        return b.session.observeSession();
+      },
+    },
+    {
+      name: 'notice',
+      schema: 'ConnectionNotice',
+      call: (b) => {
+        if (!b.session.waitConnection) throw new Error('Missing waitConnection');
+        return b.session.waitConnection(0, 0);
+      },
+    },
+    {
+      name: 'create',
+      schema: 'CommandDispatch',
+      call: (b) =>
+        b.service.createTest({
+          commandId: responseId,
+          expectedRevision: 0,
+          parameters: {
+            valve: 'V',
+            areaM2: 0.1,
+            pmaxPa: 1000,
+            measurementSeconds: 1,
+            direction: TestParametersDirection.TestParametersDirectionPressure,
+            actuator: false,
+          },
+        }),
+    },
+    {
+      name: 'start',
+      schema: 'CommandDispatch',
+      call: (b) =>
+        b.service.startTest(responseId, {
+          commandId: responseId,
+          expectedRevision: 0,
+          valveClosed: true,
+          connectionConfirmed: true,
+        }),
+    },
+    {
+      name: 'confirm',
+      schema: 'CommandDispatch',
+      call: (b) =>
+        b.service.confirmAction(responseId, responseId, {
+          commandId: responseId,
+          expectedRevision: 0,
+        }),
+    },
+    {
+      name: 'stop',
+      schema: 'CommandDispatch',
+      call: (b) => b.service.stopTest(responseId, { commandId: responseId }),
+    },
+    { name: 'readiness', schema: 'Readiness', call: (b) => b.service.readiness(responseId) },
+    { name: 'command read', schema: 'CommandStatus', call: (b) => b.service.command(responseId) },
+    {
+      name: 'exact lookup',
+      schema: 'ExactLookupResult',
+      call: (b) =>
+        b.service.lookupCommandExact(responseId, 'stop', responseId, '', responseId, '{}'),
+    },
+    { name: 'history list', schema: 'TestList', call: (b) => b.service.listTests({}) },
+    { name: 'history record', schema: 'TestRecord', call: (b) => b.service.test(responseId) },
+    {
+      name: 'measurement page',
+      schema: 'MeasurementPage',
+      call: (b) => b.service.measurements(responseId, 0, 20),
+    },
+    { name: 'audit page', schema: 'AuditPage', call: (b) => b.service.audit(responseId, 0, 20) },
+  ];
+
+function completeResponse(schema: string): string {
+  const example = responseExamples.find(
+    (item) => item.schema === schema && item.name === `complete ${schema}`,
+  );
+  if (!example) throw new Error(`Missing complete example: ${schema}`);
+  return example.json;
+}
+
+it.each(operations)(
+  'checks schema and HTTP status before delivering $name',
+  async ({ schema, call }) => {
+    for (const [body, status, valid] of [
+      [completeResponse(schema), 200, true],
+      ['{}', 200, false],
+      [completeResponse(schema), 202, false],
+    ] as const) {
+      const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(body, { status }));
+      const result = call(createBrowserBridge(channel, fetcher));
+      if (valid) await expect(result).resolves.toBeDefined();
+      else await expect(result).rejects.toBeInstanceOf(Error);
+      expect(fetcher).toHaveBeenCalledOnce();
+    }
+  },
+);
+
+it('accepts only the no-body heartbeat status', async () => {
+  for (const status of [204, 200, 202]) {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status }));
+    const result = createBrowserBridge(channel, fetcher).session.keepAlive(responseId);
+    if (status === 204) await expect(result).resolves.toBeUndefined();
+    else await expect(result).rejects.toThrow();
+    expect(fetcher).toHaveBeenCalledOnce();
+  }
+});
+
+it.each(['status', 'exact', 'heartbeat'] as const)(
+  'rejects a late %s body after channel closure',
+  async (kind) => {
+    const owner = new AbortController();
+    let finish: (value: string) => void = () => {};
+    let started: () => void = () => {};
+    const reading = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const body = new Promise<string>((resolve) => {
+      finish = resolve;
+    });
+    const response = new Response(null, { status: kind === 'heartbeat' ? 204 : 200 });
+    vi.spyOn(response, 'arrayBuffer').mockImplementation(() => {
+      started();
+      return body.then((text) => new TextEncoder().encode(text).buffer);
+    });
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(response);
+    const browser = createBrowserBridge({ generation: 'original', signal: owner.signal }, fetcher);
+    const pending = (
+      kind === 'status'
+        ? browser.bridge.status()
+        : kind === 'heartbeat'
+          ? browser.session.keepAlive(responseId)
+          : browser.service.lookupCommandExact(responseId, 'stop', responseId, '', responseId, '{}')
+    ).catch((error: unknown) => error);
+    await reading;
+    owner.abort();
+    finish(
+      kind === 'heartbeat'
+        ? ''
+        : kind === 'status'
+          ? completeResponse('DesktopStatus')
+          : completeResponse('ExactLookupResult'),
+    );
+    expect(await pending).toBeInstanceOf(Error);
+    expect(fetcher).toHaveBeenCalledOnce();
+  },
+);
+
+it('rejects raw duplicate exact results without changing the original lookup JSON or retrying', async () => {
+  const original = '{ "commandId" : "10000000-0000-4000-8000-000000000001" }';
+  for (const body of [
+    '{"outcome":"unknown","outcome":"conflict","command":null}',
+    '{"outcome":"unknown","out\\u0063ome":"conflict","command":null}',
+    `{"outcome":"match","command":{"commandId":"${responseId}","status":"unknown","status":"completed"}}`,
+  ]) {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(body));
+    const lookup = createBrowserBridge(channel, fetcher).service.lookupCommandExact(
+      responseId,
+      'stop',
+      responseId,
+      '',
+      responseId,
+      original,
+    );
+    const error: unknown = await lookup.catch((value: unknown) => value);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(CommandConflictError);
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(fetcher.mock.calls[0]?.[1]?.body).toBe(original);
+  }
+});
+
+it('keeps a valid exact conflict distinct from a direct confirmed conflict', async () => {
+  const fetcher = vi
+    .fn<typeof fetch>()
+    .mockResolvedValueOnce(Response.json({ outcome: 'conflict', command: null }))
+    .mockResolvedValueOnce(Response.json({ delivery: 'conflict', command: null }));
+  const browser = createBrowserBridge(channel, fetcher);
+  await expect(
+    browser.service.lookupCommandExact(responseId, 'stop', responseId, '', responseId, '{}'),
+  ).resolves.toEqual({ outcome: 'conflict', command: null });
+  await expect(
+    browser.service.stopTest(responseId, { commandId: responseId }),
+  ).rejects.toBeInstanceOf(CommandConflictError);
+  expect(fetcher).toHaveBeenCalledTimes(2);
+});
+
+it('rejects null measurements inside an otherwise complete snapshot', async () => {
+  const request = vi.fn<typeof fetch>().mockResolvedValue(
+    Response.json({
+      connection: {
+        hostRunId: '10000000-0000-4000-8000-000000000001',
+        revision: 0,
+        streamGeneration: 0,
+        status: 'live',
+        linkValid: true,
+        leaseAcquireUnknown: false,
+      },
+      snapshot: {
+        apiVersion: 'v1',
+        backendRunId: '10000000-0000-4000-8000-000000000002',
+        revision: 0,
+        lastEventSequence: 0,
+        activeTest: null,
+        pendingAction: null,
+        measurements: null,
+      },
+      validForMs: 1000,
+      linkValidForMs: 1000,
+    }),
+  );
+  await expect(createBrowserBridge(channel, request).session.sessionView()).rejects.toThrow();
+  expect(request).toHaveBeenCalledOnce();
+});
+
+it('rejects an empty readiness response at the real browser adapter', async () => {
+  const request = vi.fn<typeof fetch>().mockResolvedValue(Response.json({}));
+  await expect(
+    createBrowserBridge(channel, request).service.readiness('10000000-0000-4000-8000-000000000003'),
+  ).rejects.toThrow();
+  expect(request).toHaveBeenCalledOnce();
+});
 
 it('rejects a closed channel before dispatching any HTTP operation', async () => {
   const owner = new AbortController();
@@ -75,9 +343,9 @@ it('rejects a response whose body finishes after the channel closes', async () =
     finishBody = resolve;
   });
   const response = new Response();
-  vi.spyOn(response, 'text').mockImplementation(() => {
+  vi.spyOn(response, 'arrayBuffer').mockImplementation(() => {
     bodyStarted();
-    return body;
+    return body.then((text) => new TextEncoder().encode(text).buffer);
   });
   const request = vi.fn<typeof fetch>().mockResolvedValue(response);
   const { service } = createBrowserBridge({ generation: 'first', signal: owner.signal }, request);
@@ -175,7 +443,7 @@ it('rejects malformed session data rather than confirming a connection', async (
   request.mockResolvedValueOnce(
     Response.json({
       connection: {
-        hostRunId: 'host',
+        hostRunId: '10000000-0000-4000-8000-000000000001',
         revision: 1,
         streamGeneration: 1,
         status: 'live',
@@ -190,7 +458,7 @@ it('rejects malformed session data rather than confirming a connection', async (
   request.mockResolvedValueOnce(
     Response.json({
       connection: {
-        hostRunId: 'host',
+        hostRunId: '10000000-0000-4000-8000-000000000001',
         revision: 1,
         streamGeneration: 1,
         status: 'live',
@@ -199,7 +467,7 @@ it('rejects malformed session data rather than confirming a connection', async (
       },
       snapshot: {
         apiVersion: 'v1',
-        backendRunId: 'run',
+        backendRunId: '10000000-0000-4000-8000-000000000002',
         revision: 1,
         lastEventSequence: 1,
         activeTest: null,
@@ -219,7 +487,7 @@ it('rejects malformed session data rather than confirming a connection', async (
 it('rejects a non-string desktop status', async () => {
   const request = vi.fn<typeof fetch>().mockResolvedValue(
     Response.json({
-      hostRunId: 'host',
+      hostRunId: '10000000-0000-4000-8000-000000000001',
       revision: 1,
       connectionRevision: 1,
       diagnosticsDegraded: false,
@@ -233,12 +501,12 @@ it('rejects a non-string desktop status', async () => {
 it('accepts a complete session snapshot with a simulated measurement', async () => {
   const snapshot = {
     apiVersion: 'v1',
-    backendRunId: 'run',
+    backendRunId: '10000000-0000-4000-8000-000000000002',
     revision: 1,
     lastEventSequence: 2,
     activeTest: {
-      testId: 'test',
-      stopCommandId: 'stop',
+      testId: '10000000-0000-4000-8000-000000000003',
+      stopCommandId: '10000000-0000-4000-8000-000000000004',
       createdAt: '2026-11-02T10:00:00Z',
       operatorId: 'demo',
       demo: true,
@@ -272,7 +540,7 @@ it('accepts a complete session snapshot with a simulated measurement', async () 
   };
   const expected = {
     connection: {
-      hostRunId: 'host',
+      hostRunId: '10000000-0000-4000-8000-000000000001',
       revision: 1,
       streamGeneration: 1,
       status: 'live',
@@ -323,7 +591,7 @@ it('does not publish an old poll failure after a newer verification', async () =
     rejectPoll = reject;
   });
   const starting = {
-    hostRunId: 'host',
+    hostRunId: '10000000-0000-4000-8000-000000000001',
     revision: 1,
     connectionRevision: 1,
     diagnosticsDegraded: false,

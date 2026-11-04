@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { createBrowserBridge } from '../desktop/browser-bridge';
+import { parseBrowserJSON, responseGuards } from '../desktop/browser-responses';
 import { DesktopApp } from '../desktop/DesktopApp';
 
 type Bridges = ReturnType<typeof createBrowserBridge>;
 type Connection = { bridges: Bridges; instance: string };
 type Screen = 'connecting' | 'connected' | 'busy' | 'unavailable';
-const generationPattern = /^[0-9a-f-]{36}:[1-9][0-9]*$/;
 
 export function BrowserApp() {
   const [screen, setScreen] = useState<Screen>('connecting');
@@ -59,11 +59,10 @@ export function BrowserApp() {
           return;
         }
         try {
-          const data: unknown = JSON.parse(event.data);
-          if (typeof data !== 'object' || data === null || Array.isArray(data))
-            throw new Error('invalid channel');
-          if (('busy' in data && data.busy === true) || ('retry' in data && data.retry === true)) {
-            const closing = 'retry' in data && data.retry === true;
+          const data = parseBrowserJSON(event.data);
+          if (!responseGuards.BrowserControl(data)) throw new Error('invalid channel');
+          if (data['busy'] === true || data['retry'] === true) {
+            const closing = data['retry'] === true;
             if ((!closing && !recovering) || failures >= 4) {
               busy = true;
               setScreen('busy');
@@ -71,13 +70,8 @@ export function BrowserApp() {
             current.close();
             return;
           }
-          if (
-            Object.keys(data).length !== 1 ||
-            !('channel' in data) ||
-            typeof data.channel !== 'string' ||
-            !generationPattern.test(data.channel)
-          )
-            throw new Error('invalid channel');
+          const generation = data['channel'];
+          if (typeof generation !== 'string') throw new Error('invalid channel');
           accepted = true;
           recovering = false;
           if (timeout) clearTimeout(timeout);
@@ -86,8 +80,8 @@ export function BrowserApp() {
           }, 10000);
           channel = new AbortController();
           setConnection({
-            bridges: createBrowserBridge({ generation: data.channel, signal: channel.signal }),
-            instance: data.channel.split(':')[0] ?? '',
+            bridges: createBrowserBridge({ generation, signal: channel.signal }),
+            instance: generation.split(':')[0] ?? '',
           });
           setScreen('connected');
         } catch {

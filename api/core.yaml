@@ -930,3 +930,33 @@ components:
         testId: { type: [string, "null"], format: uuid }
         measurement: { $ref: "#/components/schemas/Measurement" }
         command: { $ref: "#/components/schemas/CommandStatus" }
+    BrowserSessionTicket:
+      description: Existing browser-host envelope for POST /api/session/check; Wails returns the ticket string directly.
+      type: object
+      additionalProperties: false
+      required: [ticket]
+      properties:
+        ticket:
+          type: string
+          format: uuid
+          not: { const: "00000000-0000-0000-0000-000000000000" }
+    BrowserChannelId:
+      description: Existing browser-host generation identifier, not an access credential.
+      type: string
+      pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:[1-9][0-9]*$"
+    BrowserControl:
+      description: Existing first WebSocket control frame at /api/session/stream; no core operation or new browser API.
+      type: object
+      additionalProperties: false
+      properties:
+        channel: { $ref: "#/components/schemas/BrowserChannelId" }
+        busy: { type: boolean, const: true }
+        retry: { type: boolean, const: true }
+      allOf:
+        - if: { required: [retry] }
+          then:
+            not:
+              anyOf:
+                - required: [channel]
+                - required: [busy]
+          else: { required: [channel] }

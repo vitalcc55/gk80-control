@@ -75,3 +75,32 @@ Core использует `Engine.Changes()` как объединяемое у�
 Контроллер движка ограничивает изменяющие команды периодом владения UI. Отзыв запрещает позднее подтверждение и сохраняет намерение системной остановки даже при ещё неразрешённом создании; исход создания уточняется чтением, без повтора команды. Core при потере владельца завершает движок с ограниченным ожиданием; подтверждённая запись и успешная остановка симулятора различаются. При неподтверждённом результате core удерживает хранилище и блокировку профиля до выхода процесса: операция, игнорирующая отмену, может оставаться в работе. Проверены потеря владельца с активным испытанием в отдельном процессе и зависшая запись через `core.Run` с настоящими HTTP-маршрутами.
 
 Менеджер права хранит одного владельца. Отзыв и сигнал закрытия происходят в контроллере под общей блокировкой; срок проверяется при допуске команды и ожидающей записи. Новый владелец может получить доступ к неподтверждённому состоянию, но изменяющие команды во время незавершённой остановки получают ответ о занятости. Продление не отменяет уже ожидающую запись; транзакция, допущенная до истечения права, может завершиться позднее. Маршруты права, снимка, команд и регистрации WebSocket используют эту границу.
+
+## Проверка browser-ответов (#20)
+
+Результат этапа: каждый используемый HTTP/WS-ответ browser-host проверяется до передачи UI. Проверяемые поверхности — реальные browser adapter/entry с подменой только транспорта, общий корпус исходных JSON в TypeScript и Go/schema, затем штатный demo-host. Не меняются исходная строка попытки, технологический допуск, identity/correlation, monotonicity, freshness, Storage/volatile, независимая Stop и no-autoretry. Scope — browser boundary, существующие схемы и контрактные проверки; core/SQLite/таймауты, рефакторинг координаторов, U01 и #21 не входят. Блокер для отдельного решения — необходимость менять публичное или предметное поведение вместо проверки существующих ответов.
+
+Выбран один централизованный набор чистых guards `browser-responses.ts` без новой зависимости: он использует существующие generated-типы, не вводит свою модель DTO или JSON Schema interpreter. Общий корпус проверяется также существующим Go-компилятором OpenAPI Draft 2020-12 с `AssertFormat` и `UseNumber`. Корпус доказывает перечисленные случаи, не математическую эквивалентность всех возможных JSON. Production `ResponseValidator` и цепочка OpenAPI → Go → Wails сохраняются. Только уже существующие ticket/WS envelopes получают недостававшее описание; новых операций нет.
+
+| Граница / endpoint | Схема или правило | Проверка / потребитель |
+|---|---|---|
+| core → Go host | Handshake, Snapshot, Readiness, TestRecord/List, Measurement/AuditPage, CommandStatus, Event | `ResponseValidator` до Go DTO; контекстные ID/порядок страниц отдельно в transport |
+| GET status, POST verify | DesktopStatus → Handshake | browser guards; host/backend и revision — DesktopApp |
+| POST session/check | BrowserSessionTicket | browser guards; ticket/deadline — session observation |
+| POST session/heartbeat | HTTP 204, доступное тело пусто | после чтения тела и проверки канала; это не доказательство отсутствия скрытых wire-байтов при нарушении HTTP |
+| GET session/view, observe | SessionView → ConnectionState, nullable Snapshot | browser guards; identity/revision/sequence/сроки/gap — session observation |
+| GET session/wait | ConnectionNotice → nullable Event | browser guards; курсоры, ACK, поколения — session observation |
+| GET tests/{id}/readiness | Readiness → ReadinessCheck | browser guards; test/revision и порядок — readiness observation |
+| GET tests, tests/{id} | TestList / TestRecord → TestParameters | browser guards; generation/страницы — History |
+| GET measurements, audit | MeasurementPage / AuditPage → Measurement / AuditEvent | browser guards; контекст страницы остаётся у прежнего потребителя |
+| POST create/start/confirm/stop | CommandDispatch → CommandStatus | guards до normalizeCommandDispatch; exact identity/terminal — command coordinator |
+| GET commands/{id} | CommandStatus | browser guard даже для предусмотренного, сейчас не вызываемого UI-пути |
+| POST lookup-exact | ExactLookupResult → CommandStatus | guards и raw duplicate-key check; match/conflict принадлежат сверке, не прямому receipt |
+| WS session/stream | BrowserControl / BrowserChannelId | entry guard; текущий socket/channel, bounded reconnect и abort остаются BrowserApp |
+| Host → Wails | прежние сервисы/типы, Event/ConnectionState/DesktopStatus | штатная регистрация и generation; общие координаторы сохраняют проверки identity/freshness также для Wails |
+
+Все успешные JSON HTTP-маршруты требуют 200; heartbeat — 204. HTTP-ошибка отвергается, её недоверенное тело не передаётся в UI и не распознаётся как command conflict. После полного чтения байтов тела повторно проверяется текущий канал. UTF-8 декодируется с fatal-ошибкой; ведущий BOM сохраняется для отказа JSON.parse, как в Go JSON decoder. Повреждённые байты не заменяются на U+FFFD перед проверкой. Сырые повторяющиеся ключи и некорректные Unicode-строки отвергаются до shape-validation; validators не вызывают сеть или retry. Прямой typed conflict остаётся `CommandConflictError`, exact conflict — результатом lookup; malformed ответ после отправки сохраняет unknown.
+
+Ограничения JavaScript учитываются отдельно от OpenAPI: счётчики требуют safe integer; не представимые конечным Number значения и десятичные дроби, округлившиеся к целому/нулю, отвергаются на этапе разбора текста. Это не изменение схемы: `1.0`, `1e3` и обычное округление дробей вроде `0.1` допустимы. Корпус помечает более консервативную JS-политику отдельно. Schema-корпус сохраняет decimal через UseNumber; он не приравнивает схему к дополнительным float64-ограничениям production inputValue и последующему строгому декодированию числовой лексемы в Go integer. Parser-level случаи отдельно проверяют существующий строгий Go-разбор. `maxLength` считает Unicode code points, не UTF-16 units.
+
+Нормативные основания: [OpenAPI 3.1.2](https://spec.openapis.org/oas/v3.1.2.html#schema-object), [JSON Schema validation 2020-12](https://json-schema.org/draft/2020-12/json-schema-validation), [ECMAScript JSON.parse](https://tc39.es/ecma262/multipage/structured-data.html#sec-json.parse), [Fetch](https://fetch.spec.whatwg.org/#fetch-method). TypeScript predicates не заменяют runtime-проверки; отказ guards используется с throw, а не как доказательство обратной ветки типа. `JSON.parse context.source` и обновление TS compiler/API для этого этапа не требуются.

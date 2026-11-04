@@ -2011,86 +2011,107 @@ it.each(['wails', 'browser'])(
   10000,
 );
 
-it('keeps a browser creation unknown after a lost response and service replacement', async () => {
-  const bridge: SessionBridge = {
-    beginSessionCheck: async () => 'ticket',
-    keepAlive: async () => {},
-    sessionView: async () => ({
-      connection: {
-        hostRunId: host,
-        revision: 1,
-        status: ConnectionStateStatus.Live,
-        linkValid: true,
-        leaseAcquireUnknown: false,
-        streamGeneration: 0,
-      },
-      snapshot: {
-        apiVersion: 'v1',
-        backendRunId: backend,
-        revision: 0,
-        lastEventSequence: 0,
-        activeTest: null,
-        pendingAction: null,
-        measurements: [],
-      },
-      validForMs: 6000,
-      linkValidForMs: 6000,
-    }),
-  };
-  api.list.mockResolvedValue({ items: [], nextAfter: null });
-  api.create.mockRejectedValue(new Error('response lost'));
-  api.command.mockImplementation(async (id: string) => ({
-    commandId: id,
-    testId,
-    status: CommandStatusStatus.CommandStatusStatusCompleted,
-  }));
-  api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
-  const browser = { ...desktopDemoService };
-  const mounted = render(
-    <LiveApp session={bridge} service={browser} hostRunId={host} backendRunId={backend} />,
-  );
-  const user = userEvent.setup();
-  const newTest = await screen.findByRole('button', { name: 'Новое испытание' });
-  await waitFor(() => expect(newTest.hasAttribute('disabled')).toBe(false));
-  await user.click(newTest);
-  await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
-  await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
-  await user.type(screen.getByLabelText(/производителя, Па/), '10000');
-  await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
-  await screen.findByText(/Исход команды пока неизвестен/);
-  mounted.unmount();
-  render(
-    <LiveApp
-      session={bridge}
-      service={desktopDemoService}
-      hostRunId={host}
-      backendRunId={backend}
-    />,
-  );
-  await screen.findByText(/Команда: исход неизвестен/);
-  await user.click(screen.getByRole('button', { name: 'Проверить состояние' }));
-  expect(screen.queryByText(/Команда: выполнена/)).toBeNull();
-  expect(api.command).not.toHaveBeenCalled();
-  expect(api.create).toHaveBeenCalledOnce();
-  const sent = api.create.mock.calls[0]?.[0];
-  if (!sent) throw new Error('create was not sent');
-  expect(api.exact).toHaveBeenCalledWith(
-    database,
-    'create',
-    '',
-    '',
-    sent.commandId,
-    JSON.stringify(sent),
-  );
-  const commandId: string = sent.commandId;
-  api.exact.mockResolvedValue({
-    outcome: 'match',
-    command: { commandId, testId, status: 'completed' },
-  });
-  await user.click(screen.getByRole('button', { name: 'Проверить состояние' }));
-  await screen.findByText(/Команда: выполнена/);
-  expect(api.create).toHaveBeenCalledOnce();
-}, 10000);
+it.each(['lost', 'malformed'] as const)(
+  'keeps a browser creation unknown after a %s response and service replacement',
+  async (responseKind) => {
+    const bridge: SessionBridge = {
+      beginSessionCheck: async () => 'ticket',
+      keepAlive: async () => {},
+      sessionView: async () => ({
+        connection: {
+          hostRunId: host,
+          revision: 1,
+          status: ConnectionStateStatus.Live,
+          linkValid: true,
+          leaseAcquireUnknown: false,
+          streamGeneration: 0,
+        },
+        snapshot: {
+          apiVersion: 'v1',
+          backendRunId: backend,
+          revision: 0,
+          lastEventSequence: 0,
+          activeTest: null,
+          pendingAction: null,
+          measurements: [],
+        },
+        validForMs: 6000,
+        linkValidForMs: 6000,
+      }),
+    };
+    api.list.mockResolvedValue({ items: [], nextAfter: null });
+    if (responseKind === 'lost') api.create.mockRejectedValue(new Error('response lost'));
+    else
+      api.create.mockImplementation(async (command: CreateCommandInput) => ({
+        delivery: 'response',
+        command: { commandId: command.commandId, testId },
+      }));
+    api.command.mockImplementation(async (id: string) => ({
+      commandId: id,
+      testId,
+      status: CommandStatusStatus.CommandStatusStatusCompleted,
+    }));
+    api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
+    const fetcher = vi.fn<typeof fetch>(async (_path, options) => {
+      const command: unknown = JSON.parse(String(options?.body));
+      return Response.json(await api.create(command));
+    });
+    const browser = {
+      ...desktopDemoService,
+      createTest: createBrowserBridge(
+        { generation: 'test', signal: new AbortController().signal },
+        fetcher,
+      ).service.createTest,
+    };
+    const mounted = render(
+      <LiveApp session={bridge} service={browser} hostRunId={host} backendRunId={backend} />,
+    );
+    const user = userEvent.setup();
+    const newTest = await screen.findByRole('button', { name: 'Новое испытание' });
+    await waitFor(() => expect(newTest.hasAttribute('disabled')).toBe(false));
+    await user.click(newTest);
+    await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
+    await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
+    await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+    await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
+    await screen.findByText(/Исход команды пока неизвестен/);
+    mounted.unmount();
+    render(
+      <LiveApp
+        session={bridge}
+        service={desktopDemoService}
+        hostRunId={host}
+        backendRunId={backend}
+      />,
+    );
+    await screen.findByText(/Команда: исход неизвестен/);
+    await user.click(screen.getByRole('button', { name: 'Проверить состояние' }));
+    expect(screen.queryByText(/Команда: выполнена/)).toBeNull();
+    expect(api.command).not.toHaveBeenCalled();
+    expect(api.create).toHaveBeenCalledOnce();
+    expect(fetcher).toHaveBeenCalledOnce();
+    const sent = api.create.mock.calls[0]?.[0];
+    if (!sent) throw new Error('create was not sent');
+    expect(api.exact).toHaveBeenCalledWith(
+      database,
+      'create',
+      '',
+      '',
+      sent.commandId,
+      JSON.stringify(sent),
+    );
+    const commandId: string = sent.commandId;
+    api.exact.mockResolvedValue({
+      outcome: 'match',
+      command: { commandId, testId, status: 'completed' },
+    });
+    await user.click(screen.getByRole('button', { name: 'Проверить состояние' }));
+    await screen.findByText(/Команда: выполнена/);
+    expect(api.create).toHaveBeenCalledOnce();
+    expect(fetcher).toHaveBeenCalledOnce();
+  },
+  10000,
+);
 
 it.each([
   'conflict',
@@ -5200,7 +5221,10 @@ it.each(['create', 'start', 'confirm', 'stop'] as const)(
 
     for (const value of [
       { delivery: 'notSent', command: null },
-      { delivery: 'response', command: { commandId: 'id', status: 'completed' } },
+      {
+        delivery: 'response',
+        command: { commandId: '10000000-0000-4000-8000-000000000001', status: 'completed' },
+      },
       { delivery: 'conflict' },
       { delivery: 'conflict', command: null, extra: true },
       { delivery: 'conflict', command: {} },
@@ -5208,7 +5232,13 @@ it.each(['create', 'start', 'confirm', 'stop'] as const)(
       api[kind].mockResolvedValueOnce(value);
       fetcher.mockResolvedValueOnce(Response.json(value));
       await expect(invoke(desktopDemoService)).resolves.toEqual(value);
-      await expect(invoke(browser)).resolves.toEqual(value);
+      if (value.delivery === 'notSent' || value.delivery === 'response')
+        await expect(invoke(browser)).resolves.toEqual(value);
+      else {
+        const error: unknown = await invoke(browser).catch((failure: unknown) => failure);
+        expect(error).toBeInstanceOf(Error);
+        expect(error).not.toBeInstanceOf(CommandConflictError);
+      }
     }
     api[kind].mockRejectedValueOnce(new Error('response lost'));
     fetcher.mockRejectedValueOnce(new Error('response lost'));
