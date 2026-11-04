@@ -277,7 +277,7 @@ type heldStartCommit struct {
 	release chan struct{}
 }
 
-func (s *heldStartCommit) Start(ctx context.Context, id uuid.UUID, cmd contract.StartTestCommand, action contract.PendingAction) (contract.CommandStatus, error) {
+func (s *heldStartCommit) Start(ctx context.Context, id uuid.UUID, cmd contract.StartTestCommand, action contract.PendingAction) (storage.OperationResult, error) {
 	result, err := s.Store.Start(ctx, id, cmd, action)
 	close(s.entered)
 	<-s.release
@@ -379,7 +379,7 @@ type heldConfirmCommit struct {
 	release chan struct{}
 }
 
-func (s *heldConfirmCommit) Confirm(ctx context.Context, id, action uuid.UUID, cmd contract.ConfirmActionCommand) (contract.CommandStatus, error) {
+func (s *heldConfirmCommit) Confirm(ctx context.Context, id, action uuid.UUID, cmd contract.ConfirmActionCommand) (storage.OperationResult, error) {
 	result, err := s.Store.Confirm(ctx, id, action, cmd)
 	close(s.entered)
 	<-s.release

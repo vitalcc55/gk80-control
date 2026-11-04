@@ -170,7 +170,7 @@ func TestMeasurementAndAuditPagesDistinguishEndAndMissing(t *testing.T) {
 	if _, err := store.Confirm(ctx, id, action.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: 2}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CompleteStart(ctx, id, start.CommandId); err != nil {
+	if _, err := store.CompleteStart(ctx, id, start.CommandId); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()

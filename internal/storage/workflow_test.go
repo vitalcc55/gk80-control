@@ -149,7 +149,7 @@ func TestDemoRecordTransitionsAndMeasurementsSurviveReopen(t *testing.T) {
 	testID := *created.TestId
 	action := contract.PendingAction{ActionId: uuid.New(), TestId: testID, Instruction: "Подтвердите начало демонстрационного измерения"}
 	start := contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: 1, ValveClosed: true, ConnectionConfirmed: true}
-	if status, err := store.Start(ctx, testID, start, action); err != nil || status.Status != "accepted" {
+	if status, err := store.Start(ctx, testID, start, action); err != nil || status.Command.Status != "accepted" {
 		t.Fatal(err)
 	}
 	pending, err := store.PendingAction(ctx, testID)
@@ -160,14 +160,14 @@ func TestDemoRecordTransitionsAndMeasurementsSurviveReopen(t *testing.T) {
 	if _, err := store.Confirm(ctx, testID, action.ActionId, confirm); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CompleteStart(ctx, testID, start.CommandId); err != nil {
+	if _, err := store.CompleteStart(ctx, testID, start.CommandId); err != nil {
 		t.Fatal(err)
 	}
 	beforeRepeat, err := store.Audit(ctx, testID, 0, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CompleteStart(ctx, testID, start.CommandId); err != nil {
+	if _, err := store.CompleteStart(ctx, testID, start.CommandId); err != nil {
 		t.Fatalf("completed start no-op: %v", err)
 	}
 	afterRepeat, err := store.Audit(ctx, testID, 0, 100)
@@ -196,7 +196,7 @@ func TestDemoRecordTransitionsAndMeasurementsSurviveReopen(t *testing.T) {
 	if err := store.Complete(ctx, testID, time.Second+5*time.Millisecond); err != nil {
 		t.Fatal(err)
 	}
-	if result, err := store.Start(ctx, testID, start, action); err != nil || result.Status != "completed" {
+	if result, err := store.Start(ctx, testID, start, action); err != nil || result.Command.Status != "completed" {
 		t.Fatalf("start retry after completion: %+v %v", result, err)
 	}
 	if _, err := store.Confirm(ctx, testID, action.ActionId, confirm); err != nil {
@@ -264,7 +264,7 @@ func TestRecoveryDoesNotResumeActiveDemo(t *testing.T) {
 	if err := store.Recover(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if status, err := store.Start(ctx, id, cmd, action); err != nil || status.Status != "unknown" {
+	if status, err := store.Start(ctx, id, cmd, action); err != nil || status.Command.Status != "unknown" {
 		t.Fatalf("interrupted command status: %+v %v", status, err)
 	}
 	record, err := store.Test(ctx, id)
@@ -671,7 +671,7 @@ func TestIncompletePressureSamplesCannotProduceCompleteResult(t *testing.T) {
 	if _, err := store.Confirm(ctx, id, action.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: 2}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CompleteStart(ctx, id, start.CommandId); err != nil {
+	if _, err := store.CompleteStart(ctx, id, start.CommandId); err != nil {
 		t.Fatal(err)
 	}
 	sample := contract.Measurement{Sequence: 1, Channel: "dd1", Quantity: "pressure", Unit: "Pa", ObservedAt: time.Now().UTC(), Quality: "unavailable", Source: "simulator"}
@@ -707,7 +707,7 @@ func TestMeasurementBatchFailureRollsBackEntireBatch(t *testing.T) {
 	if _, err := store.Confirm(ctx, id, action.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: 2}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CompleteStart(ctx, id, start.CommandId); err != nil {
+	if _, err := store.CompleteStart(ctx, id, start.CommandId); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.db.Exec(`CREATE TRIGGER reject_second BEFORE INSERT ON measurements WHEN NEW.sequence = 2 BEGIN SELECT RAISE(ABORT, 'injected failure'); END`); err != nil {
@@ -755,7 +755,7 @@ func TestRejectedStartsDoNotBlockSuccessfulMeasurement(t *testing.T) {
 	if _, err := store.Confirm(ctx, id, action.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: 2}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CompleteStart(ctx, id, start.CommandId); err != nil {
+	if _, err := store.CompleteStart(ctx, id, start.CommandId); err != nil {
 		t.Fatal(err)
 	}
 	another := contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: 4, ValveClosed: true, ConnectionConfirmed: true}

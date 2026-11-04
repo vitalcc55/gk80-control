@@ -21,15 +21,14 @@ type Repository interface {
 	LookupCreateExact(context.Context, contract.CreateTestCommand, []byte) (contract.CommandStatus, error)
 	Revision(context.Context) (int64, error)
 	Test(context.Context, uuid.UUID) (contract.TestRecord, error)
-	Start(context.Context, uuid.UUID, contract.StartTestCommand, contract.PendingAction) (contract.CommandStatus, error)
+	Start(context.Context, uuid.UUID, contract.StartTestCommand, contract.PendingAction) (storage.OperationResult, error)
 	LookupStart(context.Context, uuid.UUID, contract.StartTestCommand) (contract.CommandStatus, error)
 	RejectStartNotReady(context.Context, uuid.UUID, contract.StartTestCommand) (contract.CommandStatus, error)
 	RejectStartUnavailable(context.Context, uuid.UUID, contract.StartTestCommand) (contract.CommandStatus, error)
-	Confirm(context.Context, uuid.UUID, uuid.UUID, contract.ConfirmActionCommand) (contract.CommandStatus, error)
+	Confirm(context.Context, uuid.UUID, uuid.UUID, contract.ConfirmActionCommand) (storage.OperationResult, error)
 	LookupConfirm(context.Context, uuid.UUID, uuid.UUID, contract.ConfirmActionCommand) (contract.CommandStatus, error)
 	RejectConfirmUnavailable(context.Context, uuid.UUID, uuid.UUID, contract.ConfirmActionCommand) (contract.CommandStatus, error)
-	PendingAction(context.Context, uuid.UUID) (*contract.PendingAction, error)
-	CompleteStart(context.Context, uuid.UUID, uuid.UUID) error
+	CompleteStart(context.Context, uuid.UUID, uuid.UUID) (storage.OperationResult, error)
 	RecordMeasurements(context.Context, uuid.UUID, []storage.TimedMeasurement) error
 	Complete(context.Context, uuid.UUID, time.Duration) error
 	FinishStop(context.Context, uuid.UUID, uuid.UUID, storage.StopDetails) (contract.CommandStatus, error)
@@ -1026,7 +1025,7 @@ func (e *Engine) start(ctx context.Context, testID uuid.UUID, command contract.S
 			if !e.allowed(control) {
 				return contract.CommandStatus{}, ErrControlRevoked
 			}
-			return result, err
+			return result.CommandStatus(), err
 		}
 		e.mu.Unlock()
 		if err := waitForStop(ctx, done); err != nil {
@@ -1039,7 +1038,8 @@ func (e *Engine) start(ctx context.Context, testID uuid.UUID, command contract.S
 			return contract.CommandStatus{}, storage.ErrStorageUnavailable
 		}
 		action := contract.PendingAction{ActionId: uuid.New(), TestId: testID, Instruction: "Подтвердите начало демонстрационного измерения"}
-		return e.store.Start(ctx, testID, command, action)
+		result, err := e.store.Start(ctx, testID, command, action)
+		return result.CommandStatus(), err
 	}
 	notReady := current.record.Stage == "preparing" && !e.equipment.Ready()
 	baseCtx, cancelBase := context.WithTimeout(current.ctx, 2*time.Second)
@@ -1054,7 +1054,11 @@ func (e *Engine) start(ctx context.Context, testID uuid.UUID, command contract.S
 		return result, err
 	}
 	action := contract.PendingAction{ActionId: uuid.New(), TestId: testID, Instruction: "Подтвердите начало демонстрационного измерения"}
-	status, err := e.store.Start(opCtx, testID, command, action)
+	result, err := e.store.Start(opCtx, testID, command, action)
+	status := result.CommandStatus()
+	if replayed != nil && result.Replayed {
+		*replayed = true
+	}
 	err = operationError(opCtx, err)
 	if err != nil {
 		if unexpectedStorageError(err) {
@@ -1065,11 +1069,11 @@ func (e *Engine) start(ctx context.Context, testID uuid.UUID, command contract.S
 	e.emitCommand(status, nil)
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.active == current && !current.stopping {
-		current.record.Stage = "running"
-		current.revision = command.ExpectedRevision + 1
+	if result.Applied && result.Saved != nil && e.active == current && !current.stopping {
+		current.record = result.Saved.Record
+		current.revision = result.Saved.Revision
 		e.revision = current.revision
-		current.pending = &action
+		current.pending = result.Saved.PendingAction
 		current.startID = command.CommandId
 		e.signal()
 	}
@@ -1141,7 +1145,7 @@ func (e *Engine) confirm(ctx context.Context, testID, actionID uuid.UUID, comman
 			if !e.allowed(control) {
 				return contract.CommandStatus{}, ErrControlRevoked
 			}
-			return result, err
+			return result.CommandStatus(), err
 		}
 		e.mu.Unlock()
 		if err := waitForStop(ctx, done); err != nil {
@@ -1153,14 +1157,19 @@ func (e *Engine) confirm(ctx context.Context, testID, actionID uuid.UUID, comman
 		if !saved {
 			return contract.CommandStatus{}, storage.ErrStorageUnavailable
 		}
-		return e.store.Confirm(ctx, testID, actionID, command)
+		result, err := e.store.Confirm(ctx, testID, actionID, command)
+		return result.CommandStatus(), err
 	}
 	baseCtx, cancelBase := context.WithTimeout(current.ctx, 2*time.Second)
 	opCtx, cancel := operationContextLocked(baseCtx, control)
 	e.mu.Unlock()
 	defer cancel()
 	defer cancelBase()
-	status, err := e.store.Confirm(opCtx, testID, actionID, command)
+	result, err := e.store.Confirm(opCtx, testID, actionID, command)
+	status := result.CommandStatus()
+	if replayed != nil && result.Replayed {
+		*replayed = true
+	}
 	err = operationError(opCtx, err)
 	if err != nil {
 		if unexpectedStorageError(err) {
@@ -1170,7 +1179,7 @@ func (e *Engine) confirm(ctx context.Context, testID, actionID uuid.UUID, comman
 	}
 	e.emitCommand(status, &actionID)
 	e.mu.Lock()
-	if e.active != current || current.stopping || current.started || !e.allowedLocked(control) {
+	if !result.Applied || result.Saved == nil || e.active != current || current.stopping || current.started || !e.allowedLocked(control) {
 		e.mu.Unlock()
 		return status, nil
 	}
@@ -1184,9 +1193,10 @@ func (e *Engine) confirm(ctx context.Context, testID, actionID uuid.UUID, comman
 		go e.finishStop(current)
 		return status, err
 	}
-	current.pending = nil
+	current.record = result.Saved.Record
+	current.pending = result.Saved.PendingAction
 	current.started = true
-	current.revision = command.ExpectedRevision + 1
+	current.revision = result.Saved.Revision
 	e.revision = current.revision
 	current.record.SaveStatus = "pending"
 	e.signal()
@@ -1195,13 +1205,13 @@ func (e *Engine) confirm(ctx context.Context, testID, actionID uuid.UUID, comman
 	completeDone := make(chan startCompletion, 1)
 	deadline, _ := completeCtx.Deadline()
 	go func() {
-		err := e.store.CompleteStart(completeCtx, testID, current.startID)
-		completeDone <- startCompletion{err: err, at: time.Now()}
+		result, err := e.store.CompleteStart(completeCtx, testID, current.startID)
+		completeDone <- startCompletion{result: result, err: err, at: time.Now()}
 	}()
 	completed, timedOut := waitStartCompletion(completeCtx, deadline, completeDone, func() { e.requestStop(current, "storage_error") })
 	if timedOut {
-		if completed.err == nil {
-			e.emitCommand(contract.CommandStatus{CommandId: current.startID, TestId: &testID, Status: "completed"}, &actionID)
+		if completed.result.Command != nil {
+			e.emitCommand(*completed.result.Command, &actionID)
 		}
 		completeCancel()
 		return status, context.DeadlineExceeded
@@ -1212,14 +1222,17 @@ func (e *Engine) confirm(ctx context.Context, testID, actionID uuid.UUID, comman
 		e.requestStop(current, "storage_error")
 		return status, err
 	}
-	e.emitCommand(contract.CommandStatus{CommandId: current.startID, TestId: &testID, Status: "completed"}, &actionID)
+	if completed.result.Command != nil {
+		e.emitCommand(*completed.result.Command, &actionID)
+	}
 	e.mu.Lock()
-	if e.active != current || current.stopping {
+	if completed.result.Saved == nil || e.active != current || current.stopping || !e.allowedLocked(control) || completed.result.Saved.Record.Stage != "running" {
 		e.mu.Unlock()
 		return status, nil
 	}
-	current.record.SaveStatus = "saved"
-	current.revision++
+	current.record = completed.result.Saved.Record
+	current.pending = completed.result.Saved.PendingAction
+	current.revision = completed.result.Saved.Revision
 	e.revision = current.revision
 	e.signal()
 	e.mu.Unlock()
@@ -1426,8 +1439,9 @@ const measurementWriteTimeout = 2 * time.Second
 type samplePacket []storage.TimedMeasurement
 
 type startCompletion struct {
-	err error
-	at  time.Time
+	result storage.OperationResult
+	err    error
+	at     time.Time
 }
 
 func waitStartCompletion(ctx context.Context, deadline time.Time, done <-chan startCompletion, onTimeout func()) (startCompletion, bool) {

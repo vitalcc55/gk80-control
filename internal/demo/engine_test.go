@@ -360,13 +360,13 @@ type canceledResponse struct {
 	cancel context.CancelFunc
 }
 
-func (s *canceledResponse) Start(ctx context.Context, id uuid.UUID, cmd contract.StartTestCommand, action contract.PendingAction) (contract.CommandStatus, error) {
+func (s *canceledResponse) Start(ctx context.Context, id uuid.UUID, cmd contract.StartTestCommand, action contract.PendingAction) (storage.OperationResult, error) {
 	status, err := s.Store.Start(ctx, id, cmd, action)
 	s.cancel()
 	return status, err
 }
 
-func (s *canceledResponse) Confirm(ctx context.Context, id, actionID uuid.UUID, cmd contract.ConfirmActionCommand) (contract.CommandStatus, error) {
+func (s *canceledResponse) Confirm(ctx context.Context, id, actionID uuid.UUID, cmd contract.ConfirmActionCommand) (storage.OperationResult, error) {
 	status, err := s.Store.Confirm(ctx, id, actionID, cmd)
 	s.cancel()
 	return status, err
@@ -511,7 +511,7 @@ func TestRefreshFindsCreatedTestAfterLostRead(t *testing.T) {
 	}
 }
 
-func (s *stalledStart) Start(ctx context.Context, id uuid.UUID, cmd contract.StartTestCommand, action contract.PendingAction) (contract.CommandStatus, error) {
+func (s *stalledStart) Start(ctx context.Context, id uuid.UUID, cmd contract.StartTestCommand, action contract.PendingAction) (storage.OperationResult, error) {
 	result, err := s.Store.Start(ctx, id, cmd, action)
 	close(s.entered)
 	<-s.release
@@ -1080,7 +1080,7 @@ type stalledConfirm struct {
 	release chan struct{}
 }
 
-func (s *stalledConfirm) Confirm(ctx context.Context, testID, actionID uuid.UUID, cmd contract.ConfirmActionCommand) (contract.CommandStatus, error) {
+func (s *stalledConfirm) Confirm(ctx context.Context, testID, actionID uuid.UUID, cmd contract.ConfirmActionCommand) (storage.OperationResult, error) {
 	result, err := s.Store.Confirm(ctx, testID, actionID, cmd)
 	close(s.entered)
 	<-s.release
@@ -2014,7 +2014,7 @@ type heldStartWrite struct {
 	release chan struct{}
 }
 
-func (s *heldStartWrite) Start(ctx context.Context, id uuid.UUID, cmd contract.StartTestCommand, action contract.PendingAction) (contract.CommandStatus, error) {
+func (s *heldStartWrite) Start(ctx context.Context, id uuid.UUID, cmd contract.StartTestCommand, action contract.PendingAction) (storage.OperationResult, error) {
 	close(s.entered)
 	<-s.release
 	return s.Store.Start(ctx, id, cmd, action)
@@ -2067,18 +2067,18 @@ type timedOutOperation struct {
 	operation string
 }
 
-func (s *timedOutOperation) Start(ctx context.Context, id uuid.UUID, cmd contract.StartTestCommand, action contract.PendingAction) (contract.CommandStatus, error) {
+func (s *timedOutOperation) Start(ctx context.Context, id uuid.UUID, cmd contract.StartTestCommand, action contract.PendingAction) (storage.OperationResult, error) {
 	if s.operation == "start" {
 		<-ctx.Done()
-		return contract.CommandStatus{}, context.Canceled
+		return storage.OperationResult{}, context.Canceled
 	}
 	return s.Store.Start(ctx, id, cmd, action)
 }
 
-func (s *timedOutOperation) Confirm(ctx context.Context, id, action uuid.UUID, cmd contract.ConfirmActionCommand) (contract.CommandStatus, error) {
+func (s *timedOutOperation) Confirm(ctx context.Context, id, action uuid.UUID, cmd contract.ConfirmActionCommand) (storage.OperationResult, error) {
 	if s.operation == "confirm" {
 		<-ctx.Done()
-		return contract.CommandStatus{}, context.Canceled
+		return storage.OperationResult{}, context.Canceled
 	}
 	return s.Store.Confirm(ctx, id, action, cmd)
 }
@@ -2217,15 +2217,16 @@ type heldCompleteStart struct {
 	commitBeforeWait bool
 }
 
-func (s *heldCompleteStart) CompleteStart(ctx context.Context, id, commandID uuid.UUID) error {
+func (s *heldCompleteStart) CompleteStart(ctx context.Context, id, commandID uuid.UUID) (storage.OperationResult, error) {
+	var result storage.OperationResult
 	var err error
 	if s.commitBeforeWait {
-		err = s.Store.CompleteStart(ctx, id, commandID)
+		result, err = s.Store.CompleteStart(ctx, id, commandID)
 	}
 	close(s.entered)
 	<-s.release
 	if s.commitBeforeWait {
-		return err
+		return result, err
 	}
 	return s.Store.CompleteStart(ctx, id, commandID)
 }
