@@ -13,7 +13,7 @@ import type {
 } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
 import { TestRecordOutcome } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
 import type { DemoService } from './demo-service';
-import { outcomeLabel, saveLabel } from './display';
+import { outcomeLabel, qualityLabel, saveLabel } from './display';
 import { parametersForDisplay, resultReadVersion } from './presentation';
 import { RecordDetails } from './RecordDetails';
 
@@ -279,7 +279,8 @@ export function History({
           selectedKey !== completedKey && (
             <p role="status">
               В истории сохранена другая версия. По последнему снимку:{' '}
-              {outcomeLabel(completedRecord.outcome)}; сохранение:{' '}
+              {outcomeLabel(completedRecord.outcome)}; данные:{' '}
+              {qualityLabel(completedRecord.dataQuality)}; сохранение:{' '}
               {saveLabel(completedRecord.saveStatus)}.
             </p>
           )}
@@ -318,7 +319,7 @@ export function History({
           completedRecord &&
           item.testId === completedRecord.testId &&
           resultReadVersion(item) !== completedKey
-            ? `${saveLabel(item.saveStatus)}. По последнему снимку: ${outcomeLabel(completedRecord.outcome)}; сохранение: ${saveLabel(completedRecord.saveStatus)}.`
+            ? `${saveLabel(item.saveStatus)}. По последнему снимку: ${outcomeLabel(completedRecord.outcome)}; данные: ${qualityLabel(completedRecord.dataQuality)}; сохранение: ${saveLabel(completedRecord.saveStatus)}.`
             : saveLabel(item.saveStatus),
         active: item.testId === activeTestId,
       }))}

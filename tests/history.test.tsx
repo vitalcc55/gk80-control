@@ -99,11 +99,20 @@ it('distinguishes the stored record from an unsaved latest result in the list an
     />
   );
   const view = render(draw(latest));
-  expect(await screen.findByText(/По последнему снимку: Прервано.*Ошибка сохранения/)).toBeTruthy();
+  expect(
+    await screen.findByText(
+      /По последнему снимку: Прервано; данные: Неполные; сохранение: Ошибка сохранения/,
+    ),
+  ).toBeTruthy();
   await userEvent.setup().click(screen.getByRole('button', { name: /Открыть Первая/ }));
   expect(await screen.findByText(/В истории сохранена другая версия/)).toBeTruthy();
-  expect(screen.getByText(/По последнему снимку: Прервано.*Ошибка сохранения/)).toBeTruthy();
+  expect(
+    screen.getByText(
+      /По последнему снимку: Прервано; данные: Неполные; сохранение: Ошибка сохранения/,
+    ),
+  ).toBeTruthy();
   expect(screen.getByText('Ожидается')).toBeTruthy();
+  expect(screen.getByText('Ожидаются')).toBeTruthy();
   expect(screen.getByText('Сохранено')).toBeTruthy();
   view.unmount();
   const uncertain = { ...latest, saveStatus: TestRecordSaveStatus.TestRecordSaveStatusUnknown };
