@@ -27,7 +27,9 @@ export function FixtureTests({
   onCurrent,
 }: TestsScreenProps) {
   const [filters, setFilters] = useState<HistoryFilters>(emptyHistoryFilters);
-  const query = filters.query;
+  const [applied, setApplied] = useState<HistoryFilters>(emptyHistoryFilters);
+  const [rangeError, setRangeError] = useState(false);
+  const query = applied.query;
   const entries = empty
     ? []
     : [
@@ -40,21 +42,21 @@ export function FixtureTests({
       ];
   const matches = entries.filter(
     (item) =>
-      `${item.id} ${item.valve}`
-        .toLocaleLowerCase('ru')
-        .includes(query.trim().toLocaleLowerCase('ru')) &&
-      !filters.from &&
-      !filters.through &&
-      (!filters.outcome || filters.outcome === 'completed'),
+      [item.id, item.valve].some((value) =>
+        value.toLocaleLowerCase('ru').includes(query.trim().toLocaleLowerCase('ru')),
+      ) &&
+      !applied.from &&
+      !applied.through &&
+      (!applied.outcome || applied.outcome === 'completed'),
   );
   const activeMatches =
     activeParameters &&
-    `${activeParameters.id} ${activeParameters.valve}`
-      .toLocaleLowerCase('ru')
-      .includes(query.trim().toLocaleLowerCase('ru')) &&
-    !filters.from &&
-    !filters.through &&
-    (!filters.outcome || filters.outcome === 'pending');
+    [activeParameters.id, activeParameters.valve].some((value) =>
+      value.toLocaleLowerCase('ru').includes(query.trim().toLocaleLowerCase('ru')),
+    ) &&
+    !applied.from &&
+    !applied.through &&
+    (!applied.outcome || applied.outcome === 'pending');
 
   return (
     <TestsScreen
@@ -87,10 +89,19 @@ export function FixtureTests({
         })),
       ]}
       filters={filters}
-      filtered={Object.values(filters).some(Boolean)}
+      filtered={!!(applied.query.trim() || applied.from || applied.through || applied.outcome)}
+      error={rangeError ? 'Начало диапазона должно быть не позже конца.' : ''}
       onFilters={setFilters}
-      onSearch={() => {}}
-      onReset={() => setFilters(emptyHistoryFilters)}
+      onSearch={() => {
+        const invalid = !!filters.from && !!filters.through && filters.from > filters.through;
+        setRangeError(invalid);
+        setApplied(invalid ? emptyHistoryFilters : filters);
+      }}
+      onReset={() => {
+        setFilters(emptyHistoryFilters);
+        setApplied(emptyHistoryFilters);
+        setRangeError(false);
+      }}
       onOpen={(id) => {
         if (id === activeParameters?.id) {
           onCurrent();

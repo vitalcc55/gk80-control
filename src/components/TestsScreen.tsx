@@ -68,6 +68,8 @@ export function TestsScreen({
   active?: ReactNode;
   children?: ReactNode;
 }) {
+  const queryTooLong = Array.from(filters.query.trim()).length > 200;
+  const dateRangeInvalid = !!filters.from && !!filters.through && filters.from > filters.through;
   return (
     <section className="workpage" aria-labelledby="tests-title">
       <div className="workpage-heading">
@@ -92,24 +94,34 @@ export function TestsScreen({
           className="history-filters"
           onSubmit={(event) => {
             event.preventDefault();
-            onSearch();
+            if (!queryTooLong) onSearch();
           }}
         >
           <label className="history-search">
-            <Search aria-hidden="true" size={17} />
-            <span className="visually-hidden">Поиск по номеру или изделию</span>
-            <input
-              placeholder="Номер или изделие"
-              maxLength={200}
-              value={filters.query}
-              onChange={(e) => onFilters({ ...filters, query: e.target.value })}
-            />
+            <span>Поиск по номеру или изделию</span>
+            <span className="history-search-field">
+              <Search aria-hidden="true" size={17} />
+              <input
+                placeholder="Номер или изделие"
+                value={filters.query}
+                aria-invalid={queryTooLong || undefined}
+                aria-describedby={queryTooLong ? 'history-query-error' : undefined}
+                onChange={(e) => onFilters({ ...filters, query: e.target.value })}
+              />
+            </span>
+            {queryTooLong && (
+              <span id="history-query-error" role="alert">
+                Не более 200 символов без крайних пробелов.
+              </span>
+            )}
           </label>
           <label>
             С даты
             <input
               type="date"
               value={filters.from}
+              aria-invalid={dateRangeInvalid || undefined}
+              aria-describedby={dateRangeInvalid ? 'history-date-error' : undefined}
               onChange={(e) => onFilters({ ...filters, from: e.target.value })}
             />
           </label>
@@ -118,9 +130,16 @@ export function TestsScreen({
             <input
               type="date"
               value={filters.through}
+              aria-invalid={dateRangeInvalid || undefined}
+              aria-describedby={dateRangeInvalid ? 'history-date-error' : undefined}
               onChange={(e) => onFilters({ ...filters, through: e.target.value })}
             />
           </label>
+          {dateRangeInvalid && (
+            <span className="visually-hidden" id="history-date-error">
+              Проверьте порядок дат: начало позже конца.
+            </span>
+          )}
           <label>
             Исход
             <select

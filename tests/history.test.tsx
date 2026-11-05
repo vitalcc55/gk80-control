@@ -9,6 +9,8 @@ import { History } from '../src/desktop/History';
 import { LiveApp } from '../src/desktop/LiveApp';
 import { RecordDetails } from '../src/desktop/RecordDetails';
 import { desktopDemoService } from '../src/desktop/wails-bridge';
+import { FixtureTests } from '../src/FixtureTests';
+import { fixtureSource } from '../src/fixtureAdapter';
 import {
   ConnectionStateStatus,
   type TestList,
@@ -40,6 +42,87 @@ const record: TestRecord = {
   },
 };
 const callbacks = { onNew: vi.fn(), onCopy: vi.fn(), onDiscard: vi.fn() };
+
+it('searches the complete valid Unicode product name', async () => {
+  const service = {
+    ...desktopDemoService,
+    listTests: vi.fn().mockResolvedValue({ items: [], nextAfter: null }),
+  };
+  render(
+    <History {...callbacks} service={service} available disabled={false} draftAvailable={false} />,
+  );
+  const user = userEvent.setup();
+  const name = '𐐀'.repeat(150);
+  await user.click(screen.getByLabelText('Поиск по номеру или изделию'));
+  await user.paste(name);
+  await user.click(screen.getByRole('button', { name: 'Найти' }));
+  await waitFor(() =>
+    expect(service.listTests).toHaveBeenLastCalledWith(expect.objectContaining({ q: name })),
+  );
+});
+
+it('preserves the query and rejects a search over the limit without truncating', async () => {
+  const service = {
+    ...desktopDemoService,
+    listTests: vi.fn().mockResolvedValue({ items: [], nextAfter: null }),
+  };
+  render(
+    <History {...callbacks} service={service} available disabled={false} draftAvailable={false} />,
+  );
+  const user = userEvent.setup();
+  const field = screen.getByLabelText('Поиск по номеру или изделию');
+  const name = 'А'.repeat(100) + 'Б'.repeat(100);
+  await waitFor(() => expect(service.listTests).toHaveBeenCalledOnce());
+  await user.click(field);
+  await user.paste(name);
+  await user.keyboard('{Home}X');
+  expect(field).toHaveProperty('value', `X${name}`);
+  await user.click(screen.getByRole('button', { name: 'Найти' }));
+  expect(screen.getByRole('alert').textContent).toMatch(/200/);
+  expect(service.listTests).toHaveBeenCalledOnce();
+  await user.clear(field);
+  await user.paste(` ${name} `);
+  await user.click(screen.getByRole('button', { name: 'Найти' }));
+  await waitFor(() =>
+    expect(service.listTests).toHaveBeenLastCalledWith(expect.objectContaining({ q: name })),
+  );
+});
+
+it('applies fixture history filters only after a valid search', async () => {
+  render(
+    <FixtureTests
+      empty={false}
+      showExample
+      draftAvailable={false}
+      activeParameters={null}
+      history={[]}
+      example={fixtureSource.initial}
+      onNew={() => {}}
+      onHistory={() => {}}
+      onCurrent={() => {}}
+    />,
+  );
+  const user = userEvent.setup();
+  const field = screen.getByLabelText('Поиск по номеру или изделию');
+  const example = fixtureSource.initial.valve;
+  expect(screen.getByText(example)).toBeTruthy();
+  await user.click(field);
+  await user.paste('Я'.repeat(201));
+  expect(screen.getByRole('alert')).toBeTruthy();
+  expect(screen.getByText(example)).toBeTruthy();
+  await user.clear(field);
+  await user.type(field, 'нет такого изделия');
+  expect(screen.getByText(example)).toBeTruthy();
+  await user.click(screen.getByRole('button', { name: 'Найти' }));
+  expect(screen.queryByText(example)).toBeNull();
+  await user.click(screen.getByRole('button', { name: 'Сбросить поиск' }));
+  expect(screen.getByText(example)).toBeTruthy();
+  await user.type(screen.getByLabelText('С даты'), '2026-11-06');
+  await user.type(screen.getByLabelText('По дату'), '2026-11-05');
+  await user.click(screen.getByRole('button', { name: 'Найти' }));
+  expect(screen.getByRole('alert').textContent).toMatch(/Начало диапазона/);
+  expect(screen.queryByText(example)).toBeNull();
+});
 
 it('does not publish a page requested before the active identity changed while offline', async () => {
   let finish: (value: TestList) => void = () => {};
@@ -850,6 +933,29 @@ it('opens the shared result before reading details and retains the record when a
   expect(measurements).toHaveBeenLastCalledWith(record.testId, 0, 100);
   await user.click(screen.getByRole('button', { name: 'Новое по этим параметрам' }));
   expect(onCopy).toHaveBeenCalledWith(record.parameters);
+});
+
+it('uses operator language for saved measurement quality and source', async () => {
+  const measurements = vi.fn().mockResolvedValue({
+    items: [
+      {
+        sequence: 1,
+        channel: 'dd1',
+        value: 1000,
+        unit: 'Pa',
+        quality: 'valid',
+        measuredAt: null,
+        source: 'simulator',
+      },
+    ],
+    nextAfter: null,
+  });
+  render(
+    <RecordDetails record={record} service={{ ...desktopDemoService, measurements }} available />,
+  );
+  await userEvent.setup().click(screen.getByText('Измерения', { selector: 'summary' }));
+  expect(await screen.findByText('достоверно')).toBeTruthy();
+  expect(screen.getByText('симулятор')).toBeTruthy();
 });
 
 it('starts a changed offline query at the first cursor on reconnect, including unknown outcomes', async () => {

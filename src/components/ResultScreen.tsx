@@ -39,9 +39,7 @@ export function ResultScreen({
           <div className="workpage-heading">
             <div>
               <h1 id="result-title">Результат испытания</h1>
-              <p>
-                {parameters.id} · {parameters.valve}
-              </p>
+              <p>{record ? parameters.valve : `${parameters.id} · ${parameters.valve}`}</p>
             </div>
           </div>
           <div className="result-overview">

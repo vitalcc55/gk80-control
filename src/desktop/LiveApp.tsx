@@ -1,5 +1,6 @@
 import {
   type Dispatch,
+  type RefObject,
   type SetStateAction,
   useEffect,
   useLayoutEffect,
@@ -131,6 +132,13 @@ export function LiveApp(props: LiveAppProps) {
   const [draftAvailable, setDraftAvailable] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const submittedCreate = useRef<{
+    draft: ReturnType<typeof newDraft>;
+    previousId: string | null;
+    observed: boolean;
+    retained: boolean;
+    coordinator: CommandCoordinator;
+  } | null>(null);
   const { hostRunId, backendRunId, databaseId, pendingStorage } = props;
   const coordinator = useMemo(
     () =>
@@ -152,10 +160,17 @@ export function LiveApp(props: LiveAppProps) {
       createdAcknowledgement.current = { coordinator, version: 0 };
     if (createdVersion <= createdAcknowledgement.current.version) return;
     createdAcknowledgement.current.version = createdVersion;
-    setShowForm(false);
-    setDraft(newDraft());
-    setDraftAvailable(false);
-  }, [coordinator, createdVersion]);
+    if (
+      submittedCreate.current?.coordinator === coordinator &&
+      !submittedCreate.current.retained &&
+      submittedCreate.current.draft === draft
+    ) {
+      setShowForm(false);
+      setDraft(newDraft());
+      setDraftAvailable(false);
+    }
+    submittedCreate.current = null;
+  }, [coordinator, createdVersion, draft]);
   if (props.suspended) return null;
   return (
     <ActiveLiveApp
@@ -172,6 +187,7 @@ export function LiveApp(props: LiveAppProps) {
       setShowForm={setShowForm}
       showHistory={showHistory}
       setShowHistory={setShowHistory}
+      submittedCreate={submittedCreate}
     />
   );
 }
@@ -194,6 +210,7 @@ function ActiveLiveApp({
   setShowForm,
   showHistory,
   setShowHistory,
+  submittedCreate,
 }: LiveAppProps & {
   measurementContext: MeasurementSeriesContext;
   minimumObservation: number;
@@ -206,6 +223,13 @@ function ActiveLiveApp({
   setShowForm: Dispatch<SetStateAction<boolean>>;
   showHistory: boolean;
   setShowHistory: Dispatch<SetStateAction<boolean>>;
+  submittedCreate: RefObject<{
+    draft: ReturnType<typeof newDraft>;
+    previousId: string | null;
+    observed: boolean;
+    retained: boolean;
+    coordinator: CommandCoordinator;
+  } | null>;
 }) {
   const { observer, projection } = useSessionObservation(session, hostRunId, backendRunId);
   const acceptedProjection = projection.observationVersion >= minimumObservation;
@@ -254,7 +278,10 @@ function ActiveLiveApp({
     blocking,
   } = state;
   const { stop, lookup, forget, showMessage } = coordinator;
-  const { snapshot, record, fresh } = commandObservation({ connection, lastSnapshot });
+  const { snapshot, record, fresh } = commandObservation({
+    connection,
+    lastSnapshot,
+  });
   const measurementKey = record
     ? `${hostRunId}:${backendRunId}:${databaseId}:${record.testId}`
     : '';
@@ -293,7 +320,8 @@ function ActiveLiveApp({
       ? historyResult
         ? 'result'
         : 'tests'
-      : (showSavedParameters && stage !== 'finished') || showForm
+      : (showSavedParameters && stage !== 'finished') ||
+          (showForm && (!record || stage === 'finished'))
         ? 'parameters'
         : stage === 'preparing'
           ? 'readiness'
@@ -301,6 +329,28 @@ function ActiveLiveApp({
             ? 'result'
             : 'run';
   const { mainRef, requestFocus } = useScreenFocus(currentScreen);
+  useLayoutEffect(() => {
+    const submitted = submittedCreate.current;
+    if (
+      record &&
+      submitted?.coordinator === coordinator &&
+      !submitted.observed &&
+      record.testId !== submitted.previousId
+    ) {
+      submitted.observed = true;
+      if (record.stage !== 'finished' || (!submitted.retained && submitted.draft === draft)) {
+        setShowForm(false);
+        if (!showHistory)
+          requestFocus(
+            record.stage === 'preparing'
+              ? 'readiness'
+              : record.stage === 'finished'
+                ? 'result'
+                : 'run',
+          );
+      }
+    }
+  }, [record, submittedCreate, coordinator, draft, setShowForm, showHistory, requestFocus]);
   const openHistory = () => {
     requestFocus('tests');
     setHistoryReset((value) => value + 1);
@@ -314,6 +364,11 @@ function ActiveLiveApp({
     setShowHistory(false);
     setShowSavedParameters(false);
     setShowForm(false);
+  };
+  const openDraft = () => {
+    if (submittedCreate.current?.coordinator === coordinator)
+      submittedCreate.current.retained = true;
+    setShowForm(true);
   };
   const historyVisible = showHistory || (!record && !showForm);
   const runVisible =
@@ -350,7 +405,7 @@ function ActiveLiveApp({
       onResult={record?.stage === 'finished' ? openCurrent : undefined}
       announcement={
         record
-          ? `По последнему снимку: ${stage === 'preparing' ? 'подготовка испытания' : stage === 'finished' ? 'результат испытания доступен' : stage === 'stopping' ? 'остановка выполняется; безопасное давление не подтверждено' : snapshot?.pendingAction ? snapshot.pendingAction.instruction : measurementLabel(snapshot?.measurementTiming)}`
+          ? `По последнему снимку: ${stage === 'preparing' ? 'подготовка испытания' : stage === 'finished' ? 'результат испытания доступен' : stage === 'stopping' ? 'этап остановки; безопасное давление не подтверждено' : snapshot?.pendingAction ? snapshot.pendingAction.instruction : measurementLabel(snapshot?.measurementTiming)}`
           : null
       }
       onParameters={() => {
@@ -359,7 +414,7 @@ function ActiveLiveApp({
         if (record && stage !== 'finished') setShowSavedParameters(true);
         else {
           setShowSavedParameters(false);
-          setShowForm(true);
+          openDraft();
         }
       }}
     >
@@ -568,7 +623,7 @@ function ActiveLiveApp({
                   setDraft(newDraft());
                   setDraftAvailable(true);
                 }
-                setShowForm(true);
+                openDraft();
               }}
               onCopy={(value) => {
                 requestFocus('parameters');
@@ -584,7 +639,7 @@ function ActiveLiveApp({
                 );
                 setDraftAvailable(true);
                 setShowHistory(false);
-                setShowForm(true);
+                openDraft();
               }}
               draftAvailable={draftAvailable}
               onDiscard={() => {
@@ -604,6 +659,13 @@ function ActiveLiveApp({
               onBack={openHistory}
               onContinue={(parameters) => {
                 requestFocus('readiness');
+                submittedCreate.current = {
+                  draft,
+                  previousId: record?.testId ?? null,
+                  observed: false,
+                  retained: false,
+                  coordinator,
+                };
                 void coordinator.create(parameters);
               }}
             />
@@ -675,7 +737,7 @@ function ActiveLiveApp({
                   setDraft(draftFrom(formParameters));
                   setDraftAvailable(true);
                 }
-                setShowForm(true);
+                openDraft();
               }}
             >
               <RecordDetails
@@ -696,7 +758,7 @@ function ActiveLiveApp({
                 {stage === 'preparing'
                   ? 'Подготовка'
                   : stage === 'stopping'
-                    ? 'Остановка выполняется; безопасное давление не подтверждено.'
+                    ? 'Этап остановки; безопасное давление не подтверждено.'
                     : snapshot?.pendingAction
                       ? 'Ожидание подтверждения оператора'
                       : measurementLabel(snapshot?.measurementTiming)}

@@ -6,6 +6,7 @@ import type {
 } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
 import { formatDateTime, formatNumber } from '../lib/format';
 import type { DemoService } from './demo-service';
+import { measurementQualityLabel, measurementSourceLabel } from './display';
 import { resultReadVersion } from './presentation';
 
 /** Only the open disclosure reads one bounded page. Wrapper replacement keeps the same source. */
@@ -174,9 +175,9 @@ export function RecordDetails({
                           {item.value === null ? 'Неизвестно' : formatNumber(item.value)}{' '}
                           {item.unit}
                         </td>
-                        <td>{item.quality}</td>
+                        <td>{measurementQualityLabel(item.quality)}</td>
                         <td>{item.measuredAt ?? 'Время неизвестно'}</td>
-                        <td>{item.source}</td>
+                        <td>{measurementSourceLabel(item.source)}</td>
                       </tr>
                     ))}
                   </tbody>

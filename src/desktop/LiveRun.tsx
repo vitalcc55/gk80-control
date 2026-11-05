@@ -6,6 +6,7 @@ import type {
   TestRecord,
 } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
 import { formatElapsedSeconds, formatNumber, formatRemainingSeconds } from '../lib/format';
+import { measurementQualityLabel } from './display';
 import type { MeasurementSeriesContext } from './measurement-series';
 import { measurementLabel } from './presentation';
 import { useMeasurementSeries } from './use-measurement-series';
@@ -14,15 +15,6 @@ function shown(item: Measurement | undefined): string {
   return (item?.quality === 'valid' || item?.quality === 'stale') && item.value !== null
     ? `≈ ${formatNumber(item.value, 6)} Па`
     : 'Неизвестно';
-}
-function quality(item: Measurement | undefined): string {
-  return item?.quality === 'valid'
-    ? 'достоверно'
-    : item?.quality === 'stale'
-      ? 'устарело'
-      : item?.quality === 'unavailable'
-        ? 'недоступно'
-        : 'неизвестно';
 }
 export function LiveRun({
   record,
@@ -74,8 +66,8 @@ export function LiveRun({
       pressure={shown(pressure)}
       differential={shown(differential)}
       target={`${formatNumber(record.parameters.pmaxPa)} Па`}
-      pressureNote={<p>{quality(pressure)} · последний отсчёт</p>}
-      differentialNote={<p>{quality(differential)} · последний отсчёт</p>}
+      pressureNote={<p>{measurementQualityLabel(pressure?.quality)} · последний отсчёт</p>}
+      differentialNote={<p>{measurementQualityLabel(differential?.quality)} · последний отсчёт</p>}
       readingNote="Последние полученные показания · округление до 6 значащих цифр"
       details={
         <details className="reading-details" onToggle={(e) => setDetailsOpen(e.currentTarget.open)}>
@@ -85,12 +77,16 @@ export function LiveRun({
               <p key={item.channel}>
                 {item.channel.replace('dd', 'ДД')}: {shown(item)} ·{' '}
                 {item.measuredAt ?? 'время неизвестно'} · качество последнего наблюдения:{' '}
-                {quality(item)}
+                {measurementQualityLabel(item.quality)}
               </p>
             ))}
         </details>
       }
-      chart={{ live: true, points: series.points, target: record.parameters.pmaxPa }}
+      chart={{
+        live: true,
+        points: series.points,
+        target: record.parameters.pmaxPa,
+      }}
       chartNote={
         series.clockChanged
           ? 'Время измерения изменилось: график начат заново с нового отсчёта.'
@@ -99,10 +95,14 @@ export function LiveRun({
       actionTitle={
         stopping ? 'Остановка' : awaiting ? 'Подтверждение оператора' : measurementLabel(timing)
       }
-      actionLabel="Текущее действие по последнему полученному снимку"
+      actionLabel={
+        stopping
+          ? 'Состояние по последнему полученному снимку'
+          : 'Текущее действие по последнему полученному снимку'
+      }
       instruction={
         stopping
-          ? 'По последнему снимку: остановка выполняется; безопасное давление не подтверждено.'
+          ? 'По последнему снимку: этап остановки; безопасное давление не подтверждено.'
           : (snapshot.pendingAction?.instruction ??
             (timing
               ? 'Ожидайте обновления состояния измерения ядра.'

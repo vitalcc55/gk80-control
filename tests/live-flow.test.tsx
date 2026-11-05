@@ -2148,6 +2148,151 @@ it('does not attribute another Stop with the same ID but different JSON to the c
   }
 });
 
+it.each([
+  ['preparing', true, 'none'],
+  ['finished', false, 'none'],
+  ['finished', true, 'reopen'],
+  ['finished', true, 'edit'],
+  ['preparing', true, 'edit'],
+] as const)(
+  'preserves the draft when Create is reconciled after a first %s snapshot',
+  async (firstStage, editDraft, retainMode) => {
+    const retainBefore = retainMode !== 'none';
+    let snapshot: Snapshot = {
+      apiVersion: 'v1',
+      backendRunId: backend,
+      revision: 0,
+      lastEventSequence: 0,
+      activeTest: null,
+      pendingAction: null,
+      measurementTiming: null,
+      measurements: [],
+    };
+    let revision = 0;
+    const bridge: SessionBridge = {
+      beginSessionCheck: async () => 'ticket',
+      keepAlive: async () => {},
+      sessionView: async () => ({
+        connection: {
+          hostRunId: host,
+          revision: ++revision,
+          status: ConnectionStateStatus.Live,
+          linkValid: true,
+          leaseAcquireUnknown: false,
+          streamGeneration: 0,
+        },
+        snapshot,
+        validForMs: 6000,
+        linkValidForMs: 6000,
+      }),
+    };
+    api.list.mockResolvedValue({ items: [], nextAfter: null });
+    let finishLookup: (status: CommandStatus) => void = () => {};
+    const lookup = new Promise<CommandStatus>((resolve) => {
+      finishLookup = resolve;
+    });
+    api.command.mockReturnValue(lookup);
+    api.create.mockImplementation(async () => {
+      if (!retainBefore)
+        snapshot = {
+          ...snapshot,
+          activeTest:
+            firstStage === 'preparing'
+              ? record
+              : {
+                  ...record,
+                  stage: TestRecordStage.Finished,
+                  outcome: TestRecordOutcome.TestRecordOutcomeInterrupted,
+                },
+          revision: 1,
+          lastEventSequence: 1,
+        };
+      throw new Error('response lost');
+    });
+    api.readiness.mockResolvedValue({
+      testId,
+      revision: 1,
+      ready: true,
+      checks: [],
+    });
+    render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+    const user = userEvent.setup();
+    const create = await screen.findByRole('button', { name: 'Новое испытание' });
+    await waitFor(() => expect(create.hasAttribute('disabled')).toBe(false));
+    await user.click(create);
+    await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
+    await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
+    await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+    await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
+    if (retainBefore) {
+      await screen.findByText(/Исход команды пока неизвестен/);
+      if (retainMode === 'reopen') {
+        await user.click(screen.getByRole('button', { name: 'Испытания' }));
+        await user.click(screen.getByRole('button', { name: 'Параметры' }));
+      }
+      await user.type(screen.getByLabelText('Обозначение или наименование клапана'), ' новый');
+      snapshot = {
+        ...snapshot,
+        activeTest:
+          firstStage === 'preparing'
+            ? record
+            : {
+                ...record,
+                stage: TestRecordStage.Finished,
+                outcome: TestRecordOutcome.TestRecordOutcomeInterrupted,
+              },
+        revision: 1,
+        lastEventSequence: 1,
+      };
+      if (firstStage === 'finished') {
+        await screen.findByRole('button', { name: 'Результат прохода' }, { timeout: 7000 });
+        expect(screen.getByLabelText('Обозначение или наименование клапана')).toHaveProperty(
+          'value',
+          'К-1 новый',
+        );
+      }
+    }
+    if (firstStage === 'preparing') {
+      await screen.findByRole('heading', { name: /готовност/i }, { timeout: 7000 });
+      expect(screen.getByRole('main').getAttribute('aria-label')).toMatch(/Готовност/i);
+      snapshot = {
+        ...snapshot,
+        activeTest: {
+          ...record,
+          stage: TestRecordStage.Finished,
+          outcome: TestRecordOutcome.TestRecordOutcomeInterrupted,
+        },
+        revision: 2,
+        lastEventSequence: 2,
+      };
+    }
+    if (!retainBefore || firstStage === 'preparing') {
+      expect(
+        await screen.findByRole('heading', { name: 'Результат испытания' }, { timeout: 7000 }),
+      ).toBeTruthy();
+      await user.click(screen.getByRole('button', { name: 'Параметры' }));
+    }
+    const draftField = screen.getByLabelText('Обозначение или наименование клапана');
+    if (editDraft && !retainBefore) await user.type(draftField, ' новый');
+    const createCall = api.create.mock.calls[0];
+    if (!createCall) throw new Error('Create was not sent');
+    await act(async () => {
+      finishLookup({
+        commandId: createCall[0].commandId,
+        testId,
+        status: CommandStatusStatus.CommandStatusStatusCompleted,
+      });
+      await lookup;
+    });
+    await waitFor(() => expect(screen.queryByText(/Команда: исход неизвестен/)).toBeNull());
+    expect(screen.getByLabelText('Обозначение или наименование клапана')).toHaveProperty(
+      'value',
+      editDraft ? 'К-1 новый' : 'К-1',
+    );
+  },
+  15000,
+);
+
 it('does not send another creation after an unknown response and remount', async () => {
   const snapshot: Snapshot = {
     apiVersion: 'v1',

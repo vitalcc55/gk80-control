@@ -27,8 +27,6 @@
   color: var(--ink);
 }
 .history-filters :where(.history-search) {
-  flex-direction: row;
-  align-items: center;
   flex: 1;
   min-width: 180px;
 }
@@ -204,7 +202,7 @@
   border-radius: 50%;
   background: var(--accent);
 }
-.history-search {
+.history-search-field {
   display: inline-flex;
   align-items: center;
   gap: 8px;

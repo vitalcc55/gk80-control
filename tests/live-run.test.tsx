@@ -84,6 +84,21 @@ const snapshot: Snapshot = {
   measurements: [first],
 };
 
+it('does not claim that a stopping stage means the stop operation is still running', () => {
+  const stopping = { ...record, stage: TestRecordStage.Stopping };
+  render(
+    <LiveRun
+      record={stopping}
+      snapshot={{ ...snapshot, activeTest: stopping }}
+      fresh
+      pending={false}
+      onConfirm={() => {}}
+    />,
+  );
+  expect(screen.queryByText(/остановка выполняется/i)).toBeNull();
+  expect(screen.getByText(/безопасное давление не подтверждено/i)).toBeTruthy();
+});
+
 it('does not claim measurement progress before the first accepted observation', () => {
   const draw = (value: Snapshot) => (
     <LiveRun record={record} snapshot={value} fresh pending={false} onConfirm={() => {}} />

@@ -36,3 +36,20 @@ export function saveLabel(value: string): string {
       return 'Не подтверждено';
   }
 }
+
+export function measurementQualityLabel(value: string | undefined): string {
+  switch (value) {
+    case 'valid':
+      return 'достоверно';
+    case 'stale':
+      return 'устарело';
+    case 'unavailable':
+      return 'недоступно';
+    default:
+      return 'неизвестно';
+  }
+}
+
+export function measurementSourceLabel(value: string): string {
+  return value === 'simulator' ? 'симулятор' : 'неизвестно';
+}
