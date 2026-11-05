@@ -79,6 +79,9 @@
 * {
   box-sizing: border-box;
 }
+[hidden] {
+  display: none;
+}
 sub,
 sup {
   font-size: 85%;
@@ -142,6 +145,12 @@ h2 {
 .app-shell {
   min-height: 100vh;
   padding-bottom: 48px;
+}
+.app-shell-live {
+  padding-bottom: 0;
+}
+.app-shell-live :where(.workspace) {
+  min-height: 100vh;
 }
 .brand {
   display: flex;
@@ -241,46 +250,45 @@ h2 {
 .main-content:focus {
   outline: none;
 }
-.session-status-title {
-  display: grid;
+.session-status {
+  font-size: var(--font-caption);
+  color: var(--muted);
 }
-.session-status-title::before {
-  content: "При последней проверке связь с ядром подтверждена";
-  grid-area: 1 / 1;
-  visibility: hidden;
+.live-statusbar {
+  display: flex;
+  gap: 8px 20px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
 }
-.session-status-title > span {
-  grid-area: 1 / 1;
+.source-label {
+  color: var(--muted);
+  font-size: var(--font-caption);
 }
-.session-status-help {
-  display: grid;
-}
-.session-status-help::before {
-  content: "Состояние испытания не подтверждено; последние показания могут быть неактуальны. Если связь не восстанавливается, перезапустите приложение.";
-  grid-area: 1 / 1;
-  visibility: hidden;
-}
-.session-status-help > span {
-  grid-area: 1 / 1;
+.session-status p:empty,
+.live-diagnostics-warning:empty,
+.demo-stop-message:empty,
+.demo-command-message:empty,
+.demo-message-list:empty {
+  display: none;
 }
 .live-diagnostics-warning {
-  min-height: 1.5em;
   color: var(--warning);
 }
 .demo-messages {
-  height: 6em;
   display: grid;
-  grid-template-rows: 4em 2em;
+  gap: 4px;
   overflow-wrap: anywhere;
 }
 .demo-message-primary {
   display: grid;
-  grid-template-rows: 2em 2em;
+  gap: 4px;
 }
 .demo-stop-message,
 .demo-command-message,
 .demo-message-list {
   overflow: auto;
+  max-height: 6em;
 }
 .page-heading {
   display: flex;
@@ -453,6 +461,54 @@ h2 {
 .live-measurements .reading strong {
   white-space: normal;
   overflow-wrap: anywhere;
+}
+.reading-note,
+.reading-details {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: var(--font-caption);
+}
+.reading-details summary {
+  cursor: pointer;
+  color: var(--accent);
+}
+.run-time {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 20px 0;
+  font-variant-numeric: tabular-nums;
+}
+.run-time dt {
+  color: var(--muted);
+  font-size: var(--font-caption);
+}
+.run-time dd {
+  margin: 0;
+  font-weight: 650;
+  font-size: var(--font-action-title);
+}
+.run-time p {
+  grid-column: 1 / -1;
+  font-size: var(--font-caption);
+}
+.active-route-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 256px;
+  gap: 15px;
+  align-items: start;
+}
+.route-content {
+  min-width: 0;
+}
+.active-route-panel {
+  position: sticky;
+  top: 10px;
+  min-height: 440px;
+}
+.active-route-panel .work-button {
+  white-space: normal;
+  margin-top: 16px;
 }
 .stage.current strong {
   color: var(--ink);

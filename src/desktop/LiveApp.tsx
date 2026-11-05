@@ -8,18 +8,22 @@ import {
   useState,
   useSyncExternalStore,
 } from 'react';
+import { ActiveTestPanel } from '../components/ActiveTestPanel';
+import { AppShell } from '../components/AppShell';
 import {
   ActiveParametersScreen,
   draftFrom,
   ParametersScreen,
-  ReadinessScreen,
-  ResultScreen,
-} from '../components/OtherScreens';
+} from '../components/ParametersScreen';
+import { ReadinessScreen } from '../components/ReadinessScreen';
+import { ResultScreen } from '../components/ResultScreen';
+import { StopButton } from '../components/StopButton';
+import { useScreenFocus } from '../components/use-screen-focus';
 import type {
   CommandStatus,
   Readiness,
 } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
-import type { TestParameters as FormParameters } from '../model';
+import type { TestParameters as FormParameters, Screen } from '../model';
 import type { SessionBridge } from './bridge';
 import { type Pending, pendingKey, terminalStatus } from './command-attempt-state';
 import {
@@ -31,6 +35,8 @@ import type { DemoService } from './demo-service';
 import { History } from './History';
 import { LiveRun } from './LiveRun';
 import { MeasurementSeriesContext } from './measurement-series';
+import { parametersForDisplay } from './presentation';
+import { RecordDetails } from './RecordDetails';
 import { observeReadiness } from './readiness-observation';
 import { SessionStatus } from './SessionStatus';
 import { type SessionObservation, sessionObservation } from './session-observation';
@@ -207,6 +213,8 @@ function ActiveLiveApp({
   const lastSnapshot = acceptedProjection ? projection.lastSnapshot : null;
   const { gapVersion } = projection;
   const [showSavedParameters, setShowSavedParameters] = useState(false);
+  const [historyResult, setHistoryResult] = useState(false);
+  const [historyReset, setHistoryReset] = useState(0);
   const [readiness, setReadiness] = useState<Readiness | null>(null);
   const [readinessConfirmed, setReadinessConfirmed] = useState(false);
   const input = useMemo(
@@ -282,223 +290,265 @@ function ActiveLiveApp({
     return undefined;
   }, [fresh, activeId, stage, revision, service, hostRunId, backendRunId, showMessage]);
 
-  const formParameters = record
-    ? {
-        ...empty,
-        id: record.testId,
-        valve: record.parameters.valve,
-        area: record.parameters.areaM2,
-        pmax: record.parameters.pmaxPa,
-        measurementSeconds: record.parameters.measurementSeconds,
-      }
-    : empty;
+  const formParameters = record ? parametersForDisplay(record) : empty;
+  const currentScreen: Screen =
+    showHistory || (!record && !showForm)
+      ? historyResult
+        ? 'result'
+        : 'tests'
+      : (showSavedParameters && stage !== 'finished') || showForm
+        ? 'parameters'
+        : stage === 'preparing'
+          ? 'readiness'
+          : stage === 'finished'
+            ? 'result'
+            : 'run';
+  const { mainRef, requestFocus } = useScreenFocus(currentScreen);
+  const openHistory = () => {
+    requestFocus('tests');
+    setHistoryReset((value) => value + 1);
+    setHistoryResult(false);
+    setShowForm(false);
+    setShowSavedParameters(false);
+    setShowHistory(true);
+  };
+  const openCurrent = () => {
+    requestFocus(stage === 'preparing' ? 'readiness' : stage === 'finished' ? 'result' : 'run');
+    setShowHistory(false);
+    setShowSavedParameters(false);
+  };
+  const historyVisible = showHistory || (!record && !showForm);
+  const runVisible =
+    !showHistory &&
+    !showSavedParameters &&
+    (stage === 'running' || stage === 'stopping') &&
+    !!snapshot;
+  const active = !!record && stage !== 'finished';
+  const stopControl = (
+    <StopButton
+      disabled={stopCount >= 2 || totalStops >= 64}
+      label={stopRequested ? 'Повторить запрос остановки' : 'Остановить испытание'}
+      onStop={() => {
+        void stop();
+      }}
+    />
+  );
   return (
-    <div className="app-shell">
-      <div className="workspace">
-        <nav className="sidebar" aria-label="Навигация">
-          <div className="brand">
-            <strong>ГК80</strong>
-            <span>Испытания клапанов</span>
+    <AppShell
+      screen={currentScreen}
+      active={!!record && stage !== 'finished'}
+      draftAvailable={draftAvailable || showForm}
+      mainRef={mainRef}
+      onTests={openHistory}
+      onRun={openCurrent}
+      onParameters={() => {
+        requestFocus('parameters');
+        setShowHistory(false);
+        if (record && stage !== 'finished') setShowSavedParameters(true);
+        else {
+          setShowSavedParameters(false);
+          setShowForm(true);
+        }
+      }}
+    >
+      <header className="live-statusbar">
+        <span className="source-label">Демонстрация · тестовые данные</span>
+        <SessionStatus
+          bridge={session}
+          hostRunId={hostRunId}
+          backendRunId={backendRunId}
+          snapshotAccepted={fresh}
+        />
+      </header>
+      <p role="status" aria-live="polite" className="live-diagnostics-warning">
+        {diagnosticsDegraded ? 'Журнал диагностики недоступен или неполон.' : ''}
+      </p>
+      <section className="demo-messages" aria-label="Сообщения команд">
+        <div className="demo-message-primary">
+          <div
+            className="demo-stop-message"
+            ref={stopMessageRegion}
+            tabIndex={stopMessage ? 0 : -1}
+          >
+            {stopMessage && (
+              <p role="status">
+                {stopRequestedFor && stopRequestedFor !== activeId
+                  ? `Испытание ${stopRequestedFor}: `
+                  : ''}
+                {stopMessage}
+              </p>
+            )}
           </div>
-          <button type="button" className="nav-item" onClick={() => setShowHistory(true)}>
-            Испытания
-          </button>
-          {record && record.stage !== 'finished' && (
-            <button type="button" className="nav-item" onClick={() => setShowHistory(false)}>
-              Текущее испытание
+          <div
+            className="demo-command-message"
+            ref={commandMessageRegion}
+            tabIndex={message || commandFailure || storageMessage || commandMessages.size ? 0 : -1}
+          >
+            {storageMessage && <p role="alert">{storageMessage}</p>}
+            {message && latestNotice === 'message' && <p role="status">{message}</p>}
+            {commandFailure && (
+              <p role="status">
+                {commandFailure.text} (команда {commandFailure.id}
+                {commandFailure.testId && `; испытание ${commandFailure.testId}`})
+              </p>
+            )}
+            {message && latestNotice !== 'message' && <p role="status">{message}</p>}
+            {[...commandMessages].map(([key, { id, text }]) => (
+              <p role="status" key={key}>
+                {commandMessages.size > 1 ? `${key === id ? 'Команда' : 'Остановка'} ${id}: ` : ''}
+                {text}
+              </p>
+            ))}
+          </div>
+        </div>
+        <div
+          className="demo-message-list"
+          tabIndex={
+            legacy.unreadable ||
+            legacy.items.length ||
+            pending.length ||
+            storageUnconfirmed ||
+            totalStops >= 63 ||
+            stopCount >= 2 ||
+            volatileStopTracking
+              ? 0
+              : -1
+          }
+        >
+          {(legacy.unreadable || legacy.items.length > 0) && (
+            <p role="alert">
+              {legacy.unreadable
+                ? 'Не удалось прочитать прежний список команд; их возможный исход не подтверждён.'
+                : 'Есть прежние команды с неизвестной принадлежностью к базе; их исход не подтверждён.'}
+              {legacyBlocks &&
+                ' Новые команды недоступны до выяснения их исхода; остановка доступна.'}
+            </p>
+          )}
+          {legacy.unreadable && (
+            <button
+              type="button"
+              onClick={() => {
+                coordinator.readLegacy();
+              }}
+            >
+              Повторить чтение прежних команд
             </button>
           )}
-        </nav>
-        <main className="main-content">
-          <p>Демонстрация · тестовые данные</p>
-          <SessionStatus
-            bridge={session}
-            hostRunId={hostRunId}
-            backendRunId={backendRunId}
-            snapshotAccepted={fresh}
-          />
-          <p role="status" aria-live="polite" className="live-diagnostics-warning">
-            {diagnosticsDegraded ? 'Журнал диагностики недоступен или неполон.' : ''}
-          </p>
-          <section className="demo-messages" aria-label="Сообщения команд">
-            <div className="demo-message-primary">
-              <div
-                className="demo-stop-message"
-                ref={stopMessageRegion}
-                tabIndex={stopMessage ? 0 : -1}
+          {legacy.items.map((item) => (
+            <p key={item.id}>
+              Прежняя команда: {legacyCommandLabels[item.kind]}, ID {item.id}
+              {item.testId && `; испытание ${item.testId}`}.
+              {item.kind === 'stop' && ' Безопасное давление не подтверждено.'}
+            </p>
+          ))}
+          {!legacy.unreadable && legacyBlocks && (
+            <p>
+              Подтверждение не устанавливает исход команд и не связывает их с текущей базой.{' '}
+              <button type="button" onClick={() => coordinator.reviewLegacy()}>
+                Я проверил прежние команды
+              </button>
+            </p>
+          )}
+          {totalStops >= 63 && (
+            <p role="alert">
+              Достигнут предел неподтверждённых запросов остановки. Закройте приложение и запустите
+              его снова перед новым испытанием.
+            </p>
+          )}
+          {storageUnconfirmed && (
+            <p role="alert">
+              Не удалось восстановить список команд. Новые команды недоступны.{' '}
+              <button
+                type="button"
+                onClick={() => {
+                  coordinator.retryStorage();
+                }}
               >
-                {stopMessage && (
-                  <p role="status">
-                    {stopRequestedFor && stopRequestedFor !== activeId
-                      ? `Испытание ${stopRequestedFor}: `
-                      : ''}
-                    {stopMessage}
-                  </p>
-                )}
-              </div>
-              <div
-                className="demo-command-message"
-                ref={commandMessageRegion}
-                tabIndex={
-                  message || commandFailure || storageMessage || commandMessages.size ? 0 : -1
-                }
+                Повторить чтение команд
+              </button>
+            </p>
+          )}
+          {volatileStopTracking && (
+            <p role="alert">
+              Исход остановки отслеживается только в памяти либо его сохранение не подтверждено:
+              после перезагрузки или закрытия окна потребуется проверить историю испытания.
+            </p>
+          )}
+          {pending.length >= 64 && (
+            <p role="alert">
+              Достигнут предел отслеживаемых команд. Проверьте завершённые испытания и скройте
+              ненужные записи наблюдения.
+            </p>
+          )}
+          {pending.map((item) => (
+            <p key={pendingKey(item)}>
+              Команда: {commandStatusLabel(item.status?.status)}. ID {item.id}.{' '}
+              {item.kind === 'stop' && `Остановка испытания ${item.testId ?? 'неизвестно'}. `}
+              {item.kind === 'stop' && 'Безопасное давление не подтверждено. '}
+              {item.legacyUnverifiable &&
+                'Исходное содержимое команды не сохранилось; её исход нельзя установить по идентификатору. Подтверждение проверки не устанавливает исход. '}
+              <button
+                type="button"
+                onClick={() => {
+                  void lookup(item, true);
+                }}
               >
-                {storageMessage && <p role="alert">{storageMessage}</p>}
-                {message && latestNotice === 'message' && <p role="status">{message}</p>}
-                {commandFailure && (
-                  <p role="status">
-                    {commandFailure.text} (команда {commandFailure.id}
-                    {commandFailure.testId && `; испытание ${commandFailure.testId}`})
-                  </p>
-                )}
-                {message && latestNotice !== 'message' && <p role="status">{message}</p>}
-                {[...commandMessages].map(([key, { id, text }]) => (
-                  <p role="status" key={key}>
-                    {commandMessages.size > 1
-                      ? `${key === id ? 'Команда' : 'Остановка'} ${id}: `
-                      : ''}
-                    {text}
-                  </p>
-                ))}
-              </div>
-            </div>
-            <div
-              className="demo-message-list"
-              tabIndex={
-                legacy.unreadable ||
-                legacy.items.length ||
-                pending.length ||
-                storageUnconfirmed ||
-                totalStops >= 63 ||
-                stopCount >= 2 ||
-                volatileStopTracking
-                  ? 0
-                  : -1
-              }
-            >
-              {(legacy.unreadable || legacy.items.length > 0) && (
-                <p role="alert">
-                  {legacy.unreadable
-                    ? 'Не удалось прочитать прежний список команд; их возможный исход не подтверждён.'
-                    : 'Есть прежние команды с неизвестной принадлежностью к базе; их исход не подтверждён.'}
-                  {legacyBlocks &&
-                    ' Новые команды недоступны до выяснения их исхода; остановка доступна.'}
-                </p>
-              )}
-              {legacy.unreadable && (
+                Проверить состояние
+              </button>
+              {item.legacyUnverifiable && !item.retired && (
                 <button
                   type="button"
                   onClick={() => {
-                    coordinator.readLegacy();
+                    coordinator.reviewAttempt(item);
                   }}
                 >
-                  Повторить чтение прежних команд
+                  Я проверил эту команду
                 </button>
               )}
-              {legacy.items.map((item) => (
-                <p key={item.id}>
-                  Прежняя команда: {legacyCommandLabels[item.kind]}, ID {item.id}
-                  {item.testId && `; испытание ${item.testId}`}.
-                  {item.kind === 'stop' && ' Безопасное давление не подтверждено.'}
-                </p>
-              ))}
-              {!legacy.unreadable && legacyBlocks && (
-                <p>
-                  Подтверждение не устанавливает исход команд и не связывает их с текущей базой.{' '}
-                  <button type="button" onClick={() => coordinator.reviewLegacy()}>
-                    Я проверил прежние команды
-                  </button>
-                </p>
+              {item.retired && (
+                <button
+                  type="button"
+                  disabled={!coordinator.canForget(item)}
+                  onClick={() => forget(item)}
+                >
+                  {item.legacyUnverifiable
+                    ? 'Удалить запись наблюдения'
+                    : !terminalStatus(item.status)
+                      ? 'Прекратить наблюдение'
+                      : 'Скрыть наблюдение команды'}
+                </button>
               )}
-              {totalStops >= 63 && (
-                <p role="alert">
-                  Достигнут предел неподтверждённых запросов остановки. Закройте приложение и
-                  запустите его снова перед новым испытанием.
-                </p>
-              )}
-              {storageUnconfirmed && (
-                <p role="alert">
-                  Не удалось восстановить список команд. Новые команды недоступны.{' '}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      coordinator.retryStorage();
-                    }}
-                  >
-                    Повторить чтение команд
-                  </button>
-                </p>
-              )}
-              {volatileStopTracking && (
-                <p role="alert">
-                  Исход остановки отслеживается только в памяти либо его сохранение не подтверждено:
-                  после перезагрузки или закрытия окна потребуется проверить историю испытания.
-                </p>
-              )}
-              {pending.length >= 64 && (
-                <p role="alert">
-                  Достигнут предел отслеживаемых команд. Проверьте завершённые испытания и скройте
-                  ненужные записи наблюдения.
-                </p>
-              )}
-              {pending.map((item) => (
-                <p key={pendingKey(item)}>
-                  Команда: {commandStatusLabel(item.status?.status)}. ID {item.id}.{' '}
-                  {item.kind === 'stop' && `Остановка испытания ${item.testId ?? 'неизвестно'}. `}
-                  {item.kind === 'stop' && 'Безопасное давление не подтверждено. '}
-                  {item.legacyUnverifiable &&
-                    'Исходное содержимое команды не сохранилось; её исход нельзя установить по идентификатору. Подтверждение проверки не устанавливает исход. '}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      void lookup(item, true);
-                    }}
-                  >
-                    Проверить состояние
-                  </button>
-                  {item.legacyUnverifiable && !item.retired && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        coordinator.reviewAttempt(item);
-                      }}
-                    >
-                      Я проверил эту команду
-                    </button>
-                  )}
-                  {item.retired && (
-                    <button
-                      type="button"
-                      disabled={!coordinator.canForget(item)}
-                      onClick={() => forget(item)}
-                    >
-                      {item.legacyUnverifiable
-                        ? 'Удалить запись наблюдения'
-                        : !terminalStatus(item.status)
-                          ? 'Прекратить наблюдение'
-                          : 'Скрыть наблюдение команды'}
-                    </button>
-                  )}
-                  {item.retired &&
-                    item.kind === 'stop' &&
-                    !terminalStatus(item.status) &&
-                    ' После удаления автоматическая сверка этой попытки невозможна.'}
-                </p>
-              ))}
-              {stopCount >= 2 && (
-                <p role="alert">
-                  Ответы на запросы остановки не подтверждены. Закройте приложение и запустите его
-                  снова; безопасное давление не подтверждено.
-                </p>
-              )}
-            </div>
-          </section>
-          {(showHistory || (!record && !showForm)) && (
+              {item.retired &&
+                item.kind === 'stop' &&
+                !terminalStatus(item.status) &&
+                ' После удаления автоматическая сверка этой попытки невозможна.'}
+            </p>
+          ))}
+          {stopCount >= 2 && (
+            <p role="alert">
+              Ответы на запросы остановки не подтверждены. Закройте приложение и запустите его
+              снова; безопасное давление не подтверждено.
+            </p>
+          )}
+        </div>
+      </section>
+      <div className={active && !runVisible ? 'active-route-layout' : undefined}>
+        <div className="route-content">
+          <div hidden={!historyVisible}>
             <History
+              visible={historyVisible}
+              resetVersion={historyReset}
+              activeTestId={active ? activeId : undefined}
+              onViewChange={(result) => {
+                requestFocus(result ? 'result' : 'tests');
+                setHistoryResult(result);
+              }}
               service={service}
               available={fresh}
               disabled={!fresh || blocking || (!!record && record.stage !== 'finished')}
               onNew={() => {
+                requestFocus('parameters');
+                setShowSavedParameters(false);
                 setShowHistory(false);
                 if (!draftAvailable) {
                   setDraft(newDraft());
@@ -507,6 +557,8 @@ function ActiveLiveApp({
                 setShowForm(true);
               }}
               onCopy={(value) => {
+                requestFocus('parameters');
+                setShowSavedParameters(false);
                 setDraft(
                   draftFrom({
                     ...empty,
@@ -526,7 +578,7 @@ function ActiveLiveApp({
                 setDraftAvailable(false);
               }}
             />
-          )}
+          </div>
           {!showHistory && (!record || record.stage === 'finished') && showForm && (
             <ParametersScreen
               initial={empty}
@@ -535,21 +587,15 @@ function ActiveLiveApp({
               live
               pending={pending.some((item) => item.kind === 'create' && !item.retired)}
               unavailable={!fresh || blocking}
-              onBack={() => {
-                setShowForm(false);
-                setShowHistory(true);
-              }}
+              onBack={openHistory}
               onContinue={(parameters) => {
+                requestFocus('readiness');
                 void coordinator.create(parameters);
               }}
             />
           )}
-          {!showHistory && showSavedParameters && record?.stage === 'preparing' && (
-            <ActiveParametersScreen
-              live
-              parameters={formParameters}
-              onReturn={() => setShowSavedParameters(false)}
-            />
+          {!showHistory && showSavedParameters && record && record.stage !== 'finished' && (
+            <ActiveParametersScreen live parameters={formParameters} />
           )}
           {!showHistory &&
             !showSavedParameters &&
@@ -567,8 +613,12 @@ function ActiveLiveApp({
                 readiness={readiness}
                 pending={blocking}
                 stale={!fresh || !readinessConfirmed || readiness.revision !== snapshot?.revision}
-                onBack={() => setShowSavedParameters(true)}
+                onBack={() => {
+                  requestFocus('parameters');
+                  setShowSavedParameters(true);
+                }}
                 onStart={(checks) => {
+                  requestFocus('run');
                   void coordinator.startTest(checks);
                 }}
               />
@@ -577,34 +627,23 @@ function ActiveLiveApp({
             !showSavedParameters &&
             record?.stage === 'preparing' &&
             readiness?.testId !== record.testId && <p>Готовность ещё не подтверждена.</p>}
-          {record && record.stage !== 'finished' && (
-            <button
-              className="work-button work-button-secondary"
-              type="button"
-              disabled={stopCount >= 2 || totalStops >= 64}
-              onClick={() => {
-                void stop();
-              }}
-            >
-              {stopRequested ? 'Повторить запрос остановки' : 'Остановить испытание'}
-            </button>
-          )}
-          {!showHistory && record?.stage === 'running' && snapshot && (
-            <LiveRun
-              key={record.testId}
-              record={record}
-              snapshot={snapshot}
-              fresh={fresh}
-              series={series}
-              pending={blocking}
-              onConfirm={() => {
-                void coordinator.confirmAction();
-              }}
-            />
-          )}
-          {!showHistory && record?.stage === 'stopping' && (
-            <p>Остановка выполняется; безопасное давление не подтверждено.</p>
-          )}
+          {!showHistory &&
+            !showSavedParameters &&
+            (record?.stage === 'running' || record?.stage === 'stopping') &&
+            snapshot && (
+              <LiveRun
+                key={record.testId}
+                record={record}
+                snapshot={snapshot}
+                fresh={fresh}
+                series={series}
+                stop={stopControl}
+                pending={blocking}
+                onConfirm={() => {
+                  void coordinator.confirmAction();
+                }}
+              />
+            )}
           {!showHistory && !showForm && record?.stage === 'finished' && (
             <ResultScreen
               parameters={formParameters}
@@ -613,18 +652,42 @@ function ActiveLiveApp({
               interrupted={record.outcome === 'interrupted'}
               active={blocking}
               draftAvailable={draftAvailable}
-              onList={() => setShowHistory(true)}
+              onList={openHistory}
               onNew={() => {
+                requestFocus('parameters');
+                setShowSavedParameters(false);
                 if (!draftAvailable) {
                   setDraft(draftFrom(formParameters));
                   setDraftAvailable(true);
                 }
                 setShowForm(true);
               }}
-            />
+            >
+              <RecordDetails
+                key={record.testId}
+                record={record}
+                service={service}
+                available={fresh}
+              />
+            </ResultScreen>
           )}
-        </main>
+        </div>
+        {active && !runVisible && (
+          <ActiveTestPanel
+            title={record.parameters.valve}
+            status="Активный проход"
+            description={
+              stage === 'preparing'
+                ? 'Подготовка'
+                : stage === 'stopping'
+                  ? 'Остановка выполняется; безопасное давление не подтверждено.'
+                  : 'Испытание продолжается'
+            }
+            onReturn={openCurrent}
+            stop={stopControl}
+          />
+        )}
       </div>
-    </div>
+    </AppShell>
   );
 }

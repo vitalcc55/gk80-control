@@ -176,7 +176,7 @@ for (const viewport of [
       await page
         .getByRole('textbox', { name: 'Обозначение или наименование клапана' })
         .fill('Клапан 100');
-      await page.getByRole('textbox', { name: 'Период усреднения утечки, с' }).fill('100');
+      await page.getByRole('textbox', { name: 'Период усреднения утечки, с' }).fill('99');
       await page.getByRole('button', { name: 'Проверить готовность' }).click();
       await page.getByRole('checkbox', { name: /Клапан закрыт/ }).check();
       await page.getByRole('checkbox', { name: /Подключение соответствует направлению/ }).check();
@@ -191,13 +191,13 @@ for (const viewport of [
       ]) {
         await page.getByRole('button', { name: action }).click();
       }
-      await expect(page.getByText('Ряд: 50 с · период усреднения утечки: 100 с')).toBeVisible();
-      await expect(page.getByText('Пример: прошло 50 с · осталось 50 с')).toBeVisible();
+      await expect(page.getByText('Ряд: 49,5 с · период усреднения утечки: 99 с')).toBeVisible();
+      await expect(page.getByText('Пример: прошло 49 с · осталось 50 с')).toBeVisible();
       await page.getByText('Таблица показаний').click();
       const rows = page
         .getByRole('table', { name: 'Подготовленные показания по времени' })
         .getByRole('row');
-      await expect(rows.last()).toContainText('50');
+      await expect(rows.last()).toContainText('49,5');
     });
 
     test('подписи осей сохраняют различимость малых и обычных величин', async ({ page }) => {
@@ -335,7 +335,11 @@ for (const viewport of [
       await page.getByRole('button', { name: 'Подтверждаю завершение серии' }).click();
       await nav.getByRole('button', { name: 'Параметры' }).click();
       await expect(page.getByText('Текущее испытание · только просмотр')).toBeVisible();
-      await expect(page.getByText('Клапан навигации')).toBeVisible();
+      await expect(
+        page
+          .getByRole('region', { name: 'Параметры испытания' })
+          .getByText('Клапан навигации', { exact: true }),
+      ).toBeVisible();
       await expect(page.getByRole('textbox')).toHaveCount(0);
       await nav.getByRole('button', { name: 'Текущее испытание' }).click();
       await expect(page.getByRole('heading', { name: 'Выход на рабочее давление' })).toBeVisible();

@@ -43,6 +43,10 @@ test('заданный интервал переживает double-click, а к
   await page.evaluate(() => new Promise(requestAnimationFrame));
   expect(await xLabels()).toContain('60');
 
+  await page.getByText('Таблица показаний', { exact: true }).click();
+  await expect(
+    page.getByRole('table', { name: 'Подготовленные показания по времени' }),
+  ).toBeVisible();
   await page.getByRole('button', { name: 'Разрыв', exact: true }).focus();
   const box = await overlay.boundingBox();
   if (!box) throw new Error('Plot overlay is missing');

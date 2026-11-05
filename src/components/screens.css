@@ -3,6 +3,78 @@
   width: min(100%, 1320px);
   padding: 4px 0 24px;
 }
+.history-filters {
+  display: flex;
+  gap: 10px;
+  align-items: end;
+  flex-wrap: wrap;
+  padding: 0 20px 16px;
+}
+.history-filters :where(label) {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--muted);
+  font-size: var(--font-caption);
+}
+.history-filters :where(input),
+.history-filters :where(select) {
+  min-height: 36px;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-control);
+  padding: 5px 8px;
+  background: var(--surface);
+  color: var(--ink);
+}
+.history-filters :where(.history-search) {
+  flex-direction: row;
+  align-items: center;
+  flex: 1;
+  min-width: 180px;
+}
+.history-filters :where(.history-search input) {
+  min-width: 0;
+  width: 100%;
+  border: 0;
+}
+.history-pages {
+  display: flex;
+  gap: 14px;
+  justify-content: flex-end;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 12px 20px;
+}
+.history-id {
+  display: block;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-caption);
+}
+.work-table :where(td small) {
+  display: block;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.record-disclosures {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+.record-disclosures summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-weight: 650;
+}
+.record-disclosures li,
+.record-disclosures dd {
+  overflow-wrap: anywhere;
+}
+.record-disclosures :where(.table-scroll) {
+  max-height: 280px;
+}
 
 .workpage-narrow {
   width: min(100%, 1050px);

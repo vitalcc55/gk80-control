@@ -225,11 +225,21 @@ it.each(['history', 'bridge'] as const)(
     const points = () =>
       screen.getByRole('img', { name: 'График показаний симулятора' }).getAttribute('data-points');
     await waitFor(() => expect(points()).toContain('1000'));
+    const currentNavigation = screen.getByRole('button', { name: 'Текущее испытание' });
+    expect(currentNavigation.getAttribute('aria-current')).toBe('page');
+    currentNavigation.focus();
     snapshot = sample(2);
     await waitFor(() => expect(points()).toContain('1001'), { timeout: 8000 });
+    expect(document.activeElement).toBe(currentNavigation);
     const user = userEvent.setup();
-    if (route === 'history') await user.click(screen.getByRole('button', { name: 'Испытания' }));
-    else {
+    if (route === 'history') {
+      await user.click(screen.getByRole('button', { name: 'Испытания' }));
+      expect(document.activeElement).toBe(screen.getByRole('main', { name: 'Испытания' }));
+      expect(screen.getByRole('button', { name: 'Испытания' }).getAttribute('aria-current')).toBe(
+        'page',
+      );
+      expect(screen.getByRole('button', { name: 'Остановить испытание' })).toBeTruthy();
+    } else {
       view.rerender(
         <DesktopApp
           bridge={{
@@ -1177,9 +1187,14 @@ it('finishes opening history when the same session replaces its service wrapper'
     finish(record);
     await response;
   });
-  expect(await screen.findByRole('heading', { name: 'Сохранённая запись' })).toBeTruthy();
-  expect(measurements).toHaveBeenCalledOnce();
-  expect(audit).toHaveBeenCalledOnce();
+  expect(await screen.findByRole('heading', { name: 'Результат испытания' })).toBeTruthy();
+  expect(measurements).not.toHaveBeenCalled();
+  expect(audit).not.toHaveBeenCalled();
+  const user = userEvent.setup();
+  await user.click(screen.getByText('Измерения', { selector: 'summary' }));
+  await user.click(screen.getByText('Аудит', { selector: 'summary' }));
+  await waitFor(() => expect(measurements).toHaveBeenCalledOnce());
+  await waitFor(() => expect(audit).toHaveBeenCalledOnce());
   expect(oldMeasurements).not.toHaveBeenCalled();
   expect(oldAudit).not.toHaveBeenCalled();
 });
@@ -1213,6 +1228,7 @@ it('explains a canceled start in the saved audit', async () => {
     />,
   );
   await userEvent.setup().click(await screen.findByRole('button', { name: /К-1/ }));
+  await userEvent.setup().click(await screen.findByText('Аудит', { selector: 'summary' }));
   expect(
     await screen.findByText(/причина запуск отменён при остановке до подтверждения оператора/),
   ).toBeTruthy();
@@ -5198,9 +5214,18 @@ it('retains overflow until multiple requested removals can be saved, while Stop 
     first.unmount();
     active = { ...active, testId: secondTest, stopCommandId: secondStop };
     const second = render(<LiveApp {...props} />);
+    // The remount initially exposes last-known data; this attempt targets the next test.
+    await waitFor(
+      () =>
+        expect(
+          sessionObservation(host, backend).getSnapshotFor(bridge).lastSnapshot?.activeTest?.testId,
+        ).toBe(secondTest),
+      { timeout: 8000 },
+    );
     await userEvent
       .setup()
       .click(await screen.findByRole('button', { name: 'Остановить испытание' }));
+    expect(api.stop).toHaveBeenLastCalledWith(secondTest, { commandId: secondStop });
     second.unmount();
     failure.mockRestore();
     const old = Array.from({ length: 65 }, (_, index) => ({

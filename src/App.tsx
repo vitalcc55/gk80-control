@@ -1,26 +1,18 @@
-import { Activity, ArrowLeft, ArrowRight, Check, FileText, ListChecks, Pause } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
-import { MeasurementChart } from './components/MeasurementChart';
-import {
-  ActiveParametersScreen,
-  draftFrom,
-  ParametersScreen,
-  ReadinessScreen,
-  ResultScreen,
-  TestsScreen,
-} from './components/OtherScreens';
-import { PressureNotation } from './components/PressureNotation';
+import { ArrowRight } from 'lucide-react';
+import { useRef, useState } from 'react';
+import { ActiveTestPanel } from './components/ActiveTestPanel';
+import { AppShell } from './components/AppShell';
+import { ActiveParametersScreen, draftFrom, ParametersScreen } from './components/ParametersScreen';
+import { ReadinessScreen } from './components/ReadinessScreen';
+import { ResultScreen } from './components/ResultScreen';
+import { RunScreen as SharedRunScreen } from './components/RunScreen';
+import { StopButton } from './components/StopButton';
 import { Button } from './components/ui/button';
-import { demoSteps, fixtureSource, formatNumber, prepareRunDisplay } from './fixtureAdapter';
+import { useScreenFocus } from './components/use-screen-focus';
+import { FixtureTests } from './FixtureTests';
+import { demoSteps, fixtureSource, prepareRunDisplay } from './fixtureAdapter';
+import { formatElapsedSeconds, formatNumber, formatRemainingSeconds } from './lib/format';
 import type { Fixture, FixtureId, Screen, TestParameters } from './model';
-
-const headings: Record<Screen, string> = {
-  tests: 'Испытания',
-  parameters: 'Параметры',
-  readiness: 'Готовность',
-  run: 'Проведение',
-  result: 'Результат',
-};
 
 const number = (value: number) => formatNumber(value, 12);
 
@@ -100,163 +92,89 @@ function RunScreen({
   }
 
   return (
-    <>
-      <div className="page-heading run-heading">
-        <div>
-          <button className="text-link" type="button" onClick={onList}>
-            <ArrowLeft size={16} /> К испытаниям
-          </button>
-          <h1>Проведение испытания</h1>
-          <p>
-            {parameters.id} · {parameters.valve} ·{' '}
-            {parameters.direction === 'pressure'
-              ? 'Нагнетание · диафрагма №1'
-              : 'Разрежение · диафрагма №2'}{' '}
-            · {isActuator ? 'С приводом · положение неизвестно' : 'Без привода'}
-          </p>
-        </div>
-      </div>
-      <div className="run-grid">
-        <aside className="run-stages" aria-label="Этапы испытания">
-          <div className="section-heading">
-            <h2>Этапы</h2>
-          </div>
-          <ol className="stage-list">
-            {fixtureSource.stages.map((stage, index) => (
-              <li
-                key={stage.id}
-                className={index === stageIndex ? 'stage current' : 'stage'}
-                aria-current={index === stageIndex ? 'step' : undefined}
-              >
-                <span className="stage-marker">
-                  {index < stageIndex ? <Check size={13} aria-hidden="true" /> : index + 1}
-                </span>
-                <span>
-                  <strong>{stage.label}</strong>
-                  <small className="sr-only">
-                    {index === stageIndex
-                      ? 'Текущий этап'
-                      : index < stageIndex
-                        ? 'Показан в макете'
-                        : 'Ожидается в макете'}
-                  </small>
-                </span>
-              </li>
-            ))}
-          </ol>
-        </aside>
-        <section className="run-content" aria-label="Измерения">
-          <div className="measurement-top">
-            <div className="section-heading">
-              <div>
-                <h2>Показания</h2>
-              </div>
-            </div>
-            <div className="measurements">
-              <div className={`reading main-reading${isLost ? ' reading-unavailable' : ''}`}>
-                <span>
-                  Давление в ёмкости <small>ДД1</small>
-                </span>
-                <strong>
-                  {pressureValue === null ? 'Неизвестно' : number(pressureValue)}{' '}
-                  <small>{pressureValue === null ? '' : 'Па'}</small>
-                </strong>
-                {pressureValue === null && (
-                  <p>
-                    {isLost
-                      ? lastPressure === null
-                        ? 'Последнее показание недоступно'
-                        : `Последнее: ${number(lastPressure)} Па · устарело, ${fixture.pressure.time}`
-                      : 'Нет подготовленного показания'}
-                  </p>
-                )}
-                {isStopping && isLost && <p>Данные ДД1 недоступны</p>}
-              </div>
-              <div className="reading target-reading">
-                <span>
-                  <PressureNotation /> производителя
-                </span>
-                <strong>
-                  {formatNumber(parameters.pmax)} <small>Па</small>
-                </strong>
-              </div>
-              <div className="reading differential-reading">
-                <span>
-                  Перепад на диафрагме <small>{fixture.differential.channel}</small>
-                </span>
-                <strong>
-                  {differentialValue === null ? 'Неизвестно' : number(differentialValue)}{' '}
-                  <small>{differentialValue === null ? '' : 'Па'}</small>
-                </strong>
-              </div>
-            </div>
-          </div>
-          <div className="chart-panel">
-            <div className="section-heading">
-              <div>
-                <h2>Изменение показаний</h2>
-                <p>
-                  {item.stage === 'measurement'
-                    ? `Ряд: ${number(parameters.measurementSeconds / 2)} с · период усреднения утечки: ${number(parameters.measurementSeconds)} с`
-                    : 'Ряд: 60 с'}
-                </p>
-              </div>
-            </div>
-            <MeasurementChart
-              points={graph}
-              target={parameters.pmax}
-              rangeSeconds={
-                item.stage === 'measurement' ? parameters.measurementSeconds : undefined
-              }
-              tolerance={
-                item.stage === 'stabilization'
-                  ? 2
-                  : item.stage === 'restabilization'
-                    ? 5
-                    : undefined
-              }
-            />
-          </div>
-        </section>
-        <aside className="action-panel" aria-label="Текущее действие">
-          <div>
-            <h2 ref={actionHeadingRef} tabIndex={-1}>
-              {isStopping ? 'Остановка' : isLost ? 'Потеря данных ДД1' : item.title}
-            </h2>
-            <p className="action-instruction">{instruction}</p>
-            {!isLost && !isStopping && item.stage === 'measurement' && (
+    <SharedRunScreen
+      onList={onList}
+      subtitle={
+        <>
+          {parameters.id} · {parameters.valve} ·{' '}
+          {parameters.direction === 'pressure'
+            ? 'Нагнетание · диафрагма №1'
+            : 'Разрежение · диафрагма №2'}{' '}
+          · {isActuator ? 'С приводом · положение неизвестно' : 'Без привода'}
+        </>
+      }
+      stages={fixtureSource.stages.map((stage, index) => ({
+        ...stage,
+        state: index === stageIndex ? 'current' : index < stageIndex ? 'done' : 'next',
+      }))}
+      pressure={pressureValue === null ? 'Неизвестно' : `${number(pressureValue)} Па`}
+      differential={differentialValue === null ? 'Неизвестно' : `${number(differentialValue)} Па`}
+      target={`${formatNumber(parameters.pmax)} Па`}
+      pressureNote={
+        <>
+          {pressureValue === null && (
+            <p>
+              {isLost
+                ? lastPressure === null
+                  ? 'Последнее показание недоступно'
+                  : `Последнее: ${number(lastPressure)} Па · устарело, ${fixture.pressure.time}`
+                : 'Нет подготовленного показания'}
+            </p>
+          )}
+          {isStopping && isLost && <p>Данные ДД1 недоступны</p>}
+        </>
+      }
+      chart={{
+        points: graph,
+        target: parameters.pmax,
+        rangeSeconds: item.stage === 'measurement' ? parameters.measurementSeconds : undefined,
+        tolerance:
+          item.stage === 'stabilization' ? 2 : item.stage === 'restabilization' ? 5 : undefined,
+      }}
+      chartNote={
+        item.stage === 'measurement'
+          ? `Ряд: ${number(parameters.measurementSeconds / 2)} с · период усреднения утечки: ${number(parameters.measurementSeconds)} с`
+          : 'Ряд: 60 с'
+      }
+      headingRef={actionHeadingRef}
+      actionTitle={isStopping ? 'Остановка' : isLost ? 'Потеря данных ДД1' : item.title}
+      instruction={instruction}
+      time={
+        !isLost &&
+        !isStopping && (
+          <>
+            {item.stage === 'measurement' && (
               <p className="action-instruction">
-                Пример: прошло {number(parameters.measurementSeconds / 2)} с · осталось{' '}
-                {number(parameters.measurementSeconds / 2)} с
+                Пример: прошло {formatElapsedSeconds(parameters.measurementSeconds / 2)} с ·
+                осталось {formatRemainingSeconds(parameters.measurementSeconds / 2)} с
               </p>
             )}
-            {!isLost && !isStopping && isActuator && item.stage === 'cycles' && (
+            {isActuator && item.stage === 'cycles' && (
               <p className="action-instruction">Цикл 4 из 10 · пример</p>
             )}
-            {!isLost && !isStopping && (
-              <Button className="primary-button full-width" type="button" onClick={advance}>
-                <span>{action}</span>
-                <ArrowRight size={16} />
-              </Button>
-            )}
-          </div>
-          <div className="stop-area">
-            <button
-              className="stop-button full-width"
-              type="button"
-              onClick={() => {
-                actionHeadingRef.current?.focus();
-                onFixture('stopping');
-              }}
-              disabled={isStopping}
-            >
-              <Pause size={16} />
-              {isStopping ? 'Остановка выполняется' : 'Остановить испытание'}
-            </button>
-          </div>
-        </aside>
-      </div>
-    </>
+          </>
+        )
+      }
+      action={
+        !isLost &&
+        !isStopping && (
+          <Button className="primary-button full-width" type="button" onClick={advance}>
+            <span>{action}</span>
+            <ArrowRight size={16} />
+          </Button>
+        )
+      }
+      stop={
+        <StopButton
+          disabled={isStopping}
+          label={isStopping ? 'Остановка выполняется' : 'Остановить испытание'}
+          onStop={() => {
+            onFixture('stopping');
+            actionHeadingRef.current?.focus();
+          }}
+        />
+      }
+    />
   );
 }
 
@@ -269,7 +187,12 @@ export function App() {
   const [draftAvailable, setDraftAvailable] = useState(
     initial.screen === 'readiness' || initial.screen === 'parameters',
   );
-  const [screen, setScreen] = useState<Screen>(initial.screen);
+  const [screen, setScreenValue] = useState<Screen>(initial.screen);
+  const { mainRef, requestFocus } = useScreenFocus(screen);
+  const setScreen = (destination: Screen) => {
+    requestFocus(destination);
+    setScreenValue(destination);
+  };
   const [active, setActive] = useState(initial.screen === 'run');
   const [step, setStep] = useState(() => initialStep(initial));
   const [nextId, setNextId] = useState(2);
@@ -278,30 +201,30 @@ export function App() {
   const [showExample, setShowExample] = useState(
     initial.id !== 'empty' && initial.id !== 'save-error',
   );
-  const mainRef = useRef<HTMLElement>(null);
   const activeRun = useRef<{ fixture: Fixture; parameters: TestParameters; step: number } | null>(
     initial.screen === 'run'
       ? { fixture: initial, parameters: initial.parameters, step: initialStep(initial) }
       : null,
   );
 
-  useEffect(() => {
-    document.title = `${headings[screen]} — ГК80`;
-    mainRef.current?.focus();
-  }, [screen]);
-
   function selectFixture(id: FixtureId, preserveParameters = false) {
     const base = fixtureSource.get(id);
+    const context = preserveParameters
+      ? screen === 'run'
+        ? { fixture, parameters, step }
+        : activeRun.current
+      : null;
     const selected =
-      preserveParameters && id === 'stopping'
+      context && id === 'stopping'
         ? {
             ...base,
-            pressure: fixture.pressure,
-            differential: fixture.differential,
-            graph: fixture.graph,
+            pressure: context.fixture.pressure,
+            differential: context.fixture.differential,
+            graph: context.fixture.graph,
           }
         : base;
     setFixture(selected);
+    if (context) setParameters(context.parameters);
     if (!preserveParameters) {
       if (id === 'empty') setHistory([]);
       setEmptyHistory(id === 'empty' || id === 'save-error');
@@ -314,8 +237,8 @@ export function App() {
     setScreen(selected.screen);
     setActive(selected.screen === 'run');
     const selectedStep =
-      preserveParameters && id === 'stopping'
-        ? step
+      context && id === 'stopping'
+        ? context.step
         : Math.max(
             0,
             demoSteps.findIndex((item) => item.stage === selected.stage),
@@ -325,7 +248,7 @@ export function App() {
       selected.screen === 'run'
         ? {
             fixture: selected,
-            parameters: preserveParameters ? parameters : selected.parameters,
+            parameters: context?.parameters ?? selected.parameters,
             step: selectedStep,
           }
         : null;
@@ -402,61 +325,51 @@ export function App() {
         ? 'Пример: потеря ДД1'
         : null;
   return (
-    <div className="app-shell">
-      <span className="sr-only" role="status" aria-atomic="true">
-        {screen === 'run' ? (activeNotice ?? `Этап: ${demoSteps[step]?.title ?? ''}`) : ''}
-      </span>
-      <div className="workspace">
-        <nav className="sidebar" aria-label="Навигация">
-          <div className="brand">
-            <div className="brand-symbol">
-              <Activity size={20} aria-hidden="true" />
-            </div>
-            <div>
-              <strong>ГК80</strong>
-              <span>Испытания клапанов</span>
-            </div>
+    <AppShell
+      screen={screen}
+      active={active}
+      draftAvailable={draftAvailable}
+      announcement={
+        screen === 'run' ? (activeNotice ?? `Этап: ${demoSteps[step]?.title ?? ''}`) : null
+      }
+      onTests={openList}
+      onRun={openRun}
+      onParameters={openParameters}
+      mainRef={mainRef}
+      notice={active && screen !== 'run' ? activeNotice : null}
+      footer={
+        <div className="fixture-toolbar">
+          <div>
+            <span>Состояние макета</span>
           </div>
-          <button
-            type="button"
-            className={screen === 'tests' ? 'nav-item active' : 'nav-item'}
-            aria-current={screen === 'tests' ? 'page' : undefined}
-            onClick={openList}
-          >
-            <ListChecks size={18} /> Испытания
-          </button>
-          {active && (
-            <button
-              type="button"
-              className={screen === 'run' ? 'nav-item active' : 'nav-item'}
-              aria-current={screen === 'run' ? 'page' : undefined}
-              onClick={openRun}
+          <label>
+            <span className="sr-only">Выбрать подготовленное состояние</span>
+            <select
+              value={fixture.id}
+              onChange={(event) => {
+                const id = fixtureSource.ids.find((candidate) => candidate === event.target.value);
+                if (id) selectFixture(id);
+              }}
             >
-              <Activity size={18} aria-hidden="true" /> <span>Текущее испытание</span>
-            </button>
-          )}
-          {(active || draftAvailable) && (
-            <button
-              type="button"
-              className={screen === 'parameters' ? 'nav-item active' : 'nav-item'}
-              aria-current={screen === 'parameters' ? 'page' : undefined}
-              onClick={openParameters}
-            >
-              <FileText size={18} aria-hidden="true" /> <span>Параметры</span>
-            </button>
-          )}
-          {active && screen !== 'run' && activeNotice && (
-            <span className="nav-status" role="status">
-              {activeNotice}
-            </span>
-          )}
-        </nav>
-        <main className="main-content" ref={mainRef} tabIndex={-1} aria-label={headings[screen]}>
+              {fixtureSource.ids.map((id) => (
+                <option key={id} value={id}>
+                  {fixtureSource.get(id).label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <span className="demo-badge">
+            <span className="demo-dot" /> Макет · подготовленные данные
+          </span>
+        </div>
+      }
+    >
+      <div className={active && screen !== 'run' ? 'active-route-layout' : undefined}>
+        <div className="route-content">
           {screen === 'tests' && (
-            <TestsScreen
+            <FixtureTests
               onNew={draftAvailable ? openParameters : beginNew}
               draftAvailable={draftAvailable}
-              onOpen={openRun}
               onHistory={(selected) => {
                 setFixture(fixtureSource.get('measuring'));
                 setParameters(selected);
@@ -471,10 +384,7 @@ export function App() {
           )}
           {screen === 'parameters' &&
             (active && activeRun.current ? (
-              <ActiveParametersScreen
-                parameters={activeRun.current.parameters}
-                onReturn={openRun}
-              />
+              <ActiveParametersScreen parameters={activeRun.current.parameters} />
             ) : (
               <ParametersScreen
                 initial={draftBase}
@@ -497,6 +407,7 @@ export function App() {
           )}
           {screen === 'run' && (
             <RunScreen
+              onList={openList}
               fixture={fixture}
               parameters={parameters}
               step={step}
@@ -519,7 +430,6 @@ export function App() {
                 activeRun.current = null;
                 setScreen('result');
               }}
-              onList={openList}
               onFixture={(id) => selectFixture(id, true)}
             />
           )}
@@ -549,32 +459,29 @@ export function App() {
               }}
             />
           )}
-        </main>
-      </div>
-      <div className="fixture-toolbar">
-        <div>
-          <span>Состояние макета</span>
         </div>
-        <label>
-          <span className="sr-only">Выбрать подготовленное состояние</span>
-          <select
-            value={fixture.id}
-            onChange={(event) => {
-              const id = fixtureSource.ids.find((candidate) => candidate === event.target.value);
-              if (id) selectFixture(id);
-            }}
-          >
-            {fixtureSource.ids.map((id) => (
-              <option key={id} value={id}>
-                {fixtureSource.get(id).label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <span className="demo-badge">
-          <span className="demo-dot" /> Макет · подготовленные данные
-        </span>
+        {active && screen !== 'run' && (
+          <ActiveTestPanel
+            title={`${(activeRun.current?.parameters ?? parameters).id} · ${(activeRun.current?.parameters ?? parameters).valve}`}
+            status="Пример активного прохода"
+            description={activeNotice ?? 'Подготовленные данные · испытание в макете'}
+            onReturn={openRun}
+            stop={
+              <StopButton
+                disabled={activeFixture?.id === 'stopping'}
+                label={
+                  activeFixture?.id === 'stopping'
+                    ? 'Остановка выполняется'
+                    : 'Остановить испытание'
+                }
+                onStop={() => {
+                  selectFixture('stopping', true);
+                }}
+              />
+            }
+          />
+        )}
       </div>
-    </div>
+    </AppShell>
   );
 }

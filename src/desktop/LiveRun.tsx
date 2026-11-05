@@ -1,11 +1,11 @@
-import { MeasurementChart } from '../components/MeasurementChart';
-import { PressureNotation } from '../components/PressureNotation';
-import { formatNumber } from '../fixtureAdapter';
+import { type ReactNode, useState } from 'react';
+import { RunScreen } from '../components/RunScreen';
 import type {
   Measurement,
   Snapshot,
   TestRecord,
 } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
+import { formatElapsedSeconds, formatNumber, formatRemainingSeconds } from '../lib/format';
 import type { MeasurementSeries } from './measurement-series';
 
 function shown(item: Measurement | undefined): string {
@@ -13,20 +13,15 @@ function shown(item: Measurement | undefined): string {
     ? `≈ ${formatNumber(item.value, 6)} Па`
     : 'Неизвестно';
 }
-
 function quality(item: Measurement | undefined): string {
-  switch (item?.quality) {
-    case 'valid':
-      return 'достоверно';
-    case 'stale':
-      return 'устарело';
-    case 'unavailable':
-      return 'недоступно';
-    default:
-      return 'неизвестно';
-  }
+  return item?.quality === 'valid'
+    ? 'достоверно'
+    : item?.quality === 'stale'
+      ? 'устарело'
+      : item?.quality === 'unavailable'
+        ? 'недоступно'
+        : 'неизвестно';
 }
-
 export function LiveRun({
   record,
   snapshot,
@@ -34,6 +29,7 @@ export function LiveRun({
   series,
   pending,
   onConfirm,
+  stop,
 }: {
   record: TestRecord;
   snapshot: Snapshot;
@@ -41,110 +37,99 @@ export function LiveRun({
   series: MeasurementSeries;
   pending: boolean;
   onConfirm: () => void;
+  stop?: ReactNode;
 }) {
-  const { points, clockChanged } = series;
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const pressure = snapshot.measurements?.find((item) => item.channel === 'dd1');
   const differential = snapshot.measurements?.find((item) => item.channel === 'dd2');
-  const reserve = snapshot.measurements?.find((item) => item.channel === 'dd3');
-
+  const stopping = record.stage === 'stopping';
+  const awaiting = !!snapshot.pendingAction;
+  const timing = snapshot.measurementTiming;
+  const phase = stopping ? 2 : awaiting ? 0 : 1;
   return (
-    <>
-      <div className="page-heading run-heading">
-        <div>
-          <h1>Проведение испытания</h1>
-          <p>{record.parameters.valve} · Нагнетание · Без привода</p>
-        </div>
-      </div>
-      <div className="run-grid">
-        <aside className="run-stages">
-          <div className="section-heading">
-            <h2>Этапы</h2>
-          </div>
-          <p>Упрощённый демонстрационный проход</p>
-          <p>Этап по последнему полученному снимку</p>
-          <strong>
-            {snapshot.pendingAction
-              ? 'Ожидание подтверждения'
-              : pressure
-                ? 'Измерение'
-                : 'Ожидание измерений'}
-          </strong>
-        </aside>
-        <section className="run-content" aria-label="Измерения">
-          <div className="measurement-top">
-            <div className="section-heading">
-              <h2>Показания</h2>
-              <p>Последние полученные показания; текущие значения могут отличаться.</p>
-            </div>
-            <div className="measurements live-measurements">
-              <div className="reading main-reading">
-                <span>
-                  Давление в ёмкости <small>ДД1</small>
-                </span>
-                <strong>{shown(pressure)}</strong>
-                <p>
-                  Время последнего измерения: {pressure?.measuredAt ?? 'неизвестно'} · качество
-                  последнего наблюдения: {quality(pressure)}
-                </p>
-              </div>
-              <div className="reading target-reading">
-                <span>
-                  <PressureNotation /> производителя
-                </span>
-                <strong>{formatNumber(record.parameters.pmaxPa)} Па</strong>
-              </div>
-              <div className="reading differential-reading">
-                <span>
-                  Перепад на диафрагме <small>ДД2</small>
-                </span>
-                <strong>{shown(differential)}</strong>
-                <p>
-                  Время ДД2: {differential?.measuredAt ?? 'неизвестно'} · качество последнего
-                  наблюдения: {quality(differential)}
-                </p>
-                <p>
-                  ДД3: {shown(reserve)} · время: {reserve?.measuredAt ?? 'неизвестно'} · качество
-                  последнего наблюдения: {quality(reserve)}
-                </p>
-              </div>
-            </div>
-            <p>Показания округлены до шести значащих цифр для отображения.</p>
-          </div>
-          <div className="chart-panel">
-            <div className="section-heading">
-              <div>
-                <h2>Изменение показаний</h2>
-                <p>Время от первого полученного отсчёта; при потере связи график прерывается.</p>
-                {clockChanged && (
-                  <p>Время измерения изменилось: график начат заново с нового отсчёта.</p>
-                )}
-              </div>
-            </div>
-            <MeasurementChart live points={points} target={record.parameters.pmaxPa} />
-          </div>
-        </section>
-        <aside className="action-panel" aria-label="Действие по последнему полученному снимку">
+    <RunScreen
+      subtitle={<>{record.parameters.valve} · Нагнетание · Без привода</>}
+      stages={['Ожидание подтверждения', 'Демонстрационное измерение', 'Остановка'].map(
+        (label, index) => ({
+          id: String(index),
+          label,
+          state:
+            index === phase ? 'current' : stopping ? 'inactive' : index < phase ? 'done' : 'next',
+        }),
+      )}
+      stageNote={<p>Этап по последнему полученному снимку</p>}
+      pressure={shown(pressure)}
+      differential={shown(differential)}
+      target={`${formatNumber(record.parameters.pmaxPa)} Па`}
+      pressureNote={<p>{!fresh ? 'Актуальность не подтверждена' : quality(pressure)}</p>}
+      differentialNote={<p>{!fresh ? 'Актуальность не подтверждена' : quality(differential)}</p>}
+      readingNote={
+        fresh
+          ? 'Показания симулятора · округление до 6 значащих цифр'
+          : 'Последние полученные показания · устарело; текущие значения не подтверждены.'
+      }
+      details={
+        <details className="reading-details" onToggle={(e) => setDetailsOpen(e.currentTarget.open)}>
+          <summary>Время и качество показаний</summary>
+          {detailsOpen &&
+            snapshot.measurements?.map((item) => (
+              <p key={item.channel}>
+                {item.channel.replace('dd', 'ДД')}: {shown(item)} ·{' '}
+                {item.measuredAt ?? 'время неизвестно'} · качество последнего наблюдения:{' '}
+                {quality(item)}
+              </p>
+            ))}
+        </details>
+      }
+      chart={{ live: true, points: series.points, target: record.parameters.pmaxPa }}
+      chartNote={
+        series.clockChanged
+          ? 'Время измерения изменилось: график начат заново с нового отсчёта.'
+          : 'Время от первого полученного отсчёта; пропуски не соединяются.'
+      }
+      actionTitle={
+        stopping ? 'Остановка' : awaiting ? 'Подтверждение оператора' : 'Демонстрационное измерение'
+      }
+      instruction={
+        stopping
+          ? 'Остановка выполняется; безопасное давление не подтверждено.'
+          : !fresh
+            ? 'Данные устарели. Ожидаем подтверждение состояния ядром.'
+            : (snapshot.pendingAction?.instruction ??
+              (pressure
+                ? 'Идёт сбор показаний симулятора. Дождитесь завершения измерения.'
+                : 'Ожидаем первые показания ядра.'))
+      }
+      time={
+        <dl className="run-time">
+          <p>Время на последнем принятом отсчёте ядра</p>
           <div>
-            <p>Действие по последнему полученному снимку</p>
-            <h2>
-              {snapshot.pendingAction ? 'Подтверждение оператора' : 'Демонстрационное измерение'}
-            </h2>
-            <p className="action-instruction">
-              {snapshot.pendingAction?.instruction ?? 'Ожидаем состояние и показания ядра.'}
-            </p>
-            {snapshot.pendingAction && (
-              <button
-                className="primary-button full-width"
-                type="button"
-                disabled={!fresh || pending}
-                onClick={onConfirm}
-              >
-                Подтвердить действие
-              </button>
-            )}
+            <dt>Прошло</dt>
+            <dd>{timing ? `${formatElapsedSeconds(timing.elapsedSeconds)} с` : 'Неизвестно'}</dd>
           </div>
-        </aside>
-      </div>
-    </>
+          <div>
+            <dt>Осталось</dt>
+            <dd>
+              {timing ? `${formatRemainingSeconds(timing.remainingSeconds)} с` : 'Неизвестно'}
+            </dd>
+          </div>
+          {!fresh && timing && <p>Время по последнему снимку · устарело</p>}
+        </dl>
+      }
+      action={
+        awaiting &&
+        !stopping && (
+          <button
+            className="primary-button full-width"
+            type="button"
+            disabled={!fresh || pending}
+            onClick={onConfirm}
+          >
+            Подтвердить действие
+          </button>
+        )
+      }
+      stop={stop}
+    />
   );
 }

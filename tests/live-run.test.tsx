@@ -1,4 +1,5 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { type ComponentProps, useState } from 'react';
 import { expect, it, vi } from 'vitest';
 import { LiveRun as LiveRunView } from '../src/desktop/LiveRun';
@@ -85,6 +86,53 @@ const snapshot: Snapshot = {
   measurements: [first],
 };
 
+it('shows channel staleness without opening details and identifies the time observation', () => {
+  render(
+    <LiveRun
+      record={record}
+      snapshot={{
+        ...snapshot,
+        measurementTiming: { elapsedSeconds: 5.98, remainingSeconds: 54.02 },
+        measurements: [
+          first,
+          {
+            ...first,
+            channel: MeasurementChannel.Dd2,
+            value: 150,
+            quality: MeasurementQuality.MeasurementQualityStale,
+          },
+        ],
+      }}
+      fresh
+      pending={false}
+      onConfirm={() => {}}
+    />,
+  );
+  const reading = screen.getByText('Перепад на диафрагме').closest('.reading');
+  if (!(reading instanceof HTMLElement)) throw new Error('Differential reading missing');
+  expect(within(reading).getByText('устарело')).toBeTruthy();
+  expect(screen.getByText('Время на последнем принятом отсчёте ядра')).toBeTruthy();
+  expect(screen.getByText('5 с')).toBeTruthy();
+  expect(screen.getByText('55 с')).toBeTruthy();
+});
+
+it('does not invent completed measurement or pressure reduction after an early Stop', () => {
+  render(
+    <LiveRun
+      record={{ ...record, stage: TestRecordStage.Stopping }}
+      snapshot={{ ...snapshot, measurements: [], measurementTiming: null }}
+      fresh
+      pending={false}
+      onConfirm={() => {}}
+    />,
+  );
+  const stages = screen.getByRole('complementary', { name: 'Этапы испытания' });
+  expect(within(stages).queryByText('Предыдущий этап')).toBeNull();
+  expect(within(stages).queryByText('Снижение давления')).toBeNull();
+  expect(within(stages).getByText('Остановка')).toBeTruthy();
+  expect(screen.getByText(/безопасное давление не подтверждено/)).toBeTruthy();
+});
+
 it('retains isolated recent source contexts and evicts the least recently observed context', () => {
   const context = new MeasurementSeriesContext();
   context.accept('source-A/database-A/test-A', snapshot, true, 0);
@@ -162,7 +210,7 @@ it('isolates a new test and bounds retained points without changing the original
   );
 });
 
-it('keeps the last received reading visible while a new snapshot is being confirmed', () => {
+it('keeps the last received reading visible while a new snapshot is being confirmed', async () => {
   const withAction = {
     ...snapshot,
     measurementTiming: null,
@@ -187,14 +235,16 @@ it('keeps the last received reading visible while a new snapshot is being confir
     />
   );
   const view = render(renderRun(true));
-  expect(screen.getByText(/≈ 1\s?000 Па/)).toBeTruthy();
+  expect(screen.getAllByText(/≈ 1\s?000 Па/)[0]).toBeTruthy();
   expect(
     screen.getByRole('button', { name: 'Подтвердить действие' }).hasAttribute('disabled'),
   ).toBe(false);
   view.rerender(renderRun(false));
-  expect(screen.getByText(/≈ 1\s?000 Па/)).toBeTruthy();
+  expect(screen.getAllByText(/≈ 1\s?000 Па/)[0]).toBeTruthy();
   expect(screen.getByText('≈ 150 Па')).toBeTruthy();
-  expect(screen.getByText(/ДД3:.*≈ 80 Па/)).toBeTruthy();
+  expect(screen.queryByText(/ДД3:.*≈ 80 Па/)).toBeNull();
+  await userEvent.setup().click(screen.getByText('Время и качество показаний'));
+  expect(await screen.findByText(/ДД3:.*≈ 80 Па/)).toBeTruthy();
   expect(screen.getByText(/Последние полученные показания/)).toBeTruthy();
   expect(screen.getAllByText(/качество последнего наблюдения: достоверно/)).toHaveLength(3);
   expect(screen.getAllByText(/2026-10-30T00:00:01Z/)).toHaveLength(3);
@@ -213,7 +263,7 @@ it('keeps the last received reading visible while a new snapshot is being confir
       onConfirm={() => {}}
     />,
   );
-  expect(screen.getByText(/≈ 1\s?001 Па/)).toBeTruthy();
+  expect(screen.getAllByText(/≈ 1\s?001 Па/)[0]).toBeTruthy();
   expect(screen.getByTestId('chart').textContent).toBe('1000,1001');
   view.rerender(
     <LiveRun
@@ -258,7 +308,7 @@ it('keeps the last received reading visible while a new snapshot is being confir
       onConfirm={() => {}}
     />,
   );
-  expect(screen.getByText(/≈ 1\s?000 Па/)).toBeTruthy();
+  expect(screen.getAllByText(/≈ 1\s?000 Па/)[0]).toBeTruthy();
   expect(screen.getByText(/качество последнего наблюдения: устарело/)).toBeTruthy();
   expect(screen.getByText(/2026-10-30T00:00:01Z/)).toBeTruthy();
   expect(screen.queryByText(/2026-10-30T00:00:04Z/)).toBeNull();

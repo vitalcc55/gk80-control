@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { expect, it, vi } from 'vitest';
-import { draftFrom, ParametersScreen } from '../src/components/OtherScreens';
+import { draftFrom, ParametersScreen } from '../src/components/ParametersScreen';
 import type { TestParameters } from '../src/model';
 
 const initial: TestParameters = {

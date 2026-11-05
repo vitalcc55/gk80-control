@@ -1,4 +1,5 @@
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { StrictMode } from 'react';
 import type uPlot from 'uplot';
 import { afterEach, beforeEach, expect, it, type Mock, vi } from 'vitest';
@@ -104,6 +105,24 @@ function currentPlot(): PlotStub {
   return plot;
 }
 
+it('builds the sample table only while open and updates the same plot while closed', async () => {
+  const draw = (pressure: number) => (
+    <MeasurementChart points={[{ seconds: 0, pressure, differential: null }]} target={10000} />
+  );
+  const view = render(draw(1000));
+  const plot = currentPlot();
+  expect(screen.queryByRole('table')).toBeNull();
+  const user = userEvent.setup();
+  await user.click(screen.getByText('Таблица показаний'));
+  expect((await screen.findByRole('table')).textContent).toContain('Нет данных');
+  await user.click(screen.getByText('Таблица показаний'));
+  await waitFor(() => expect(screen.queryByRole('table')).toBeNull());
+  view.rerender(draw(1001));
+  expect(screen.queryByRole('table')).toBeNull();
+  expect(currentPlot()).toBe(plot);
+  expect(plot.data[1]).toEqual([1001]);
+});
+
 it('keeps the chart and subscriptions through twenty new samples after the initial StrictMode cycle', () => {
   const addFont = vi.spyOn(fonts, 'addEventListener');
   const removeFont = vi.spyOn(fonts, 'removeEventListener');
@@ -151,7 +170,7 @@ it('keeps the chart and subscriptions through twenty new samples after the initi
     expect(observer.disconnect).toHaveBeenCalledTimes(1);
 });
 
-it('updates physical axis labels, target, tolerance and raw values together when normalization changes', () => {
+it('updates physical axis labels, target, tolerance and raw values together when normalization changes', async () => {
   const points = (pressure: number): GraphPoint[] => [
     { seconds: 0, pressure, differential: 7 },
     { seconds: 5e-101, pressure: null, differential: null },
@@ -175,7 +194,9 @@ it('updates physical axis labels, target, tolerance and raw values together when
   expect(plot.data[5]).toEqual([0.98, 0.98, 0.98]);
   expect(axisNumbers(plot, 0, [0, 0.5, 1])).toEqual([0, 5e-101, 1e-100]);
   expect(axisNumbers(plot, 1, [1, 1.001])).toEqual([1e-100, 1.001e-100]);
-  expect(screen.getByRole('table').textContent).toContain('1E-100');
+  expect(screen.queryByRole('table')).toBeNull();
+  await userEvent.setup().click(screen.getByText('Таблица показаний'));
+  expect((await screen.findByRole('table')).textContent).toContain('1E-100');
   expect(screen.getByText('Допуск ±2%')).toBeTruthy();
 
   // Plotted values stay the same while their physical factor changes by 300 orders.
@@ -257,7 +278,7 @@ it('switches normalization for a narrow pressure span and clears an empty auto-r
   expect(axisNumbers(plot, 1, [0, 0.5, 1])).toEqual([0, 0.5, 1]);
   view.rerender(<MeasurementChart points={[]} target={1e-15} />);
   expect(plot.root.style.visibility).toBe('hidden');
-  expect(screen.getByRole('table').querySelectorAll('tbody tr')).toHaveLength(0);
+  expect(screen.queryByRole('table')).toBeNull();
   view.rerender(<MeasurementChart points={[]} target={1e-15} rangeSeconds={60} />);
   expect(plot.root.style.visibility).toBe('');
   view.rerender(

@@ -1,7 +1,7 @@
-import { useLayoutEffect, useRef } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
-import { formatNumber } from '../fixtureAdapter';
+import { formatNumber } from '../lib/format';
 import type { GraphPoint } from '../model';
 
 interface MeasurementChartProps {
@@ -125,6 +125,7 @@ export function MeasurementChart({
   rangeSeconds,
   live = false,
 }: MeasurementChartProps) {
+  const [tableOpen, setTableOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<uPlot | null>(null);
   const projectionRef = useRef<ChartProjection | null>(null);
@@ -336,31 +337,33 @@ export function MeasurementChart({
         </span>
         {tolerance !== undefined && <span>Допуск ±{tolerance}%</span>}
       </div>
-      <details className="chart-data">
+      <details className="chart-data" onToggle={(event) => setTableOpen(event.currentTarget.open)}>
         <summary>Таблица показаний</summary>
-        <div className="chart-data-scroll">
-          <table className="chart-data-table">
-            <caption className="visually-hidden">
-              {live ? 'Показания симулятора по времени' : 'Подготовленные показания по времени'}
-            </caption>
-            <thead>
-              <tr>
-                <th scope="col">Время, с</th>
-                <th scope="col">Давление ДД1, Па</th>
-                <th scope="col">Перепад, Па</th>
-              </tr>
-            </thead>
-            <tbody>
-              {points.map((point) => (
-                <tr key={point.seconds}>
-                  <td>{formatValue(point.seconds)}</td>
-                  <td>{formatValue(point.pressure)}</td>
-                  <td>{formatValue(point.differential)}</td>
+        {tableOpen && (
+          <div className="chart-data-scroll">
+            <table className="chart-data-table">
+              <caption className="visually-hidden">
+                {live ? 'Показания симулятора по времени' : 'Подготовленные показания по времени'}
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col">Время, с</th>
+                  <th scope="col">Давление ДД1, Па</th>
+                  <th scope="col">Перепад, Па</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {points.map((point) => (
+                  <tr key={point.seconds}>
+                    <td>{formatValue(point.seconds)}</td>
+                    <td>{formatValue(point.pressure)}</td>
+                    <td>{formatValue(point.differential)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </details>
     </div>
   );

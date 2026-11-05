@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { formatNumber, prepareRunDisplay } from '../src/fixtureAdapter';
+import { prepareRunDisplay } from '../src/fixtureAdapter';
 import { fixtureIds, getFixture } from '../src/fixtures';
+import { formatNumber } from '../src/lib/format';
 
 describe('подготовленные состояния интерфейса', () => {
   it('не показывает принятое малое положительное значение как ноль', () => {
