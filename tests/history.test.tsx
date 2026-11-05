@@ -980,7 +980,9 @@ it('returns from a copied draft to the list instead of resurrecting the saved re
   );
   const user = userEvent.setup();
   await user.click(await screen.findByRole('button', { name: /Открыть Первая/ }));
+  expect(await screen.findByText('Результат записи открыт')).toBeTruthy();
   await user.click(await screen.findByRole('button', { name: 'Новое по этим параметрам' }));
+  expect(screen.queryByText('Результат записи открыт')).toBeNull();
   expect(screen.getByRole('main', { name: 'Параметры' })).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'К испытаниям' }));
   expect(screen.getByRole('main', { name: 'Испытания' })).toBe(document.activeElement);

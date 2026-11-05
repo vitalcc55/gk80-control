@@ -5,6 +5,7 @@ import { type ComponentProps, StrictMode, useState } from 'react';
 import { expect, it, vi } from 'vitest';
 import { AppShell } from '../src/components/AppShell';
 import { StopButton } from '../src/components/StopButton';
+import { useScreenFocus } from '../src/components/use-screen-focus';
 import { LiveRun as LiveRunView } from '../src/desktop/LiveRun';
 import { MeasurementSeriesContext } from '../src/desktop/measurement-series';
 import { useMeasurementObservation } from '../src/desktop/use-measurement-series';
@@ -101,6 +102,56 @@ function FocusShell({ children }: { children: ReactNode }) {
     </AppShell>
   );
 }
+
+function DelayedNavigation() {
+  const [screenName, setScreenName] = useState<'tests' | 'run'>('tests');
+  const { mainRef, requestFocus } = useScreenFocus(screenName);
+  return (
+    <>
+      <button type="button" onClick={() => requestFocus('run')}>
+        Начать
+      </button>
+      <button type="button">Другая навигация</button>
+      <button type="button" onClick={() => setScreenName('run')}>
+        Ответ ядра
+      </button>
+      <main ref={mainRef} tabIndex={-1} />
+    </>
+  );
+}
+
+it('does not steal focus after the operator moves while waiting for a screen', () => {
+  const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+  try {
+    render(<DelayedNavigation />);
+    fireEvent.click(screen.getByRole('button', { name: 'Начать' }));
+    const other = screen.getByRole('button', { name: 'Другая навигация' });
+    other.focus();
+    fireEvent.click(screen.getByRole('button', { name: 'Ответ ядра' }));
+    expect(document.activeElement).toBe(other);
+  } finally {
+    hasFocus.mockRestore();
+  }
+});
+
+it('focuses an explicitly requested screen unless the window loses focus', () => {
+  const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+  try {
+    const view = render(<DelayedNavigation />);
+    fireEvent.click(screen.getByRole('button', { name: 'Начать' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Ответ ядра' }));
+    expect(document.activeElement).toBe(screen.getByRole('main'));
+    view.unmount();
+    render(<DelayedNavigation />);
+    screen.getByRole('button', { name: 'Начать' }).focus();
+    fireEvent.click(screen.getByRole('button', { name: 'Начать' }));
+    fireEvent.blur(window);
+    fireEvent.click(screen.getByRole('button', { name: 'Ответ ядра' }));
+    expect(document.activeElement).not.toBe(screen.getByRole('main'));
+  } finally {
+    hasFocus.mockRestore();
+  }
+});
 
 it('keeps keyboard focus in the current screen when its action disappears', async () => {
   const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(true);

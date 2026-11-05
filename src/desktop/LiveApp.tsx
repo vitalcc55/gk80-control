@@ -340,17 +340,9 @@ function ActiveLiveApp({
       submitted.observed = true;
       if (record.stage !== 'finished' || (!submitted.retained && submitted.draft === draft)) {
         setShowForm(false);
-        if (!showHistory)
-          requestFocus(
-            record.stage === 'preparing'
-              ? 'readiness'
-              : record.stage === 'finished'
-                ? 'result'
-                : 'run',
-          );
       }
     }
-  }, [record, submittedCreate, coordinator, draft, setShowForm, showHistory, requestFocus]);
+  }, [record, submittedCreate, coordinator, draft, setShowForm]);
   const openHistory = () => {
     requestFocus('tests');
     setHistoryReset((value) => value + 1);
@@ -359,8 +351,9 @@ function ActiveLiveApp({
     setShowSavedParameters(false);
     setShowHistory(true);
   };
-  const openCurrent = () => {
-    requestFocus(stage === 'preparing' ? 'readiness' : stage === 'finished' ? 'result' : 'run');
+  const openCurrent = (moveFocus = true) => {
+    if (moveFocus)
+      requestFocus(stage === 'preparing' ? 'readiness' : stage === 'finished' ? 'result' : 'run');
     setShowHistory(false);
     setShowSavedParameters(false);
     setShowForm(false);
@@ -418,6 +411,9 @@ function ActiveLiveApp({
         }
       }}
     >
+      <span className="sr-only" role="status" aria-atomic="true">
+        {historyVisible && historyResult ? 'Результат записи открыт' : ''}
+      </span>
       <header className="live-statusbar">
         <span className="source-label">Демонстрация · тестовые данные</span>
         <SessionStatus
@@ -606,10 +602,9 @@ function ActiveLiveApp({
               visible={historyVisible}
               resetVersion={historyReset}
               activeTestId={active ? activeId : undefined}
-              onCurrent={openCurrent}
+              onCurrent={() => openCurrent(false)}
               completedRecord={record?.stage === 'finished' ? record : null}
               onViewChange={(result) => {
-                requestFocus(result ? 'result' : 'tests');
                 setHistoryResult(result);
               }}
               service={service}
