@@ -755,7 +755,7 @@ it('keeps the link visible during snapshot updates but revokes stale data and de
   );
   expect(screen.getByText('При последней проверке связь с ядром подтверждена')).toBeTruthy();
   expect(onView).toHaveBeenLastCalledWith(null, 0);
-  expect(screen.getByText('Снимок не подтверждён')).toBeTruthy();
+  expect(screen.getByText('Состояние данных')).toBeTruthy();
   act(() =>
     notify({
       ...view.connection,
@@ -772,7 +772,7 @@ it('keeps the link visible during snapshot updates but revokes stale data and de
   ).toBeTruthy();
 });
 
-it('shows currentness immediately and reports sustained unavailability without changing link status', async () => {
+it('keeps a neutral snapshot label during brief renewal and reports sustained unavailability', async () => {
   vi.useFakeTimers();
   const bridge: SessionBridge = {
     beginSessionCheck: async () => 'ticket',
@@ -790,7 +790,7 @@ it('shows currentness immediately and reports sustained unavailability without c
   await act(async () => {
     await vi.advanceTimersByTimeAsync(0);
   });
-  expect(screen.getByText('Снимок подтверждён')).toBeTruthy();
+  expect(screen.getByText('Состояние данных')).toBeTruthy();
   mounted.rerender(
     <SessionStatus
       bridge={bridge}
@@ -799,7 +799,7 @@ it('shows currentness immediately and reports sustained unavailability without c
       snapshotAccepted={false}
     />,
   );
-  expect(screen.getByText('Снимок не подтверждён')).toBeTruthy();
+  expect(screen.getByText('Состояние данных')).toBeTruthy();
   expect(
     screen.queryByText('Снимок не подтверждён; обычные команды временно недоступны.'),
   ).toBeNull();
@@ -809,8 +809,29 @@ it('shows currentness immediately and reports sustained unavailability without c
   expect(
     screen.queryByText('Снимок не подтверждён; обычные команды временно недоступны.'),
   ).toBeNull();
+  mounted.rerender(
+    <SessionStatus
+      bridge={bridge}
+      hostRunId={view.connection.hostRunId}
+      backendRunId={view.snapshot?.backendRunId ?? ''}
+      snapshotAccepted
+    />,
+  );
   await act(async () => {
     await vi.advanceTimersByTimeAsync(1000);
+  });
+  expect(screen.getByText('Состояние данных')).toBeTruthy();
+  expect(screen.queryByText('Снимок не подтверждён')).toBeNull();
+  mounted.rerender(
+    <SessionStatus
+      bridge={bridge}
+      hostRunId={view.connection.hostRunId}
+      backendRunId={view.snapshot?.backendRunId ?? ''}
+      snapshotAccepted={false}
+    />,
+  );
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1500);
   });
   expect(
     screen
@@ -827,10 +848,8 @@ it('shows currentness immediately and reports sustained unavailability without c
       snapshotAccepted
     />,
   );
-  expect(screen.getAllByText('Снимок подтверждён')).toHaveLength(2);
-  expect(
-    screen.getAllByText('Снимок подтверждён').some((item) => item.closest('[role="status"]')),
-  ).toBe(true);
+  expect(screen.getByText('Состояние данных')).toBeTruthy();
+  expect(screen.getByText('Снимок подтверждён').closest('[role="status"]')).not.toBeNull();
   expect(screen.queryByText('Снимок не подтверждён')).toBeNull();
 });
 

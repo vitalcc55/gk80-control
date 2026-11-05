@@ -17,7 +17,6 @@ import {
 } from '../components/ParametersScreen';
 import { ReadinessScreen } from '../components/ReadinessScreen';
 import { ResultScreen } from '../components/ResultScreen';
-import { SnapshotStatus } from '../components/SnapshotStatus';
 import { StopButton } from '../components/StopButton';
 import { useScreenFocus } from '../components/use-screen-focus';
 import type {
@@ -700,7 +699,6 @@ function ActiveLiveApp({
                     : snapshot?.pendingAction
                       ? 'Ожидание подтверждения оператора'
                       : 'Демонстрационное измерение'}
-                <SnapshotStatus confirmed={fresh} />
               </>
             }
             onReturn={openCurrent}

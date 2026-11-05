@@ -351,3 +351,53 @@ for (const viewport of [
     });
   });
 }
+
+test('обычные слова в истории остаются читаемыми рядом с активным проходом', async ({ page }) => {
+  await page.setViewportSize({ width: 1186, height: 793 });
+  await page.goto('/?fixture=empty');
+  await page.getByRole('button', { name: 'Новое испытание' }).click();
+  await page.getByLabel('Обозначение или наименование клапана').fill('Проверка Windows');
+  await page.getByRole('button', { name: 'Проверить готовность' }).click();
+  await page.getByRole('checkbox', { name: /Клапан закрыт/ }).check();
+  await page.getByRole('checkbox', { name: /Подключение соответствует направлению/ }).check();
+  await page.getByRole('button', { name: 'Перейти к проведению' }).click();
+  for (const name of [
+    'Подтверждаю завершение серии',
+    'Показать стабилизацию',
+    'Показать следующий этап',
+    'Подтверждаю открытие',
+    'Подтверждаю закрытие',
+    'Показать измерение',
+    'Показать снижение давления',
+    'Показать результат',
+  ])
+    await page.getByRole('button', { name }).click();
+  await page
+    .getByRole('combobox', { name: 'Выбрать подготовленное состояние' })
+    .selectOption('sensor-lost');
+  await page
+    .getByRole('navigation', { name: 'Навигация' })
+    .getByRole('button', { name: 'Испытания' })
+    .click();
+  await page.evaluate(() => document.fonts.ready);
+  const row = page.locator('.work-table tbody tr').first();
+  await expect(row).toBeVisible();
+  await expect(row.getByText('Проверка Windows')).toBeVisible();
+  const brokenWords = await row.locator('td').evaluateAll((cells) => {
+    const broken: string[] = [];
+    for (const cell of cells.slice(1, 7)) {
+      const walker = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
+      while (walker.nextNode()) {
+        const node = walker.currentNode;
+        for (const word of (node.textContent ?? '').matchAll(/\S+/g)) {
+          const range = document.createRange();
+          range.setStart(node, word.index ?? 0);
+          range.setEnd(node, (word.index ?? 0) + word[0].length);
+          if (range.getClientRects().length > 1) broken.push(word[0]);
+        }
+      }
+    }
+    return broken;
+  });
+  expect(brokenWords).toEqual([]);
+});

@@ -61,7 +61,12 @@ export function SessionStatus({
           </span>
         </p>
       </div>
-      <SnapshotStatus confirmed={confirmedSnapshot} />
+      <SnapshotStatus
+        unconfirmed={
+          !confirmedSnapshot &&
+          notice === 'Снимок не подтверждён; обычные команды временно недоступны.'
+        }
+      />
       <span className="sr-only" role="status">
         {notice}
       </span>

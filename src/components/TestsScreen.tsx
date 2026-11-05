@@ -155,7 +155,7 @@ export function TestsScreen({
           !error &&
           (rows.length ? (
             <div className="table-scroll">
-              <table className="work-table">
+              <table className="work-table history-table">
                 <thead>
                   <tr>
                     <th>Испытание / дата</th>

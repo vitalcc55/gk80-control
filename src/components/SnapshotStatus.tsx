@@ -1,9 +1,9 @@
-/** Presentation of the observer's fact; it never grants command permission. */
-export function SnapshotStatus({ confirmed }: { confirmed: boolean }) {
+/** Neutral between observations; sustained uncertainty is shown without granting permission. */
+export function SnapshotStatus({ unconfirmed }: { unconfirmed: boolean }) {
   return (
-    <p className="snapshot-state" data-confirmed={confirmed}>
+    <p className="snapshot-state" data-confirmed={!unconfirmed}>
       <span className="snapshot-state-dot" aria-hidden="true" />
-      {confirmed ? 'Снимок подтверждён' : 'Снимок не подтверждён'}
+      {unconfirmed ? 'Снимок не подтверждён' : 'Состояние данных'}
     </p>
   );
 }

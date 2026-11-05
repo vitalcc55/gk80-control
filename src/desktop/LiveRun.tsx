@@ -1,6 +1,5 @@
 import { type ReactNode, useState } from 'react';
 import { RunScreen } from '../components/RunScreen';
-import { SnapshotStatus } from '../components/SnapshotStatus';
 import type {
   Measurement,
   Snapshot,
@@ -115,7 +114,6 @@ export function LiveRun({
               </dd>
             </div>
           </dl>
-          <SnapshotStatus confirmed={fresh} />
         </div>
       }
       action={

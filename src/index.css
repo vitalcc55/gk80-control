@@ -280,6 +280,10 @@ h2 {
   font-size: var(--font-caption);
 }
 .live-statusbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--canvas);
   display: flex;
   gap: 8px 20px;
   align-items: baseline;
@@ -499,10 +503,11 @@ h2 {
 }
 .run-time {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 100px), 1fr));
   gap: 12px;
   margin: 12px 0;
   font-variant-numeric: tabular-nums;
+  overflow-wrap: normal;
 }
 .run-time dt {
   color: var(--muted);
@@ -524,7 +529,7 @@ h2 {
 }
 .active-route-panel {
   position: sticky;
-  top: 10px;
+  top: 72px;
   min-height: 440px;
 }
 .active-route-panel .work-button {
@@ -769,7 +774,7 @@ h2 {
   .action-panel {
     align-self: start;
     position: sticky;
-    top: 10px;
+    top: 72px;
     min-height: 440px;
   }
 }
@@ -880,5 +885,12 @@ h2 {
   .stop-area {
     margin-top: 8px;
     padding-top: 8px;
+  }
+}
+@media (max-height: 600px) {
+  .active-route-panel,
+  .action-panel {
+    position: static;
+    min-height: 0;
   }
 }

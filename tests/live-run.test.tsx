@@ -233,7 +233,6 @@ it('keeps the last received reading visible while a new snapshot is being confir
     />
   );
   const view = render(renderRun(true));
-  expect(screen.getByText('Снимок подтверждён')).toBeTruthy();
   expect(screen.getAllByText(/≈ 1\s?000 Па/)[0]).toBeTruthy();
   expect(
     screen.getByRole('button', { name: 'Подтвердить действие' }).hasAttribute('disabled'),
@@ -244,7 +243,6 @@ it('keeps the last received reading visible while a new snapshot is being confir
       'По последнему полученному снимку',
     ),
   ).toBeTruthy();
-  expect(screen.getByText('Снимок не подтверждён')).toBeTruthy();
   expect(screen.getByText('Подтвердите')).toBeTruthy();
   expect(screen.getAllByText(/≈ 1\s?000 Па/)[0]).toBeTruthy();
   expect(screen.getByText('≈ 150 Па')).toBeTruthy();
