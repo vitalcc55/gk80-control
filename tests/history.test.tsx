@@ -362,6 +362,35 @@ it('preserves the query and rejects a search over the limit without truncating',
   );
 });
 
+it.each(['ς', '[a]'])(
+  'uses literal Unicode case folding in fixture history for %s',
+  async (query) => {
+    const entry = { ...fixtureSource.initial, id: 'history', valve: 'Σ клапан [A]' };
+    const active = { ...entry, id: 'active' };
+    const other = { ...entry, id: 'other', valve: 'Alpha' };
+    render(
+      <FixtureTests
+        empty={false}
+        showExample={false}
+        draftAvailable={false}
+        activeParameters={active}
+        history={[entry, other]}
+        example={fixtureSource.initial}
+        onNew={() => {}}
+        onHistory={() => {}}
+        onCurrent={() => {}}
+      />,
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByLabelText('Поиск по номеру или изделию'));
+    await user.paste(query);
+    await user.click(screen.getByRole('button', { name: 'Найти' }));
+    expect(screen.getByRole('button', { name: /Открыть Σ клапан \[A\]/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Вернуться:.*Σ клапан \[A\]/ })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Открыть Alpha/ })).toBeNull();
+  },
+);
+
 it('applies fixture history filters only after a valid search', async () => {
   render(
     <FixtureTests

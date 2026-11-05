@@ -35,6 +35,7 @@ export function FixtureTests({
   const [applied, setApplied] = useState<HistoryFilters>(emptyHistoryFilters);
   const [rangeError, setRangeError] = useState(false);
   const query = normalizeHistoryQuery(applied.query);
+  const matchQuery = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'iu');
   const entries = empty
     ? []
     : [
@@ -47,18 +48,14 @@ export function FixtureTests({
       ];
   const matches = entries.filter(
     (item) =>
-      [item.id, item.valve].some((value) =>
-        value.toLocaleLowerCase('ru').includes(query.toLocaleLowerCase('ru')),
-      ) &&
+      [item.id, item.valve].some((value) => matchQuery.test(value)) &&
       !applied.from &&
       !applied.through &&
       (!applied.outcome || applied.outcome === 'completed'),
   );
   const activeMatches =
     activeParameters &&
-    [activeParameters.id, activeParameters.valve].some((value) =>
-      value.toLocaleLowerCase('ru').includes(query.toLocaleLowerCase('ru')),
-    ) &&
+    [activeParameters.id, activeParameters.valve].some((value) => matchQuery.test(value)) &&
     !applied.from &&
     !applied.through &&
     (!applied.outcome || applied.outcome === 'pending');
