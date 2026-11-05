@@ -1,5 +1,13 @@
-import type { TestRecord } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
+import type {
+  Snapshot,
+  TestRecord,
+} from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
 import type { TestParameters } from '../model';
+
+/** A running record alone does not establish that the first sample was accepted. */
+export function measurementLabel(timing: Snapshot['measurementTiming'] | undefined): string {
+  return timing ? 'Демонстрационное измерение' : 'Ожидание данных измерения';
+}
 
 /** Fields that can change while a result and its final stored pages are being published. */
 export function resultReadVersion(record: TestRecord): string {

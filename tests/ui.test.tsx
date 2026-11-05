@@ -144,8 +144,15 @@ describe('подготовленные состояния оператора', (
     render(<App />);
     await user.click(screen.getByRole('button', { name: 'К испытаниям' }));
     expect(screen.getByText('Пример активного прохода')).toBeTruthy();
-    expect(screen.getByText('История пуста')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /^Открыть / })).toBeNull();
+    expect(
+      screen.getByRole('button', { name: /Вернуться: Активный пример.*Образец клапана/ }),
+    ).toBeTruthy();
+    expect(screen.queryByText('Завершён в примере')).toBeNull();
+    await user.selectOptions(screen.getByLabelText('Исход'), 'pending');
+    await user.click(
+      screen.getByRole('button', { name: /Вернуться: Активный пример.*Образец клапана/ }),
+    );
+    expect(screen.getByRole('heading', { name: 'Проведение испытания' })).toBeTruthy();
   });
 
   it('не добавляет подготовленный результат при начале испытания из пустой истории', async () => {
@@ -163,7 +170,10 @@ describe('подготовленные состояния оператора', (
     );
     await user.click(screen.getByRole('button', { name: 'Перейти к проведению' }));
     await user.click(screen.getByRole('button', { name: 'К испытаниям' }));
-    expect(screen.getByText('История пуста')).toBeTruthy();
+    expect(
+      screen.getByRole('button', { name: /Вернуться: Активный пример.*Клапан П/ }),
+    ).toBeTruthy();
+    expect(screen.queryByText('Завершён в примере')).toBeNull();
     expect(screen.queryByRole('button', { name: /^Открыть / })).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Вернуться к испытанию' }));
     for (const action of [

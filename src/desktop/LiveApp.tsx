@@ -35,7 +35,7 @@ import type { DemoService } from './demo-service';
 import { History } from './History';
 import { LiveRun } from './LiveRun';
 import { MeasurementSeriesContext } from './measurement-series';
-import { parametersForDisplay } from './presentation';
+import { measurementLabel, parametersForDisplay } from './presentation';
 import { RecordDetails } from './RecordDetails';
 import { observeReadiness } from './readiness-observation';
 import { SessionStatus } from './SessionStatus';
@@ -350,7 +350,7 @@ function ActiveLiveApp({
       onResult={record?.stage === 'finished' ? openCurrent : undefined}
       announcement={
         record
-          ? `По последнему снимку: ${stage === 'preparing' ? 'подготовка испытания' : stage === 'finished' ? 'результат испытания доступен' : stage === 'stopping' ? 'остановка выполняется; безопасное давление не подтверждено' : snapshot?.pendingAction ? snapshot.pendingAction.instruction : 'демонстрационное измерение'}`
+          ? `По последнему снимку: ${stage === 'preparing' ? 'подготовка испытания' : stage === 'finished' ? 'результат испытания доступен' : stage === 'stopping' ? 'остановка выполняется; безопасное давление не подтверждено' : snapshot?.pendingAction ? snapshot.pendingAction.instruction : measurementLabel(snapshot?.measurementTiming)}`
           : null
       }
       onParameters={() => {
@@ -551,6 +551,7 @@ function ActiveLiveApp({
               visible={historyVisible}
               resetVersion={historyReset}
               activeTestId={active ? activeId : undefined}
+              onCurrent={openCurrent}
               completedRecord={record?.stage === 'finished' ? record : null}
               onViewChange={(result) => {
                 requestFocus(result ? 'result' : 'tests');
@@ -698,7 +699,7 @@ function ActiveLiveApp({
                     ? 'Остановка выполняется; безопасное давление не подтверждено.'
                     : snapshot?.pendingAction
                       ? 'Ожидание подтверждения оператора'
-                      : 'Демонстрационное измерение'}
+                      : measurementLabel(snapshot?.measurementTiming)}
               </>
             }
             onReturn={openCurrent}

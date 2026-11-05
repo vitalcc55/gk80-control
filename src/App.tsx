@@ -383,6 +383,7 @@ export function App() {
         <div className="route-content">
           {screen === 'tests' && (
             <FixtureTests
+              onCurrent={openRun}
               onNew={draftAvailable ? openParameters : beginNew}
               draftAvailable={draftAvailable}
               onHistory={(selected) => {

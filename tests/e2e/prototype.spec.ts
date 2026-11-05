@@ -380,7 +380,7 @@ test('обычные слова в истории остаются читаем�
     .getByRole('button', { name: 'Испытания' })
     .click();
   await page.evaluate(() => document.fonts.ready);
-  const row = page.locator('.work-table tbody tr').first();
+  const row = page.locator('.work-table tbody tr').filter({ hasText: 'Проверка Windows' });
   await expect(row).toBeVisible();
   await expect(row.getByText('Проверка Windows')).toBeVisible();
   const brokenWords = await row.locator('td').evaluateAll((cells) => {

@@ -7,6 +7,7 @@ import type {
 } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
 import { formatElapsedSeconds, formatNumber, formatRemainingSeconds } from '../lib/format';
 import type { MeasurementSeriesContext } from './measurement-series';
+import { measurementLabel } from './presentation';
 import { useMeasurementSeries } from './use-measurement-series';
 
 function shown(item: Measurement | undefined): string {
@@ -58,7 +59,15 @@ export function LiveRun({
           id: String(index),
           label,
           state:
-            index === phase ? 'current' : stopping ? 'inactive' : index < phase ? 'done' : 'next',
+            index === phase
+              ? phase === 1 && !timing
+                ? 'next'
+                : 'current'
+              : stopping
+                ? 'inactive'
+                : index < phase
+                  ? 'done'
+                  : 'next',
         }),
       )}
       stageNote={<p>Этап по последнему полученному снимку</p>}
@@ -88,16 +97,16 @@ export function LiveRun({
           : 'Время от первого полученного отсчёта; пропуски не соединяются.'
       }
       actionTitle={
-        stopping ? 'Остановка' : awaiting ? 'Подтверждение оператора' : 'Демонстрационное измерение'
+        stopping ? 'Остановка' : awaiting ? 'Подтверждение оператора' : measurementLabel(timing)
       }
       actionLabel="Текущее действие по последнему полученному снимку"
       instruction={
         stopping
           ? 'По последнему снимку: остановка выполняется; безопасное давление не подтверждено.'
           : (snapshot.pendingAction?.instruction ??
-            (pressure
-              ? 'Идёт сбор показаний симулятора. Дождитесь завершения измерения.'
-              : 'Ожидаем первые показания ядра.'))
+            (timing
+              ? 'Ожидайте обновления состояния измерения ядра.'
+              : 'Ожидаем данные измерения ядра.'))
       }
       time={
         <div className="run-timing">

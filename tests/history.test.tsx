@@ -41,6 +41,54 @@ const record: TestRecord = {
 };
 const callbacks = { onNew: vi.fn(), onCopy: vi.fn(), onDiscard: vi.fn() };
 
+it('keeps a matching active record in search results and returns to the current pass', async () => {
+  const active = {
+    ...record,
+    stage: TestRecordStage.Running,
+    outcome: TestRecordOutcome.TestRecordOutcomePending,
+  };
+  const onCurrent = vi.fn();
+  const service = {
+    ...desktopDemoService,
+    listTests: vi.fn().mockResolvedValue({ items: [active], nextAfter: null }),
+    test: vi.fn(),
+  };
+  render(
+    <History
+      {...callbacks}
+      activeTestId={active.testId}
+      onCurrent={onCurrent}
+      service={service}
+      available
+      disabled
+      draftAvailable={false}
+    />,
+  );
+  const user = userEvent.setup();
+  await user.type(screen.getByLabelText('Поиск по номеру или изделию'), active.testId);
+  await user.click(screen.getByRole('button', { name: 'Найти' }));
+  expect(await screen.findByText('Ожидается', { selector: 'td' })).toBeTruthy();
+  expect(screen.getByText('Проход по последнему снимку')).toBeTruthy();
+  await user.click(
+    await screen.findByRole('button', {
+      name: /Вернуться: проход по последнему снимку.*Первая запись/,
+    }),
+  );
+  expect(onCurrent).toHaveBeenCalledOnce();
+  expect(service.test).not.toHaveBeenCalled();
+  expect(screen.queryByText('По заданным условиям записей нет')).toBeNull();
+  await user.selectOptions(screen.getByLabelText('Исход'), 'pending');
+  await user.click(screen.getByRole('button', { name: 'Найти' }));
+  await waitFor(() =>
+    expect(service.listTests).toHaveBeenLastCalledWith({
+      q: active.testId,
+      outcome: TestRecordOutcome.TestRecordOutcomePending,
+      after: null,
+      limit: 100,
+    }),
+  );
+});
+
 it('refreshes a late old saved record by its complete terminal version, not saveStatus alone', async () => {
   const old = {
     ...record,

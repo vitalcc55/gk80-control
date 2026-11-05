@@ -25,6 +25,8 @@ export interface HistoryRow {
   actuator: boolean;
   outcome: string;
   saving: string;
+  active?: boolean;
+  activeLabel?: string;
 }
 
 export function TestsScreen({
@@ -187,16 +189,25 @@ export function TestsScreen({
                       <td>{row.direction}</td>
                       <td>{formatNumber(row.pressure)} Па</td>
                       <td>{row.actuator ? 'Есть' : 'Нет'}</td>
-                      <td>{row.outcome}</td>
+                      <td>
+                        {row.outcome}
+                        {row.active && (
+                          <small>{row.activeLabel ?? 'Проход по последнему снимку'}</small>
+                        )}
+                      </td>
                       <td>{row.saving}</td>
                       <td>
                         <button
                           className="table-action"
                           type="button"
-                          aria-label={`Открыть ${row.valve} · ${row.id}`}
+                          aria-label={
+                            row.active
+                              ? `Вернуться: ${row.activeLabel ?? 'проход по последнему снимку'} ${row.valve} · ${row.id}`
+                              : `Открыть ${row.valve} · ${row.id}`
+                          }
                           onClick={() => onOpen(row.id)}
                         >
-                          Открыть
+                          {row.active ? 'Вернуться' : 'Открыть'}
                         </button>
                       </td>
                     </tr>

@@ -59,6 +59,7 @@ export function History({
   resetVersion = 0,
   activeTestId,
   completedRecord = null,
+  onCurrent,
 }: {
   onNew: () => void;
   onCopy: (parameters: TestRecord['parameters']) => void;
@@ -72,6 +73,7 @@ export function History({
   resetVersion?: number;
   activeTestId?: string | undefined;
   completedRecord?: TestRecord | null;
+  onCurrent?: () => void;
 }) {
   const [list, setList] = useState<TestList | null>(null);
   const [selected, setSelected] = useState<TestRecord | null>(null);
@@ -258,18 +260,17 @@ export function History({
   if (!visible) return null;
   return (
     <TestsScreen
-      rows={(list?.items ?? [])
-        .filter((item) => item.testId !== activeTestId)
-        .map((item) => ({
-          id: item.testId,
-          valve: item.parameters.valve,
-          createdAt: item.createdAt,
-          direction: 'Нагнетание',
-          pressure: item.parameters.pmaxPa,
-          actuator: false,
-          outcome: outcomeLabel(item.outcome),
-          saving: saveLabel(item.saveStatus),
-        }))}
+      rows={(list?.items ?? []).map((item) => ({
+        id: item.testId,
+        valve: item.parameters.valve,
+        createdAt: item.createdAt,
+        direction: 'Нагнетание',
+        pressure: item.parameters.pmaxPa,
+        actuator: false,
+        outcome: outcomeLabel(item.outcome),
+        saving: saveLabel(item.saveStatus),
+        active: item.testId === activeTestId,
+      }))}
       filters={filters}
       filtered={!!(applied.current && Object.keys(applied.current).length)}
       onFilters={setFilters}
@@ -278,7 +279,10 @@ export function History({
         setFilters(emptyHistoryFilters);
         search(emptyHistoryFilters);
       }}
-      onOpen={(id) => void open(id)}
+      onOpen={(id) => {
+        if (id === activeTestId && onCurrent) onCurrent();
+        else void open(id);
+      }}
       onNew={onNew}
       disabled={disabled}
       draftAvailable={draftAvailable}

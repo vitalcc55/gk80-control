@@ -84,6 +84,28 @@ const snapshot: Snapshot = {
   measurements: [first],
 };
 
+it('does not claim measurement progress before the first accepted observation', () => {
+  const draw = (value: Snapshot) => (
+    <LiveRun record={record} snapshot={value} fresh pending={false} onConfirm={() => {}} />
+  );
+  const view = render(draw({ ...snapshot, measurements: [], measurementTiming: null }));
+  expect(screen.getByRole('heading', { name: 'Ожидание данных измерения' })).toBeTruthy();
+  expect(screen.getByText('Ожидаем данные измерения ядра.')).toBeTruthy();
+  expect(
+    screen.getByText('Демонстрационное измерение').closest('li')?.getAttribute('aria-current'),
+  ).toBeNull();
+  view.rerender(
+    draw({ ...snapshot, measurementTiming: { elapsedSeconds: 0, remainingSeconds: 60 } }),
+  );
+  expect(screen.getByRole('heading', { name: 'Демонстрационное измерение' })).toBeTruthy();
+  expect(
+    screen
+      .getByText('Демонстрационное измерение', { selector: 'strong' })
+      .closest('li')
+      ?.getAttribute('aria-current'),
+  ).toBe('step');
+});
+
 it('shows channel staleness without opening details and identifies the time observation', () => {
   render(
     <LiveRun
