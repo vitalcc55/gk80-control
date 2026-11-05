@@ -4,6 +4,8 @@ import { expect, it, vi } from 'vitest';
 
 vi.mock('../src/components/MeasurementChart', () => ({ MeasurementChart: () => null }));
 
+import type { ReactNode } from 'react';
+import { AppShell } from '../src/components/AppShell';
 import type { SessionBridge } from '../src/desktop/bridge';
 import { History } from '../src/desktop/History';
 import { LiveApp } from '../src/desktop/LiveApp';
@@ -42,6 +44,196 @@ const record: TestRecord = {
   },
 };
 const callbacks = { onNew: vi.fn(), onCopy: vi.fn(), onDiscard: vi.fn() };
+
+function FocusShell({ children }: { children: ReactNode }) {
+  return (
+    <AppShell
+      screen="tests"
+      active={false}
+      draftAvailable={false}
+      onTests={() => {}}
+      onRun={() => {}}
+      onParameters={() => {}}
+    >
+      {children}
+    </AppShell>
+  );
+}
+
+function Retained({ hidden }: { hidden: boolean }) {
+  return (
+    <FocusShell>
+      <div hidden={hidden}>
+        <button type="button">Действие</button>
+      </div>
+    </FocusShell>
+  );
+}
+
+it('recovers focus when a history page button is removed while loading', async () => {
+  const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+  try {
+    const service = {
+      ...desktopDemoService,
+      listTests: vi
+        .fn()
+        .mockResolvedValueOnce({ items: [record], nextAfter: record.testId })
+        .mockReturnValue(new Promise(() => {})),
+    };
+    render(
+      <FocusShell>
+        <History
+          {...callbacks}
+          service={service}
+          available
+          disabled={false}
+          draftAvailable={false}
+        />
+      </FocusShell>,
+    );
+    await userEvent
+      .setup()
+      .click(await screen.findByRole('button', { name: 'Следующая страница' }));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('main')));
+  } finally {
+    hasFocus.mockRestore();
+  }
+});
+
+it('recovers focus when current-test navigation disappears', async () => {
+  const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+  try {
+    const draw = (active: boolean) => (
+      <AppShell
+        screen="tests"
+        active={active}
+        draftAvailable={false}
+        onTests={() => {}}
+        onRun={() => {}}
+        onParameters={() => {}}
+      >
+        {null}
+      </AppShell>
+    );
+    const view = render(draw(true));
+    screen.getByRole('button', { name: 'Текущее испытание' }).focus();
+    view.rerender(draw(false));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('main')));
+  } finally {
+    hasFocus.mockRestore();
+  }
+});
+
+it('recovers focus when one fixture history row disappears but another remains', async () => {
+  const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+  try {
+    const first = { ...fixtureSource.initial, id: 'FIRST', valve: 'Первый' };
+    const second = { ...fixtureSource.initial, id: 'SECOND', valve: 'Второй' };
+    const draw = (history: (typeof first)[]) => (
+      <FocusShell>
+        <FixtureTests
+          empty={false}
+          showExample={false}
+          draftAvailable={false}
+          activeParameters={null}
+          history={history}
+          example={fixtureSource.initial}
+          onNew={() => {}}
+          onHistory={() => {}}
+          onCurrent={() => {}}
+        />
+      </FocusShell>
+    );
+    const view = render(draw([first, second]));
+    screen.getByRole('button', { name: /Открыть Первый/ }).focus();
+    view.rerender(draw([second]));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('main')));
+  } finally {
+    hasFocus.mockRestore();
+  }
+});
+
+it('recovers focus when a retained view is hidden', async () => {
+  const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+  try {
+    const view = render(<Retained hidden={false} />);
+    screen.getByRole('button', { name: 'Действие' }).focus();
+    view.rerender(<Retained hidden />);
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('main')));
+  } finally {
+    hasFocus.mockRestore();
+  }
+});
+
+it.each(['list', 'result'] as const)(
+  'recovers focus when the real history %s is hidden',
+  async (viewName) => {
+    const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+    try {
+      const service = {
+        ...desktopDemoService,
+        listTests: vi.fn().mockResolvedValue({ items: [record], nextAfter: null }),
+        test: vi.fn().mockResolvedValue(record),
+      };
+      const draw = (visible: boolean) => (
+        <FocusShell>
+          <History
+            {...callbacks}
+            service={service}
+            available
+            disabled={false}
+            draftAvailable={false}
+            visible={visible}
+          />
+        </FocusShell>
+      );
+      const view = render(draw(true));
+      if (viewName === 'result') {
+        await userEvent
+          .setup()
+          .click(await screen.findByRole('button', { name: /Открыть Первая/ }));
+        (await screen.findByRole('button', { name: 'Новое по этим параметрам' })).focus();
+      } else {
+        screen.getByLabelText('Поиск по номеру или изделию').focus();
+      }
+      view.rerender(draw(false));
+      await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('main')));
+    } finally {
+      hasFocus.mockRestore();
+    }
+  },
+);
+
+it('keeps keyboard focus in history when a refreshed page removes the focused row', async () => {
+  const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+  try {
+    const service = {
+      ...desktopDemoService,
+      listTests: vi
+        .fn()
+        .mockResolvedValueOnce({ items: [record], nextAfter: null })
+        .mockReturnValue(new Promise(() => {})),
+    };
+    const draw = (activeTestId?: string) => (
+      <FocusShell>
+        <History
+          {...callbacks}
+          service={service}
+          available
+          disabled={false}
+          draftAvailable={false}
+          activeTestId={activeTestId}
+        />
+      </FocusShell>
+    );
+    const view = render(draw());
+    (await screen.findByRole('button', { name: /Открыть Первая/ })).focus();
+    view.rerender(draw('77777777-7777-4777-8777-777777777777'));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('main')));
+  } finally {
+    hasFocus.mockRestore();
+  }
+});
 
 it('searches the complete valid Unicode product name', async () => {
   const service = {

@@ -1,6 +1,7 @@
 import { Activity, FileText, ListChecks } from 'lucide-react';
 import { type ReactNode, type Ref, useEffect } from 'react';
 import type { Screen } from '../model';
+import { useFocusRecovery } from './use-focus-recovery';
 
 export const screenTitles: Record<Screen, string> = {
   tests: 'Испытания',
@@ -41,6 +42,7 @@ export function AppShell({
   announcement?: ReactNode;
   historyResult?: boolean;
 }) {
+  const workspaceRef = useFocusRecovery();
   useEffect(() => {
     document.title = `${screenTitles[screen]} — ГК80`;
   }, [screen]);
@@ -57,7 +59,7 @@ export function AppShell({
       <span className="sr-only" role="status" aria-atomic="true">
         {announcement}
       </span>
-      <div className="workspace">
+      <div className="workspace" ref={workspaceRef}>
         <nav className="sidebar" aria-label="Навигация">
           <div className="brand">
             <div className="brand-symbol">

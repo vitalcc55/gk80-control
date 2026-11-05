@@ -1,7 +1,10 @@
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { type ComponentProps, useState } from 'react';
+import type { ReactNode } from 'react';
+import { type ComponentProps, StrictMode, useState } from 'react';
 import { expect, it, vi } from 'vitest';
+import { AppShell } from '../src/components/AppShell';
+import { StopButton } from '../src/components/StopButton';
 import { LiveRun as LiveRunView } from '../src/desktop/LiveRun';
 import { MeasurementSeriesContext } from '../src/desktop/measurement-series';
 import { useMeasurementObservation } from '../src/desktop/use-measurement-series';
@@ -83,6 +86,152 @@ const snapshot: Snapshot = {
   measurementTiming: null,
   measurements: [first],
 };
+
+function FocusShell({ children }: { children: ReactNode }) {
+  return (
+    <AppShell
+      screen="tests"
+      active={false}
+      draftAvailable={false}
+      onTests={() => {}}
+      onRun={() => {}}
+      onParameters={() => {}}
+    >
+      {children}
+    </AppShell>
+  );
+}
+
+it('keeps keyboard focus in the current screen when its action disappears', async () => {
+  const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+  try {
+    const waiting = {
+      ...snapshot,
+      pendingAction: { testId: record.testId, actionId: 'action', instruction: 'Подтвердите' },
+    };
+    const draw = (value: Snapshot) => (
+      <FocusShell>
+        <LiveRun record={record} snapshot={value} fresh pending={false} onConfirm={() => {}} />
+      </FocusShell>
+    );
+    const view = render(draw(waiting));
+    screen.getByRole('button', { name: 'Подтвердить действие' }).focus();
+    view.rerender(draw(snapshot));
+    await vi.waitFor(() => expect(document.activeElement).toBe(screen.getByRole('main')));
+  } finally {
+    hasFocus.mockRestore();
+  }
+});
+
+it('returns focus after a focused stop is removed and leaves a different control alone', async () => {
+  const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+  try {
+    const draw = (showRun: boolean) => (
+      <FocusShell>
+        <button type="button">Другой элемент</button>
+        {showRun && (
+          <LiveRun
+            record={record}
+            snapshot={snapshot}
+            fresh
+            pending={false}
+            onConfirm={() => {}}
+            stop={<StopButton disabled={false} onStop={() => {}} />}
+          />
+        )}
+      </FocusShell>
+    );
+    const view = render(draw(true));
+    screen.getByRole('button', { name: 'Остановить испытание' }).focus();
+    view.rerender(draw(false));
+    await vi.waitFor(() => expect(document.activeElement).toBe(screen.getByRole('main')));
+    view.rerender(draw(true));
+    screen.getByRole('button', { name: 'Остановить испытание' }).focus();
+    view.rerender(draw(false));
+    screen.getByRole('button', { name: 'Другой элемент' }).focus();
+    await Promise.resolve();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Другой элемент' }));
+  } finally {
+    hasFocus.mockRestore();
+  }
+});
+
+it('recovers focus if the focused stop becomes disabled', async () => {
+  const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+  try {
+    const draw = (disabled: boolean) => (
+      <FocusShell>
+        <StopButton disabled={disabled} onStop={() => {}} />
+      </FocusShell>
+    );
+    const view = render(draw(false));
+    screen.getByRole('button', { name: 'Остановить испытание' }).focus();
+    view.rerender(draw(true));
+    await vi.waitFor(() => expect(document.activeElement).toBe(screen.getByRole('main')));
+  } finally {
+    hasFocus.mockRestore();
+  }
+});
+
+it('tracks a repeated pointer press on the focused control in StrictMode', async () => {
+  const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+  try {
+    const draw = (show: boolean) => (
+      <StrictMode>
+        <FocusShell>
+          {show && (
+            <button type="button">
+              <span>Действие</span>
+            </button>
+          )}
+        </FocusShell>
+      </StrictMode>
+    );
+    const view = render(draw(true));
+    screen.getByRole('button', { name: 'Действие' }).focus();
+    fireEvent.pointerDown(screen.getByText('Действие'));
+    view.rerender(draw(false));
+    await vi.waitFor(() => expect(document.activeElement).toBe(screen.getByRole('main')));
+  } finally {
+    hasFocus.mockRestore();
+  }
+});
+
+it('does not restore focus after a pointer press elsewhere', async () => {
+  const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+  try {
+    const draw = (show: boolean) => (
+      <FocusShell>
+        <div>Свободная область</div>
+        {show && <StopButton disabled={false} onStop={() => {}} />}
+      </FocusShell>
+    );
+    const view = render(draw(true));
+    screen.getByRole('button', { name: 'Остановить испытание' }).focus();
+    fireEvent.pointerDown(screen.getByText('Свободная область'));
+    view.rerender(draw(false));
+    await Promise.resolve();
+    expect(document.activeElement).toBe(document.body);
+  } finally {
+    hasFocus.mockRestore();
+  }
+});
+
+it('does not restore focus into a document that is not focused', async () => {
+  const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+  try {
+    const draw = (show: boolean) => (
+      <FocusShell>{show && <StopButton disabled={false} onStop={() => {}} />}</FocusShell>
+    );
+    const view = render(draw(true));
+    screen.getByRole('button', { name: 'Остановить испытание' }).focus();
+    view.rerender(draw(false));
+    await Promise.resolve();
+    expect(document.activeElement).toBe(document.body);
+  } finally {
+    hasFocus.mockRestore();
+  }
+});
 
 it('does not claim that a stopping stage means the stop operation is still running', () => {
   const stopping = { ...record, stage: TestRecordStage.Stopping };
