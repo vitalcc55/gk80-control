@@ -92,14 +92,16 @@ export function History({
   const needsRead = useRef(true);
   const selectedRefresh = useRef('');
   const completedKey = completedRecord ? resultReadVersion(completedRecord) : '';
-  const readTriggers = useRef({ visible: false, resetVersion, completedKey: '' });
+  const readTriggers = useRef({ visible: false, resetVersion, completedKey: '', activeTestId });
   const completedId = completedRecord?.testId;
   const selectedId = selected?.testId;
   const selectedKey = selected ? resultReadVersion(selected) : '';
   const currentService = useRef(service);
+  const currentActive = useRef({ id: activeTestId, onCurrent });
   useLayoutEffect(() => {
     currentService.current = service;
-  }, [service]);
+    currentActive.current = { id: activeTestId, onCurrent };
+  }, [service, activeTestId, onCurrent]);
   const cancelSelected = useCallback((clear: boolean) => {
     selectedGeneration.current++;
     selectedRefresh.current = '';
@@ -107,6 +109,18 @@ export function History({
     setRecordFailure(null);
     if (clear) setSelected(null);
   }, []);
+  useLayoutEffect(() => {
+    if (
+      visible &&
+      readTriggers.current.resetVersion === resetVersion &&
+      selectedId &&
+      selectedId === activeTestId &&
+      currentActive.current.onCurrent
+    ) {
+      cancelSelected(true);
+      currentActive.current.onCurrent();
+    }
+  }, [visible, selectedId, activeTestId, resetVersion, cancelSelected]);
   useEffect(
     () => () => {
       listGeneration.current++;
@@ -137,17 +151,27 @@ export function History({
       if (generation === listGeneration.current) setLoading(false);
     }
   }, []);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const previous = readTriggers.current;
     const reset = previous.resetVersion !== resetVersion;
-    if ((visible && !previous.visible) || reset || previous.completedKey !== completedKey)
+    if (previous.activeTestId !== activeTestId) {
+      listGeneration.current++;
+      setList(null);
+      setLoading(false);
+    }
+    if (
+      (visible && !previous.visible) ||
+      reset ||
+      previous.completedKey !== completedKey ||
+      previous.activeTestId !== activeTestId
+    )
       needsRead.current = true;
-    readTriggers.current = { visible, resetVersion, completedKey };
+    readTriggers.current = { visible, resetVersion, completedKey, activeTestId };
     if ((!visible && previous.visible) || reset) {
       cancelSelected(reset);
     }
     if (visible && available && needsRead.current) void load(cursor.current);
-  }, [visible, available, resetVersion, completedKey, load, cancelSelected]);
+  }, [visible, available, resetVersion, completedKey, activeTestId, load, cancelSelected]);
   useEffect(() => {
     if (
       !visible ||
@@ -182,12 +206,19 @@ export function History({
     try {
       const record = await currentService.current.test(testId);
       if (generation === selectedGeneration.current) {
-        setSelected(record);
-        onViewChange?.(true);
+        if (currentActive.current.id === testId && currentActive.current.onCurrent) {
+          currentActive.current.onCurrent();
+        } else {
+          setSelected(record);
+          onViewChange?.(true);
+        }
       }
     } catch {
-      if (generation === selectedGeneration.current)
-        setRecordFailure({ testId, text: 'Не удалось открыть запись из ядра.' });
+      if (generation === selectedGeneration.current) {
+        if (currentActive.current.id === testId && currentActive.current.onCurrent)
+          currentActive.current.onCurrent();
+        else setRecordFailure({ testId, text: 'Не удалось открыть запись из ядра.' });
+      }
     } finally {
       if (generation === selectedGeneration.current) setOpening(false);
     }

@@ -41,6 +41,254 @@ const record: TestRecord = {
 };
 const callbacks = { onNew: vi.fn(), onCopy: vi.fn(), onDiscard: vi.fn() };
 
+it('does not publish a page requested before the active identity changed while offline', async () => {
+  let finish: (value: TestList) => void = () => {};
+  const old = new Promise<TestList>((resolve) => {
+    finish = resolve;
+  });
+  const service = {
+    ...desktopDemoService,
+    listTests: vi
+      .fn()
+      .mockReturnValueOnce(old)
+      .mockResolvedValue({ items: [record], nextAfter: null }),
+  };
+  const view = render(
+    <History {...callbacks} service={service} available disabled={false} draftAvailable={false} />,
+  );
+  await waitFor(() => expect(service.listTests).toHaveBeenCalledOnce());
+  view.rerender(
+    <History
+      {...callbacks}
+      service={service}
+      available={false}
+      disabled
+      draftAvailable={false}
+      activeTestId={record.testId}
+    />,
+  );
+  await act(async () => {
+    finish({ items: [], nextAfter: null });
+    await old;
+  });
+  expect(screen.queryByText('История пуста')).toBeNull();
+  view.rerender(
+    <History
+      {...callbacks}
+      service={service}
+      available
+      disabled
+      draftAvailable={false}
+      activeTestId={record.testId}
+      onCurrent={() => {}}
+    />,
+  );
+  expect(
+    await screen.findByRole('button', {
+      name: /Вернуться: проход по последнему снимку.*Первая запись/,
+    }),
+  ).toBeTruthy();
+});
+
+it('opens the current pass when the requested record becomes active before its reply', async () => {
+  let finish: (value: TestRecord) => void = () => {};
+  const delayed = new Promise<TestRecord>((resolve) => {
+    finish = resolve;
+  });
+  const service = {
+    ...desktopDemoService,
+    listTests: vi.fn().mockResolvedValue({ items: [record], nextAfter: null }),
+    test: vi.fn().mockReturnValue(delayed),
+  };
+  const onCurrent = vi.fn();
+  const view = render(
+    <History
+      {...callbacks}
+      service={service}
+      available
+      disabled={false}
+      draftAvailable={false}
+      onCurrent={onCurrent}
+    />,
+  );
+  await userEvent.setup().click(await screen.findByRole('button', { name: /Открыть Первая/ }));
+  view.rerender(
+    <History
+      {...callbacks}
+      service={service}
+      available
+      disabled
+      draftAvailable={false}
+      activeTestId={record.testId}
+      onCurrent={onCurrent}
+    />,
+  );
+  await act(async () => {
+    finish(record);
+    await delayed;
+  });
+  expect(onCurrent).toHaveBeenCalledOnce();
+  expect(screen.queryByRole('heading', { name: 'Результат испытания' })).toBeNull();
+});
+
+it('returns to the active pass when the record read fails after the active identity appears', async () => {
+  let reject: (reason: Error) => void = () => {};
+  const delayed = new Promise<TestRecord>((_, fail) => {
+    reject = fail;
+  });
+  const service = {
+    ...desktopDemoService,
+    listTests: vi.fn().mockResolvedValue({ items: [record], nextAfter: null }),
+    test: vi.fn().mockReturnValue(delayed),
+  };
+  const onCurrent = vi.fn();
+  const view = render(
+    <History
+      {...callbacks}
+      service={service}
+      available
+      disabled={false}
+      draftAvailable={false}
+      onCurrent={onCurrent}
+    />,
+  );
+  await userEvent.setup().click(await screen.findByRole('button', { name: /Открыть Первая/ }));
+  view.rerender(
+    <History
+      {...callbacks}
+      service={service}
+      available={false}
+      disabled
+      draftAvailable={false}
+      activeTestId={record.testId}
+      onCurrent={onCurrent}
+    />,
+  );
+  await act(async () => {
+    reject(new Error('offline'));
+    await delayed.catch(() => {});
+  });
+  expect(onCurrent).toHaveBeenCalledOnce();
+  expect(screen.queryByText('Не удалось открыть запись из ядра.')).toBeNull();
+});
+
+it('returns to the active pass if the identity arrives after the record was opened', async () => {
+  const service = {
+    ...desktopDemoService,
+    listTests: vi.fn().mockResolvedValue({ items: [record], nextAfter: null }),
+    test: vi.fn().mockResolvedValue(record),
+  };
+  const onCurrent = vi.fn();
+  const view = render(
+    <History
+      {...callbacks}
+      service={service}
+      available
+      disabled={false}
+      draftAvailable={false}
+      onCurrent={onCurrent}
+    />,
+  );
+  await userEvent.setup().click(await screen.findByRole('button', { name: /Открыть Первая/ }));
+  await screen.findByRole('heading', { name: 'Результат испытания' });
+  view.rerender(
+    <History
+      {...callbacks}
+      service={service}
+      available
+      disabled
+      draftAvailable={false}
+      activeTestId={record.testId}
+      onCurrent={onCurrent}
+    />,
+  );
+  expect(onCurrent).toHaveBeenCalledOnce();
+  expect(screen.queryByRole('heading', { name: 'Результат испытания' })).toBeNull();
+});
+
+it('honours an explicit return to the list when a hidden selected record became active', async () => {
+  const service = {
+    ...desktopDemoService,
+    listTests: vi.fn().mockResolvedValue({ items: [record], nextAfter: null }),
+    test: vi.fn().mockResolvedValue(record),
+  };
+  const onCurrent = vi.fn();
+  const view = render(
+    <History
+      {...callbacks}
+      service={service}
+      available
+      disabled={false}
+      draftAvailable={false}
+      onCurrent={onCurrent}
+    />,
+  );
+  await userEvent.setup().click(await screen.findByRole('button', { name: /Открыть Первая/ }));
+  await screen.findByRole('heading', { name: 'Результат испытания' });
+  view.rerender(
+    <History
+      {...callbacks}
+      service={service}
+      available
+      disabled
+      draftAvailable={false}
+      visible={false}
+      activeTestId={record.testId}
+      onCurrent={onCurrent}
+    />,
+  );
+  view.rerender(
+    <History
+      {...callbacks}
+      service={service}
+      available
+      disabled
+      draftAvailable={false}
+      activeTestId={record.testId}
+      resetVersion={1}
+      onCurrent={onCurrent}
+    />,
+  );
+  expect(onCurrent).not.toHaveBeenCalled();
+  expect(screen.queryByRole('heading', { name: 'Результат испытания' })).toBeNull();
+});
+
+it('refreshes the visible history when a newly created active record appears', async () => {
+  const active = {
+    ...record,
+    stage: TestRecordStage.Preparing,
+    outcome: TestRecordOutcome.TestRecordOutcomePending,
+  };
+  const service = {
+    ...desktopDemoService,
+    listTests: vi
+      .fn()
+      .mockResolvedValueOnce({ items: [], nextAfter: null })
+      .mockResolvedValue({ items: [active], nextAfter: null }),
+  };
+  const view = render(
+    <History {...callbacks} service={service} available disabled={false} draftAvailable={false} />,
+  );
+  await screen.findByText('История пуста');
+  view.rerender(
+    <History
+      {...callbacks}
+      service={service}
+      available
+      disabled
+      draftAvailable={false}
+      activeTestId={active.testId}
+      onCurrent={() => {}}
+    />,
+  );
+  expect(
+    await screen.findByRole('button', {
+      name: /Вернуться: проход по последнему снимку.*Первая запись/,
+    }),
+  ).toBeTruthy();
+  expect(screen.queryByText('История пуста')).toBeNull();
+});
+
 it('keeps a matching active record in search results and returns to the current pass', async () => {
   const active = {
     ...record,
