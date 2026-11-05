@@ -1,4 +1,3 @@
-import { useEffect, useRef, useState } from 'react';
 import { MeasurementChart } from '../components/MeasurementChart';
 import { PressureNotation } from '../components/PressureNotation';
 import { formatNumber } from '../fixtureAdapter';
@@ -7,7 +6,7 @@ import type {
   Snapshot,
   TestRecord,
 } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
-import type { GraphPoint } from '../model';
+import type { MeasurementSeries } from './measurement-series';
 
 function shown(item: Measurement | undefined): string {
   return (item?.quality === 'valid' || item?.quality === 'stale') && item.value !== null
@@ -32,76 +31,21 @@ export function LiveRun({
   record,
   snapshot,
   fresh,
-  gapVersion = 0,
+  series,
   pending,
   onConfirm,
 }: {
   record: TestRecord;
   snapshot: Snapshot;
   fresh: boolean;
-  gapVersion?: number;
+  series: MeasurementSeries;
   pending: boolean;
   onConfirm: () => void;
 }) {
-  const [points, setPoints] = useState<GraphPoint[]>([]);
-  const [clockChanged, setClockChanged] = useState(false);
-  const origin = useRef<number | null>(null);
-  const last = useRef<{ sequence: number; seconds: number } | null>(null);
-  const gap = useRef(false);
-  const observedGapVersion = useRef(gapVersion);
+  const { points, clockChanged } = series;
   const pressure = snapshot.measurements?.find((item) => item.channel === 'dd1');
   const differential = snapshot.measurements?.find((item) => item.channel === 'dd2');
   const reserve = snapshot.measurements?.find((item) => item.channel === 'dd3');
-
-  useEffect(() => {
-    if (observedGapVersion.current !== gapVersion) {
-      observedGapVersion.current = gapVersion;
-      gap.current = true;
-    }
-    if (!fresh) return;
-    if (
-      pressure?.quality !== 'valid' ||
-      pressure.value === null ||
-      !pressure.measuredAt ||
-      !Number.isSafeInteger(pressure.sequence)
-    ) {
-      gap.current = true;
-      return;
-    }
-    if (last.current && pressure.sequence <= last.current.sequence) return;
-    const timestamp = Date.parse(pressure.measuredAt);
-    if (!Number.isFinite(timestamp)) return;
-    if (origin.current === null) origin.current = timestamp;
-    let seconds = (timestamp - origin.current) / 1000;
-    if (last.current && seconds <= last.current.seconds) {
-      origin.current = timestamp;
-      seconds = 0;
-      last.current = null;
-      gap.current = false;
-      setClockChanged(true);
-      setPoints([]);
-    }
-    const matchingDifferential =
-      differential?.quality === 'valid' && differential.measuredAt === pressure.measuredAt
-        ? differential.value
-        : null;
-    const previous = last.current;
-    const value = pressure.value;
-    const includeGap = gap.current;
-    gap.current = false;
-    last.current = { sequence: pressure.sequence, seconds };
-    setPoints((current) => {
-      const result = [...current];
-      if (includeGap && previous)
-        result.push({
-          seconds: (previous.seconds + seconds) / 2,
-          pressure: null,
-          differential: null,
-        });
-      result.push({ seconds, pressure: value, differential: matchingDifferential });
-      return result.slice(-300);
-    });
-  }, [pressure, differential, fresh, gapVersion]);
 
   return (
     <>

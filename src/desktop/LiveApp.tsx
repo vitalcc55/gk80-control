@@ -30,9 +30,11 @@ import {
 import type { DemoService } from './demo-service';
 import { History } from './History';
 import { LiveRun } from './LiveRun';
+import { MeasurementSeriesContext } from './measurement-series';
 import { observeReadiness } from './readiness-observation';
 import { SessionStatus } from './SessionStatus';
 import { type SessionObservation, sessionObservation } from './session-observation';
+import { useMeasurementSeries } from './use-measurement-series';
 import { useSessionObservation } from './use-session-observation';
 
 const empty: FormParameters = {
@@ -73,6 +75,7 @@ function commandStatusLabel(status: CommandStatus['status'] | undefined): string
 }
 
 type LiveAppProps = {
+  measurementContext?: MeasurementSeriesContext;
   session: SessionBridge;
   service: DemoService;
   hostRunId: string;
@@ -107,6 +110,7 @@ function bindObservationDatabase(props: LiveAppProps) {
 }
 
 export function LiveApp(props: LiveAppProps) {
+  const [localMeasurementContext] = useState(() => new MeasurementSeriesContext());
   const [binding, setBinding] = useState(() => bindObservationDatabase(props));
   let currentBinding = binding;
   if (
@@ -151,6 +155,7 @@ export function LiveApp(props: LiveAppProps) {
     <ActiveLiveApp
       key={`${props.hostRunId}:${props.backendRunId}:${props.databaseId}`}
       {...props}
+      measurementContext={props.measurementContext ?? localMeasurementContext}
       coordinator={coordinator}
       minimumObservation={currentBinding.minimum}
       draft={draft}
@@ -167,6 +172,8 @@ export function LiveApp(props: LiveAppProps) {
 
 function ActiveLiveApp({
   session,
+  measurementContext,
+  databaseId,
   service,
   hostRunId,
   backendRunId,
@@ -182,6 +189,7 @@ function ActiveLiveApp({
   showHistory,
   setShowHistory,
 }: LiveAppProps & {
+  measurementContext: MeasurementSeriesContext;
   minimumObservation: number;
   coordinator: CommandCoordinator;
   draft: ReturnType<typeof newDraft>;
@@ -239,6 +247,13 @@ function ActiveLiveApp({
   } = state;
   const { stop, lookup, forget, showMessage } = coordinator;
   const { snapshot, record, fresh } = commandObservation({ connection, lastSnapshot });
+  const series = useMeasurementSeries(
+    measurementContext,
+    record ? `${hostRunId}:${backendRunId}:${databaseId}:${record.testId}` : '',
+    snapshot,
+    fresh,
+    gapVersion,
+  );
   const activeId = record?.testId;
   const stage = record?.stage;
   const revision = snapshot?.revision;
@@ -580,7 +595,7 @@ function ActiveLiveApp({
               record={record}
               snapshot={snapshot}
               fresh={fresh}
-              gapVersion={gapVersion}
+              series={series}
               pending={blocking}
               onConfirm={() => {
                 void coordinator.confirmAction();

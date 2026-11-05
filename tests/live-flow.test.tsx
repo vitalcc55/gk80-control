@@ -8,6 +8,7 @@ import { DesktopApp as RealDesktopApp } from '../src/desktop/DesktopApp';
 import { CommandConflictError } from '../src/desktop/demo-service';
 import { History } from '../src/desktop/History';
 import { LiveApp as RealLiveApp } from '../src/desktop/LiveApp';
+import { sessionObservation } from '../src/desktop/session-observation';
 import { desktopDemoService } from '../src/desktop/wails-bridge';
 import {
   type CommandDispatch,
@@ -34,6 +35,7 @@ import {
   TestRecordStage,
 } from '../src/generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
 import type { CreateCommandInput } from '../src/generated/wails/github.com/vitalcc55/gk80-control/internal/desktop/models';
+import type { GraphPoint } from '../src/model';
 
 const api = vi.hoisted(() => ({
   create: vi.fn(),
@@ -67,7 +69,9 @@ function LiveApp(
   );
 }
 vi.mock('../src/components/MeasurementChart', () => ({
-  MeasurementChart: () => <div role="img" aria-label="График показаний симулятора" />,
+  MeasurementChart: ({ points }: { points: readonly GraphPoint[] }) => (
+    <div role="img" aria-label="График показаний симулятора" data-points={JSON.stringify(points)} />
+  ),
 }));
 vi.mock(
   '../src/generated/wails/github.com/vitalcc55/gk80-control/internal/desktop/service',
@@ -159,6 +163,115 @@ const record = {
     actuator: false,
   },
 };
+
+it.each(['history', 'bridge'] as const)(
+  'retains chart points and time origin through %s without sending commands',
+  async (route) => {
+    const sample = (index: number): Snapshot => ({
+      apiVersion: 'v1',
+      backendRunId: backend,
+      revision: index,
+      lastEventSequence: index,
+      activeTest: { ...record, stage: TestRecordStage.Running },
+      pendingAction: null,
+      measurements: [
+        {
+          channel: MeasurementChannel.Dd1,
+          measuredAt: `2026-10-30T00:00:0${index}Z`,
+          observedAt: `2026-10-30T00:00:0${index}Z`,
+          quality: MeasurementQuality.MeasurementQualityValid,
+          quantity: MeasurementQuantity.MeasurementQuantityPressure,
+          sequence: index,
+          source: MeasurementSource.MeasurementSourceSimulator,
+          unit: MeasurementUnit.Pa,
+          value: 999 + index,
+        },
+      ],
+    });
+    let snapshot = sample(1);
+    let revision = 0;
+    const session: SessionBridge = {
+      beginSessionCheck: async () => 'ticket',
+      keepAlive: async () => {},
+      sessionView: async () => ({
+        connection: {
+          hostRunId: host,
+          revision: ++revision,
+          status: ConnectionStateStatus.Live,
+          linkValid: true,
+          leaseAcquireUnknown: false,
+          streamGeneration: 0,
+        },
+        snapshot,
+        validForMs: 6000,
+        linkValidForMs: 6000,
+      }),
+    };
+    api.list.mockResolvedValue({ items: [], nextAfter: null });
+    const desktop: DesktopBridge = {
+      status: async () => ({
+        hostRunId: host,
+        revision: 1,
+        connectionRevision: 1,
+        status: DesktopStatusStatus.DesktopStatusStatusReady,
+        diagnosticsDegraded: false,
+        handshake: { apiVersion: 'v1', backendRunId: backend, databaseId: database, demo: true },
+      }),
+      verify: async () => desktop.status(),
+      subscribe: () => () => {},
+    };
+    const view = render(<DesktopApp bridge={desktop} session={session} />);
+    const points = () =>
+      screen.getByRole('img', { name: 'График показаний симулятора' }).getAttribute('data-points');
+    await waitFor(() => expect(points()).toContain('1000'));
+    snapshot = sample(2);
+    await waitFor(() => expect(points()).toContain('1001'), { timeout: 8000 });
+    const user = userEvent.setup();
+    if (route === 'history') await user.click(screen.getByRole('button', { name: 'Испытания' }));
+    else {
+      view.rerender(
+        <DesktopApp
+          bridge={{
+            ...desktop,
+            status: async () => {
+              throw new Error('unavailable');
+            },
+          }}
+          session={session}
+        />,
+      );
+      await screen.findByRole('button', { name: 'Повторить связь' });
+    }
+    expect(screen.queryByRole('img', { name: 'График показаний симулятора' })).toBeNull();
+    snapshot = sample(3);
+    if (route === 'history') {
+      await waitFor(
+        () =>
+          expect(
+            sessionObservation(host, backend).getSnapshotFor(session).lastSnapshot
+              ?.lastEventSequence,
+          ).toBe(3),
+        { timeout: 8000 },
+      );
+      await user.click(screen.getByRole('button', { name: 'Текущее испытание' }));
+    } else view.rerender(<DesktopApp bridge={desktop} session={session} />);
+    await waitFor(
+      () =>
+        expect(points()).toBe(
+          JSON.stringify([
+            { seconds: 0, pressure: 1000, differential: null },
+            { seconds: 1, pressure: 1001, differential: null },
+            ...(route === 'bridge' ? [{ seconds: 1.5, pressure: null, differential: null }] : []),
+            { seconds: 2, pressure: 1002, differential: null },
+          ]),
+        ),
+      { timeout: 8000 },
+    );
+    for (const command of [api.create, api.start, api.confirm, api.stop])
+      expect(command).not.toHaveBeenCalled();
+  },
+  20000,
+);
 
 beforeEach(() => {
   sessionStorage.clear();

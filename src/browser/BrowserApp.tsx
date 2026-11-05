@@ -2,12 +2,14 @@ import { useEffect, useRef, useState } from 'react';
 import { createBrowserBridge } from '../desktop/browser-bridge';
 import { parseBrowserJSON, responseGuards } from '../desktop/browser-responses';
 import { DesktopApp } from '../desktop/DesktopApp';
+import { MeasurementSeriesContext } from '../desktop/measurement-series';
 
 type Bridges = ReturnType<typeof createBrowserBridge>;
 type Connection = { bridges: Bridges; instance: string };
 type Screen = 'connecting' | 'connected' | 'busy' | 'unavailable';
 
 export function BrowserApp() {
+  const [measurementContext] = useState(() => new MeasurementSeriesContext());
   const [screen, setScreen] = useState<Screen>('connecting');
   const [connection, setConnection] = useState<Connection | null>(null);
   const pendingStorage = useRef<Storage | null>(null);
@@ -141,6 +143,7 @@ export function BrowserApp() {
       {connection && pendingStorage.current && (
         <div style={{ display: screen === 'connected' ? undefined : 'none' }}>
           <DesktopApp
+            measurementContext={measurementContext}
             key={connection.instance}
             {...connection.bridges}
             pendingStorage={pendingStorage.current}

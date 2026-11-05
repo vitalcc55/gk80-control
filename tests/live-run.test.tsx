@@ -1,6 +1,25 @@
 import { render, screen } from '@testing-library/react';
+import { type ComponentProps, useState } from 'react';
 import { expect, it, vi } from 'vitest';
-import { LiveRun } from '../src/desktop/LiveRun';
+import { LiveRun as LiveRunView } from '../src/desktop/LiveRun';
+import { MeasurementSeriesContext } from '../src/desktop/measurement-series';
+import { useMeasurementSeries } from '../src/desktop/use-measurement-series';
+
+function LiveRun({
+  gapVersion = 0,
+  ...props
+}: Omit<ComponentProps<typeof LiveRunView>, 'series'> & { gapVersion?: number }) {
+  const [context] = useState(() => new MeasurementSeriesContext());
+  const series = useMeasurementSeries(
+    context,
+    props.record.testId,
+    props.snapshot,
+    props.fresh,
+    gapVersion,
+  );
+  return <LiveRunView {...props} series={series} />;
+}
+
 import {
   MeasurementChannel,
   MeasurementQuality,
@@ -19,7 +38,9 @@ import type { GraphPoint } from '../src/model';
 
 vi.mock('../src/components/MeasurementChart', () => ({
   MeasurementChart: ({ points }: { points: readonly GraphPoint[] }) => (
-    <div data-testid="chart">{points.map((point) => point.pressure ?? 'gap').join(',')}</div>
+    <div data-testid="chart" data-points={JSON.stringify(points)}>
+      {points.map((point) => point.pressure ?? 'gap').join(',')}
+    </div>
   ),
 }));
 
@@ -62,6 +83,81 @@ const snapshot: Snapshot = {
   pendingAction: null,
   measurements: [first],
 };
+
+it('retains isolated recent source contexts and evicts the least recently observed context', () => {
+  const context = new MeasurementSeriesContext();
+  context.accept('source-A/database-A/test-A', snapshot, true, 0);
+  context.markGap('source-A/database-A/test-A');
+  expect(context.read('source-B/database-B/test-A').points).toEqual([]);
+  context.accept(
+    'source-B/database-B/test-A',
+    { ...snapshot, measurements: [{ ...first, value: 2000 }] },
+    true,
+    0,
+  );
+  context.accept(
+    'source-A/database-A/test-A',
+    {
+      ...snapshot,
+      measurements: [{ ...first, sequence: 2, measuredAt: '2026-10-30T00:00:03Z', value: 1002 }],
+    },
+    true,
+    0,
+  );
+  expect(context.read('source-A/database-A/test-A').points).toEqual([
+    { seconds: 0, pressure: 1000, differential: null },
+    { seconds: 1, pressure: null, differential: null },
+    { seconds: 2, pressure: 1002, differential: null },
+  ]);
+  for (const key of ['source-C', 'source-D', 'source-E']) context.accept(key, snapshot, true, 0);
+  expect(context.read('source-B/database-B/test-A').points).toEqual([]);
+  expect(context.read('source-A/database-A/test-A').points).toHaveLength(3);
+});
+
+it('isolates a new test and bounds retained points without changing the original time axis', () => {
+  const view = render(
+    <LiveRun record={record} snapshot={snapshot} fresh pending={false} onConfirm={() => {}} />,
+  );
+  for (let index = 1; index <= 300; index++) {
+    view.rerender(
+      <LiveRun
+        record={record}
+        snapshot={{
+          ...snapshot,
+          measurements: [
+            {
+              ...first,
+              sequence: index + 1,
+              value: 1000 + index,
+              measuredAt: new Date(Date.parse(first.measuredAt) + index * 1000).toISOString(),
+            },
+          ],
+        }}
+        fresh
+        pending={false}
+        onConfirm={() => {}}
+      />,
+    );
+  }
+  const chart = screen.getByTestId('chart');
+  const retained: GraphPoint[] = JSON.parse(chart.getAttribute('data-points') ?? '[]');
+  expect(retained).toHaveLength(300);
+  expect(retained[0]).toEqual({ seconds: 1, pressure: 1001, differential: null });
+  expect(retained[299]).toEqual({ seconds: 300, pressure: 1300, differential: null });
+  const other = { ...record, testId: '88888888-8888-4888-8888-888888888888' };
+  view.rerender(
+    <LiveRun
+      record={other}
+      snapshot={{ ...snapshot, activeTest: other }}
+      fresh
+      pending={false}
+      onConfirm={() => {}}
+    />,
+  );
+  expect(chart.getAttribute('data-points')).toBe(
+    JSON.stringify([{ seconds: 0, pressure: 1000, differential: null }]),
+  );
+});
 
 it('keeps the last received reading visible while a new snapshot is being confirmed', () => {
   const withAction = {
