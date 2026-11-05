@@ -27,7 +27,7 @@ $env:GOPATH = Join-Path $toolRoot 'go'
 $env:GOBIN = Join-Path $env:GOPATH 'bin'
 $env:GOENV = 'off'
 $env:GOTOOLCHAIN = 'local'
-& (Join-Path $env:GOROOT 'bin/go.exe') install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0
+& (Join-Path $env:GOROOT 'bin/go.exe') install github.com/wailsapp/wails/v3/cmd/wails3@v3.1.0
 & (Join-Path $env:GOROOT 'bin/go.exe') install golang.org/x/vuln/cmd/govulncheck@v1.9.0
 ```
 
@@ -39,7 +39,7 @@ $env:GOTOOLCHAIN = 'local'
 |---|---|---|
 | Node.js и npm | 24.22.2 и 11.19.1 | [Node.js](https://nodejs.org/dist/v24.22.2/) |
 | Go | 1.27.3 | [Go](https://go.dev/dl/) |
-| Wails CLI | 3.0.0 | [Wails](https://github.com/wailsapp/wails/releases/tag/v3.0.0) |
+| Wails CLI | 3.1.0 | [Wails](https://github.com/wailsapp/wails/releases/tag/v3.1.0) |
 | golangci-lint | 2.15.0 | [golangci-lint](https://github.com/golangci/golangci-lint/releases/tag/v2.15.0) |
 | govulncheck | 1.9.0 | [Go Vulnerability Database tools](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck) |
 

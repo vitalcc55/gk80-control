@@ -23,7 +23,7 @@
     "check:pr": "npm run check:quick && npm run build && npm run test:e2e"
   },
   "dependencies": {
-    "@wailsio/runtime": "3.0.0",
+    "@wailsio/runtime": "3.1.0",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "lucide-react": "1.69.0",

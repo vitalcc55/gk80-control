@@ -41,7 +41,7 @@ npm run contract:check
 npm run contract:test
 ```
 
-Native-профиль требует Wails `application` в обоих графах и запускает весь `internal/desktop` с `-tags=desktopapp`, включая два настоящих binding-теста. Linux получает явную ошибку. Генерация выполняется штатным Windows Wails CLI 3.0.0, проверяет оба сервиса, 24 метода и все три события, включая `BootstrapService`, и побайтовое соответствие Go DTO/TypeScript/RPC ID. Значения относятся к принятому контракту, а не к произвольному будущему набору методов.
+Native-профиль требует Wails `application` в обоих графах и запускает весь `internal/desktop` с `-tags=desktopapp`, включая два настоящих binding-теста. Linux получает явную ошибку. Генерация выполняется штатным Windows Wails CLI 3.1.0, проверяет оба сервиса, 24 метода и все три события, включая `BootstrapService`, и побайтовое соответствие Go DTO/TypeScript/RPC ID. Значения относятся к принятому контракту, а не к произвольному будущему набору методов.
 
 `owner_failure_windows_test.go` остаётся дополнительной платформенной частью host-пакета на Windows: проверяет аварийный выход своего процесса и диагностику. Поздний Verify проверяет общий `TestDelayedVerificationCannotRestoreExitedCore` в `owner_test.go`. Общие session/ledger/exact lookup/recovery/delivery/process-тесты не помечены новым тегом и не исключены. Linux GUI, сборка Linux browser executable и весь `check:pr` не входят в этот профиль. Frontend-профиль остаётся самостоятельным.
 
