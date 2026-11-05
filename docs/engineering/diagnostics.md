@@ -38,3 +38,38 @@
 Отдельная существующая граница: Chromium может вызвать callback с обычным error и затем `os.Exit(1)`. Нынешняя explicit cleanup выполняется только для типизированного fatal; для такого общего callback сохранность очереди и завершение core не доказываются. Это не исправляется в #21, а контролируемая приёмка не использует сломанный путь WebView2 для провоцирования этого случая.
 
 Основания решения: [Go 1.27.3 Handler](https://pkg.go.dev/log/slog@go1.27.3#Handler), [JSONHandler](https://pkg.go.dev/log/slog@go1.27.3#JSONHandler.Handle) и [LogValuer](https://pkg.go.dev/log/slog@go1.27.3#LogValuer); закреплённые [Wails FatalError](https://github.com/wailsapp/wails/blob/v3.0.0/v3/pkg/application/errors.go), [ErrorHandler/Run](https://github.com/wailsapp/wails/blob/v3.0.0/v3/pkg/application/application.go); [OWASP Logging](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html). Рекомендации сверены с закреплёнными исходниками; произвольные значения не становятся безопасными только из-за применения JSONHandler или LogValuer.
+
+### Фактические проверки #21 — 5 ноября 2026 года
+
+Baseline — `64fc9fd5214455cd4a3b1eae55f6b96de6a573f7`; реализация — `970fb26626c6a1f24ee5894b07bd6299f1648d23`. После неё меняется только этот отчёт. Схемы API, generated, bindings, frontend и модульные зависимости не изменены. Рабочий профиль, оборудование и история пользователя не использовались.
+
+| Команда / поверхность | Среда и результат |
+|---|---|
+| `go test -count=1 ./internal/diagnostics` на baseline | Настоящий пакет, Ubuntu 24.04.3/WSL2, Go 1.27.3: PASS, 2,334 с |
+| `go test -race -count=1 ./internal/diagnostics` на baseline | Та же среда, GCC 13.3/CGO: PASS, 3,351 с |
+| Те же две команды после изменений на `970fb26` | PASS, 2,363 / 3,386 с; instrumented именно тестовый процесс diagnostics и его production-код. Это не Windows/Wails/core race |
+| `go test -count=1 ./internal/diagnostics` | Windows x64 build 26200, Go 1.27.3: PASS, 7,281 с; никаких переименований тестового EXE или особых параметров сборки |
+| `go test -count=1 -tags=desktopapp . -run TestClassifyWailsErrorUsesTypeWithoutInspectingText` | Windows, настоящий Wails 3.0.0: PASS; шесть случаев типа/обёрток/nil/неизвестного error, без вызова текста ошибки. Это unit-тест mapper, не оконный проход |
+| `go vet ./internal/diagnostics`, `go vet -tags=desktopapp .` | Windows, код завершения 0 |
+| `golangci-lint run ./internal/diagnostics/...`, `golangci-lint run --build-tags desktopapp .` | Windows, код завершения 0, 0 issues |
+| `npm run check:host` | Windows: production/test-графы без Wails application, все реальные desktop/browser/cmd-проверки прошли |
+| `npm run check:host:native` | Windows: настоящие bindings и весь пакет desktop с `desktopapp` прошли |
+| `scripts/build-desktop.ps1` | Node 24.22.2/npm 11.19.1: typecheck и frontend-сборка прошли; собраны настоящие core EXE и desktop EXE, теги `production desktopapp` только у desktop |
+
+Добавленная characterization-регрессия до реализации падала: обычный framework ERROR не содержал явного `unclassified`. После реализации конечный JSONL настоящего logger через `memoryWriter` проверяет семь пар code/operation на четырёх разрешённых уровнях, процессный контекст, отсутствие вымышленных business ID, секретов, вложенных errors/LogValuer, `.With` и групп. Повторное/конкурентное получение handler даёт ровно одну запись на вызов и не изменяет исходный handler. Writer fixtures проверяют неблокирующий возврат logger, потери, единичный безопасный fallback и bounded close. Синтетический `subject result` этих тестов не является исполнением реальной команды. Diff подтверждает отсутствие изменений командного кода, а host-регрессии — его штатное поведение; фактическую команду при отказавшем writer в этом этапе отдельно не запускали. Прежний `TestEventsHaveSharedIDsAndFrameworkNeverWritesRawData` и проверки очереди/закрытия не ослаблены.
+
+Нативное подключение проверено отдельно в двух диагностических копиях исходников `970fb26`, на отдельных demo-профилях, с настоящими production hooks, Wails 3.0.0 и core. Frontend assets взяты из штатной сборки; Go-код logger и hooks не подменялся. Сборки использовали обычные имена EXE и проектные теги. Единственные fault-изменения остались в игнорируемых копиях, не в поставляемом приложении:
+
+1. **Typed fatal через настоящий WebView2 156.0.4314.58.** URL окна заменён на `/%ZZ?marker=wails-fatal-secret-marker`. `GetStartURL` вернул обычную ошибку разбора escape; код навигации Wails передал её в `handleFatalError`, который обернул её в `*FatalError` и синхронно вызвал зарегистрированный `Options.ErrorHandler`. Эта цепочка подтверждается закреплёнными исходниками и инъекцией; JSONL сам фиксирует категорию, а не весь внутренний путь. В нём ровно одна запись `fatal_error / error_handler`, PID 30252, без секрет-маркера, raw error и business ID. Подтверждены core PID 30488, `core.stopped` с exit 0, `process.stopped` desktop с exit 1 и фактический exit desktop 1 после закрытия штатного диалога. Это искусственная ошибка конфигурации URL, не естественный сбой WebView2 и не объяснение старых framework.message.
+2. **Возврат ошибки настоящего `app.Run()`.** Только в другой копии добавлен временный Wails service, чей `ServiceStartup` возвращает `wails-run-secret-marker`. Настоящий Wails startup вернул error до открытия рабочего окна; неизменённая production-ветка записала ровно одну `application_run_failed / application_run`, PID 10640. Маркер и payload в JSONL отсутствуют. Есть `process.stopped` core PID 32320 и desktop, фактический desktop exit 1. Записи `core.stopped` с числовым exit code здесь нет: выход core с кодом 0 этим сценарием не заявляется.
+
+Оба системных диалога закрыты через Computer Use; сеанс освобождён. После завершения отдельно проверено отсутствие desktop/core и наблюдённого WebView2 этих запусков, принудительное завершение не применялось. Это не нормальный проход испытания и не повторная полная матрица IAB/Windows. Обычный неизвестный Chromium callback с немедленным exit не инъецировался; его описанное ограничение не объявляется исправленным.
+
+Примеры выбранных полей действительных безопасных JSONL-записей; полный набор базовых полей остаётся в файлах:
+
+```jsonl
+{"event":"framework.message","component":"wails","level":"ERROR","error_code":"fatal_error","operation":"error_handler","process_role":"desktop","process_run_id":"34491d9a-ca47-4d44-96a6-33fa9dcdddf3","pid":30252}
+{"event":"framework.message","component":"wails","level":"ERROR","error_code":"application_run_failed","operation":"application_run","process_role":"desktop","process_run_id":"71958e45-61e0-495a-a636-2c9ab8cd3f2d","pid":10640}
+```
+
+Артефакты baseline/target/race, JSONL, снимки диалогов, точные инъекции и manifest находятся локально в `.tmp/.codex/framework-errors/`, не публикуются автоматически. Успешный Windows-прогон изменённого diagnostics EXE не устанавливает причину прежних обнаружений Kaspersky и не объявляет их ложными. Защита не менялась, исключения не добавлялись. Предслиятельный полный verify не запускался; разрешения PR #30–#32 не переносятся на этот PR. Старые framework-причины, ротация и весь уровень Б #8, U01, exit 1 IAB-wrapper, native remount и полная приёмка #6/#7 остаются вне результата.
