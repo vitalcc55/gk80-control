@@ -35,7 +35,7 @@ desktop/browser с прежним поведением команд, хране�
 | Часть | Целевые версии | Статус |
 |---|---|---|
 | Frontend | Vite 8.3.6; React plugin 6.2.1; Vitest 5.1.0; Tailwind и Vite plugin 4.3.4; Biome/schema 2.6.5; Lucide 1.69.0 | Проверено в Windows |
-| Go и генератор | websocket 1.8.15; jsonschema/v6 6.0.3; YAML/v3 3.0.6; SQLite driver 1.61.1; oapi-codegen 2.8.2 | Ожидает |
+| Go и генератор | websocket 1.8.15; jsonschema/v6 6.0.3; YAML/v3 3.0.6; SQLite driver 1.61.1; oapi-codegen 2.8.2 | Проверено в Windows |
 | Wails | CLI, Go-модуль и frontend runtime 3.1.0; строгая версия генератора и действующие инструкции | Ожидает |
 
 Одна ветка; законченные части проходят целевые проверки и read-only review перед
@@ -86,6 +86,26 @@ Windows `npm run check:quick` прошёл: строгая проверка ти
 типы/lint/fixture-сборка), `build:desktop` и `build:browser`. Последние две команды
 здесь подтверждают frontend-входы, не сборку/запуск нативной оболочки. Чистая
 установка окончательного lock и Windows/Linux/IAB остаются итоговыми проверками.
+
+### Go и генератор
+
+Адресный `go get` изменил ровно пять выбранных версий; `go mod tidy` удалил старые
+контрольные суммы этих версий. `go mod tidy -diff` после этого чист, `go mod verify`
+прошёл. Фактический выбранный граф сохраняет libc 1.79.0, kin-openapi 0.142.0,
+Go 1.27.3 и пока Wails 3.0.0.
+
+Штатная генерация Wails 3.0.0/oapi-codegen 2.8.2 выдала 14 файлов; единственная
+дельта generated — версия oapi-codegen в заголовке `models.gen.go`. `contract:check`
+и `contract:test` прошли без ослабления условий. OpenAPI, поля DTO, TypeScript,
+сервисы, методы и события не менялись.
+
+На Windows прошли полные существующие тесты пакетов contract, storage, demo,
+core, transport, browser и desktop с `-count=1 -timeout=240s`, а также vet/lint
+этих пакетов. Рукописный Go-код и тесты не менялись. Проверки включают реальные
+временные SQLite, rollback/audit/reopen и отдельные core-процессы; не заявляется
+прямое покрытие каждой новой внутренней ветви драйвера. Два независимых read-only
+review этой части не обнаружили конкретных замечаний; старую историю предстоит
+проверить отдельно через обновлённое приложение.
 
 Сырые результаты, графы и изолированные demo-профили:
 `.tmp/.codex/stack-upgrade/`. Итоговые результаты и ограничения дополняются
