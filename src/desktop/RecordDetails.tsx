@@ -182,7 +182,7 @@ export function RecordDetails({
                     ))}
                   </tbody>
                 </table>
-                {!measurements.items?.length && <p>Измерений нет.</p>}
+                {!measurements.items?.length && <p>На этой странице нет сохранённых измерений.</p>}
               </div>
             )}
             <div className="history-pages">
@@ -232,7 +232,7 @@ export function RecordDetails({
                 </li>
               ))}
             </ul>
-            {audit && !audit.items?.length && <p>Событий нет.</p>}
+            {audit && !audit.items?.length && <p>На этой странице нет сохранённых событий.</p>}
             <div className="history-pages">
               <button type="button" disabled={auditLoading} onClick={() => void loadAudit()}>
                 К началу аудита

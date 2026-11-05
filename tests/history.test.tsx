@@ -903,10 +903,10 @@ it('refreshes open detail pages when final saving is confirmed while keeping dis
     />,
   );
   await userEvent.setup().click(screen.getByText('Аудит', { selector: 'summary' }));
-  await screen.findByText('Событий нет.');
+  await screen.findByText(/на этой странице нет сохранённых событий/i);
   view.rerender(<RecordDetails record={record} service={service} available />);
   expect(await screen.findByText(/finish · completed/)).toBeTruthy();
-  expect(screen.queryByText('Событий нет.')).toBeNull();
+  expect(screen.queryByText(/на этой странице нет сохранённых событий/i)).toBeNull();
   expect(audit).toHaveBeenCalledTimes(2);
   expect(audit).toHaveBeenLastCalledWith(record.testId, 0, 100);
   await userEvent.setup().click(screen.getByText('Сведения о записи', { selector: 'summary' }));
@@ -1205,7 +1205,7 @@ it('opens the shared result before reading details and retains the record when a
   expect(await screen.findByText('Не удалось прочитать измерения.')).toBeTruthy();
   expect(screen.getByRole('heading', { name: 'Результат испытания' })).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'К началу измерений' }));
-  expect(await screen.findByText('Измерений нет.')).toBeTruthy();
+  expect(await screen.findByText(/на этой странице нет сохранённых измерений/i)).toBeTruthy();
   expect(measurements).toHaveBeenLastCalledWith(record.testId, 0, 100);
   await user.click(screen.getByRole('button', { name: 'Новое по этим параметрам' }));
   expect(onCopy).toHaveBeenCalledWith(record.parameters);
