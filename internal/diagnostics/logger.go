@@ -202,6 +202,7 @@ func newLogger(role Role, runID uuid.UUID, writer io.WriteCloser, fallback io.Wr
 type fields struct {
 	command, test, action, backendRun       uuid.UUID
 	errorCode                               string
+	operation                               string
 	commandStatus                           string
 	previousConnection, connection          string
 	sqliteVersion, journalMode, synchronous string
@@ -307,6 +308,9 @@ func (l *Logger) emit(event Event, spec eventSpec, component Component, values f
 	if values.errorCode != "" {
 		record.AddAttrs(slog.String("error_code", values.errorCode))
 	}
+	if values.operation != "" {
+		record.AddAttrs(slog.String("operation", values.operation))
+	}
 	if values.commandStatus != "" {
 		record.AddAttrs(slog.String("command_status", values.commandStatus))
 	}
@@ -411,13 +415,18 @@ type frameworkHandler struct {
 	logger    *Logger
 	event     Event
 	component Component
+	values    fields
 }
 
 func (h frameworkHandler) Enabled(_ context.Context, level slog.Level) bool {
 	return level >= slog.LevelInfo
 }
 func (h frameworkHandler) Handle(_ context.Context, record slog.Record) error {
-	h.logger.emit(h.event, eventSpec{level: record.Level, text: eventCatalog[h.event].text}, h.component, fields{})
+	values := h.values
+	if h.event == frameworkMessage && record.Level >= slog.LevelError && values.errorCode == "" {
+		values.errorCode = string(FrameworkUnclassified)
+	}
+	h.logger.emit(h.event, eventSpec{level: record.Level, text: eventCatalog[h.event].text}, h.component, values)
 	return nil
 }
 func (h frameworkHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }

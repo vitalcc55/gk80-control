@@ -142,9 +142,9 @@ func run() (resultErr error) {
 		Assets:   application.AssetOptions{Handler: application.AssetFileServerFS(desktopAssets)},
 		Logger:   logger.Framework(),
 		ErrorHandler: func(err error) {
-			logger.Framework().Error("Wails failure")
-			var fatal *application.FatalError
-			if errors.As(err, &fatal) {
+			code, fatal := classifyWailsError(err)
+			logger.FrameworkFailure(code, diagnostics.FrameworkErrorHandler).Error("Wails failure")
+			if fatal {
 				closeErr := owner.Close()
 				if errors.Is(closeErr, transport.ErrCleanupUnconfirmed) {
 					logger.Application(diagnostics.ComponentDesktop).Error(string(diagnostics.CoreCleanupFailed))
@@ -163,7 +163,16 @@ func run() (resultErr error) {
 	owner.Start()
 	app.Window.NewWithOptions(application.WebviewWindowOptions{Title: "ГК80 — демонстрация", Width: 1200, Height: 800, URL: "/"})
 	if err := app.Run(); err != nil {
+		logger.FrameworkFailure(diagnostics.FrameworkApplicationRunFailed, diagnostics.FrameworkApplicationRun).Error("Wails application run failed")
 		return errors.New("desktop startup or cleanup failed")
 	}
 	return nil
+}
+
+func classifyWailsError(err error) (diagnostics.FrameworkErrorCode, bool) {
+	var fatal *application.FatalError
+	if errors.As(err, &fatal) {
+		return diagnostics.FrameworkFatalError, true
+	}
+	return diagnostics.FrameworkUnclassified, false
 }
