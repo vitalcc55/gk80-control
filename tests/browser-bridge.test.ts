@@ -295,6 +295,7 @@ it('rejects null measurements inside an otherwise complete snapshot', async () =
         backendRunId: '10000000-0000-4000-8000-000000000002',
         revision: 0,
         lastEventSequence: 0,
+        measurementBatch: null,
         activeTest: null,
         pendingAction: null,
         measurements: null,
@@ -511,6 +512,7 @@ it('rejects malformed session data rather than confirming a connection', async (
         backendRunId: '10000000-0000-4000-8000-000000000002',
         revision: 1,
         lastEventSequence: 1,
+        measurementBatch: null,
         activeTest: null,
         pendingAction: null,
         measurementTiming: null,
@@ -546,6 +548,7 @@ it('accepts a complete session snapshot with a simulated measurement', async () 
     backendRunId: '10000000-0000-4000-8000-000000000002',
     revision: 1,
     lastEventSequence: 2,
+    measurementBatch: 1,
     activeTest: {
       testId: '10000000-0000-4000-8000-000000000003',
       stopCommandId: '10000000-0000-4000-8000-000000000004',

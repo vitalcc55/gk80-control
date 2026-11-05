@@ -27,6 +27,7 @@ const view: SessionView = {
     backendRunId: backend,
     revision: 1,
     lastEventSequence: 0,
+    measurementBatch: null,
     activeTest: null,
     pendingAction: null,
     measurementTiming: null,

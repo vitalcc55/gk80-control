@@ -1037,6 +1037,7 @@ it('returns from a copied draft to the list instead of resurrecting the saved re
         backendRunId: backend,
         revision: 0,
         lastEventSequence: 0,
+        measurementBatch: null,
         activeTest: null,
         pendingAction: null,
         measurementTiming: null,

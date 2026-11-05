@@ -443,6 +443,11 @@ export interface Snapshot {
     "lastEventSequence": number;
 
     /**
+     * MeasurementBatch Номер последнего принятого пакета текущего испытания. До первого пакета null; каждый успешно принятый пакет получает следующий номер начиная с 1. Публикуется атомарно с measurements и сохраняется с ними при остановке и завершении. Не подтверждает запись в Store.
+     */
+    "measurementBatch": number | null;
+
+    /**
      * MeasurementTiming Неизвестно до первого принятого отсчёта и вне измерения; это последнее наблюдение, не таймер UI.
      */
     "measurementTiming": MeasurementTiming | null;

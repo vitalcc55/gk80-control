@@ -273,6 +273,7 @@ function snapshot(value: unknown): value is Contract.Snapshot {
       'activeTest',
       'pendingAction',
       'measurements',
+      'measurementBatch',
       'measurementTiming',
     ]) &&
     text(value['apiVersion']) &&
@@ -284,7 +285,12 @@ function snapshot(value: unknown): value is Contract.Snapshot {
     (value['measurementTiming'] === null || measurementTiming(value['measurementTiming'])) &&
     Array.isArray(value['measurements']) &&
     value['measurements'].length <= 3 &&
-    value['measurements'].every(measurement)
+    value['measurements'].every(measurement) &&
+    (value['measurementBatch'] === null
+      ? value['measurements'].length === 0
+      : counter(value['measurementBatch'], 1) &&
+        value['measurements'].length > 0 &&
+        value['activeTest'] !== null)
   );
 }
 

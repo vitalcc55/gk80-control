@@ -17,6 +17,18 @@ interface MeasurementChartProps {
 const formatValue = (value: number | null): string =>
   value === null ? 'Нет данных' : formatNumber(value, 12);
 
+// A line cannot show a sample with gaps on both sides; mark only those samples.
+const isolatedPoints: uPlot.Series.Points.Filter = (chart, seriesIndex) => {
+  const values = chart.data[seriesIndex];
+  if (!values) return [];
+  const isolated: number[] = [];
+  for (let index = 0; index < values.length; index++) {
+    if (values[index] != null && values[index - 1] == null && values[index + 1] == null)
+      isolated.push(index);
+  }
+  return isolated;
+};
+
 /** Выбирает точность по отметкам, чтобы соседние значения не сливались в один текст. */
 function formatAxisValues(splits: number[]): string[] {
   const scientific = splits.some(
@@ -245,7 +257,7 @@ export function MeasurementChart({
           scale: 'pressure',
           stroke: color('--chart-pressure'),
           width: 2,
-          points: { show: false },
+          points: { show: true, filter: isolatedPoints, size: 4, fill: color('--chart-pressure') },
           spanGaps: false,
         },
         {
@@ -262,7 +274,12 @@ export function MeasurementChart({
           stroke: color('--chart-differential'),
           width: 2,
           dash: [7, 3],
-          points: { show: false },
+          points: {
+            show: true,
+            filter: isolatedPoints,
+            size: 4,
+            fill: color('--chart-differential'),
+          },
           spanGaps: false,
         },
         {

@@ -57,6 +57,7 @@ function input(api: DemoService): CommandInput {
     backendRunId: 'backend',
     revision: 0,
     lastEventSequence: 0,
+    measurementBatch: null,
     activeTest: null,
     pendingAction: null,
     measurementTiming: null,

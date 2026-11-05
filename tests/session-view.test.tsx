@@ -30,6 +30,7 @@ const view: SessionView = {
     backendRunId: '6c229f38-3426-4608-bd72-dcd0d3b2bcd7',
     revision: 1,
     lastEventSequence: 0,
+    measurementBatch: null,
     activeTest: null,
     pendingAction: null,
     measurementTiming: null,

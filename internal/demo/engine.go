@@ -38,6 +38,7 @@ type Repository interface {
 // State is an internal observation, not yet the transport snapshot or event stream.
 type State struct {
 	MeasurementTiming *contract.MeasurementTiming
+	MeasurementBatch  *int64
 	BackendRunID      uuid.UUID
 	Record            *contract.TestRecord
 	PendingAction     *contract.PendingAction
@@ -48,6 +49,7 @@ type State struct {
 
 type run struct {
 	measurementTiming *contract.MeasurementTiming
+	measurementBatch  int64
 	record            contract.TestRecord
 	revision          int64
 	pending           *contract.PendingAction
@@ -618,6 +620,10 @@ func (e *Engine) State() State {
 		record.FinishedAt = &finished
 	}
 	state.Record = &record
+	if e.active.measurementBatch > 0 {
+		batch := e.active.measurementBatch
+		state.MeasurementBatch = &batch
+	}
 	if !e.active.stopping && record.Stage == "running" && e.active.pending == nil && e.active.measurementTiming != nil {
 		timing := *e.active.measurementTiming
 		state.MeasurementTiming = &timing
@@ -1552,6 +1558,7 @@ func (e *Engine) measure(current *run) {
 		}
 		select {
 		case queue <- packet:
+			current.measurementBatch++
 			current.measurementTiming = &contract.MeasurementTiming{
 				ElapsedSeconds: elapsed.Seconds(), RemainingSeconds: max(0, (duration - elapsed).Seconds()),
 			}

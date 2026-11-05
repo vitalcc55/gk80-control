@@ -84,9 +84,40 @@ const snapshot: Snapshot = {
   lastEventSequence: 1,
   activeTest: record,
   pendingAction: null,
+  measurementBatch: 1,
   measurementTiming: null,
   measurements: [first],
 };
+
+it('leaves a gap when an accepted measurement packet was not observed', () => {
+  const context = new MeasurementSeriesContext();
+  context.accept('test', { ...snapshot, measurementBatch: 1 }, true, 0);
+  context.accept(
+    'test',
+    {
+      ...snapshot,
+      measurementBatch: 3,
+      measurements: [{ ...first, sequence: 7, measuredAt: '2026-10-30T00:00:03Z' }],
+    },
+    true,
+    0,
+  );
+  expect(context.read('test').points.map((point) => point.pressure)).toEqual([1000, null, 1000]);
+});
+
+it('keeps adjacent packets connected and ignores repeated or older packets', () => {
+  const context = new MeasurementSeriesContext();
+  const next = {
+    ...snapshot,
+    measurementBatch: 2,
+    measurements: [{ ...first, sequence: 4, measuredAt: '2026-10-30T00:00:02Z', value: 1001 }],
+  };
+  context.accept('test', snapshot, true, 0);
+  context.accept('test', next, true, 0);
+  context.accept('test', next, true, 0);
+  context.accept('test', snapshot, true, 0);
+  expect(context.read('test').points.map((point) => point.pressure)).toEqual([1000, 1001]);
+});
 
 function FocusShell({ children }: { children: ReactNode }) {
   return (
@@ -303,7 +334,9 @@ it('does not claim measurement progress before the first accepted observation', 
   const draw = (value: Snapshot) => (
     <LiveRun record={record} snapshot={value} fresh pending={false} onConfirm={() => {}} />
   );
-  const view = render(draw({ ...snapshot, measurements: [], measurementTiming: null }));
+  const view = render(
+    draw({ ...snapshot, measurements: [], measurementBatch: null, measurementTiming: null }),
+  );
   expect(screen.getByRole('heading', { name: 'Ожидание данных измерения' })).toBeTruthy();
   expect(screen.getByText('Ожидаем данные измерения ядра.')).toBeTruthy();
   expect(
@@ -355,7 +388,7 @@ it('does not invent completed measurement or pressure reduction after an early S
   render(
     <LiveRun
       record={{ ...record, stage: TestRecordStage.Stopping }}
-      snapshot={{ ...snapshot, measurements: [], measurementTiming: null }}
+      snapshot={{ ...snapshot, measurements: [], measurementBatch: null, measurementTiming: null }}
       fresh
       pending={false}
       onConfirm={() => {}}
@@ -383,6 +416,7 @@ it('retains isolated recent source contexts and evicts the least recently observ
     'source-A/database-A/test-A',
     {
       ...snapshot,
+      measurementBatch: 2,
       measurementTiming: null,
       measurements: [{ ...first, sequence: 2, measuredAt: '2026-10-30T00:00:03Z', value: 1002 }],
     },
@@ -409,6 +443,7 @@ it('isolates a new test and bounds retained points without changing the original
         record={record}
         snapshot={{
           ...snapshot,
+          measurementBatch: index + 1,
           measurementTiming: null,
           measurements: [
             {
@@ -498,7 +533,7 @@ it('keeps the last received reading visible while a new snapshot is being confir
   view.rerender(
     <LiveRun
       record={record}
-      snapshot={{ ...snapshot, measurements: [next] }}
+      snapshot={{ ...snapshot, measurementBatch: next.sequence, measurements: [next] }}
       fresh
       pending={false}
       onConfirm={() => {}}
@@ -511,6 +546,7 @@ it('keeps the last received reading visible while a new snapshot is being confir
       record={record}
       snapshot={{
         ...snapshot,
+        measurementBatch: 3,
         measurementTiming: null,
         measurements: [
           {
@@ -572,6 +608,7 @@ it('breaks the chart across an unavailable measurement and labels pending confir
       record={record}
       snapshot={{
         ...snapshot,
+        measurementBatch: 2,
         measurementTiming: null,
         measurements: [unavailable],
         pendingAction: {
@@ -590,7 +627,7 @@ it('breaks the chart across an unavailable measurement and labels pending confir
   view.rerender(
     <LiveRun
       record={record}
-      snapshot={{ ...snapshot, measurements: [next] }}
+      snapshot={{ ...snapshot, measurementBatch: next.sequence, measurements: [next] }}
       fresh
       pending={false}
       onConfirm={() => {}}
@@ -613,11 +650,11 @@ it('keeps adjacent samples connected across snapshot refresh but marks a real co
   const view = render(renderRun(snapshot, true, 0));
   view.rerender(renderRun(snapshot, false, 0));
   const second = { ...first, sequence: 2, measuredAt: '2026-10-30T00:00:02Z', value: 1001 };
-  view.rerender(renderRun({ ...snapshot, measurements: [second] }, true, 0));
+  view.rerender(renderRun({ ...snapshot, measurementBatch: 2, measurements: [second] }, true, 0));
   expect(screen.getByTestId('chart').textContent).toBe('1000,1001');
-  view.rerender(renderRun({ ...snapshot, measurements: [second] }, false, 1));
+  view.rerender(renderRun({ ...snapshot, measurementBatch: 2, measurements: [second] }, false, 1));
   const third = { ...first, sequence: 3, measuredAt: '2026-10-30T00:00:03Z', value: 1002 };
-  view.rerender(renderRun({ ...snapshot, measurements: [third] }, true, 1));
+  view.rerender(renderRun({ ...snapshot, measurementBatch: 3, measurements: [third] }, true, 1));
   expect(screen.getByTestId('chart').textContent).toBe('1000,1001,gap,1002');
 });
 
@@ -629,7 +666,7 @@ it('starts a new chart segment if measurement timestamps move backwards', () => 
   view.rerender(
     <LiveRun
       record={record}
-      snapshot={{ ...snapshot, measurements: [next] }}
+      snapshot={{ ...snapshot, measurementBatch: next.sequence, measurements: [next] }}
       fresh
       pending={false}
       onConfirm={() => {}}

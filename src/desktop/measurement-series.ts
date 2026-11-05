@@ -8,7 +8,7 @@ export interface MeasurementSeries {
 interface RetainedSeries {
   value: MeasurementSeries;
   origin: number | null;
-  last: { sequence: number; seconds: number } | null;
+  last: { sequence: number; batch: number; seconds: number } | null;
   gap: boolean;
   gapVersion: number;
 }
@@ -49,6 +49,11 @@ export class MeasurementSeriesContext {
       entry.gap = true;
     }
     if (!fresh) return;
+    const batch = snapshot?.measurementBatch;
+    if (batch == null || !Number.isSafeInteger(batch) || batch < 1) {
+      entry.gap = true;
+      return;
+    }
     const pressure = snapshot?.measurements?.find((item) => item.channel === 'dd1');
     const differential = snapshot?.measurements?.find((item) => item.channel === 'dd2');
     if (
@@ -61,6 +66,8 @@ export class MeasurementSeriesContext {
       return;
     }
     if (entry.last && pressure.sequence <= entry.last.sequence) return;
+    if (entry.last && batch <= entry.last.batch) return;
+    if (entry.last && batch > entry.last.batch + 1) entry.gap = true;
     const timestamp = Date.parse(pressure.measuredAt);
     if (!Number.isFinite(timestamp)) return;
     if (entry.origin === null) entry.origin = timestamp;
@@ -87,7 +94,7 @@ export class MeasurementSeriesContext {
           ? differential.value
           : null,
     });
-    entry.last = { sequence: pressure.sequence, seconds };
+    entry.last = { sequence: pressure.sequence, batch, seconds };
     entry.gap = false;
     entry.value = {
       points: points.slice(-300),
