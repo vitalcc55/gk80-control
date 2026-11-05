@@ -312,6 +312,46 @@
     "kind": "schema"
   },
   {
+    "name": "timing without accepted packet",
+    "schema": "Snapshot",
+    "json": "{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":{\"testId\":\"10000000-0000-4000-8000-000000000001\",\"demo\":true,\"operatorId\":\"demo\",\"parameters\":{\"valve\":\"V\",\"areaM2\":0.1,\"pmaxPa\":1000,\"measurementSeconds\":1.5,\"direction\":\"pressure\",\"actuator\":false},\"stopCommandId\":\"10000000-0000-4000-8000-000000000002\",\"stage\":\"running\",\"outcome\":\"pending\",\"dataQuality\":\"pending\",\"saveStatus\":\"saved\",\"createdAt\":\"2026-11-05T10:00:00.123456789Z\"},\"pendingAction\":null,\"measurementBatch\":null,\"measurementTiming\":{\"elapsedSeconds\":1,\"remainingSeconds\":59},\"measurements\":[]}",
+    "valid": false,
+    "browserValid": false,
+    "kind": "schema"
+  },
+  {
+    "name": "timing after measurement ended",
+    "schema": "Snapshot",
+    "json": "{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":{\"testId\":\"10000000-0000-4000-8000-000000000001\",\"demo\":true,\"operatorId\":\"demo\",\"parameters\":{\"valve\":\"V\",\"areaM2\":0.1,\"pmaxPa\":1000,\"measurementSeconds\":1.5,\"direction\":\"pressure\",\"actuator\":false},\"stopCommandId\":\"10000000-0000-4000-8000-000000000002\",\"stage\":\"finished\",\"outcome\":\"pending\",\"dataQuality\":\"pending\",\"saveStatus\":\"saved\",\"createdAt\":\"2026-11-05T10:00:00.123456789Z\"},\"pendingAction\":null,\"measurementBatch\":7,\"measurementTiming\":{\"elapsedSeconds\":1,\"remainingSeconds\":59},\"measurements\":[{\"sequence\":1,\"channel\":\"dd1\",\"quantity\":\"pressure\",\"value\":0,\"unit\":\"Pa\",\"observedAt\":\"2026-11-05T10:00:00.123456789Z\",\"measuredAt\":\"2026-11-05T10:00:00.123456789Z\",\"quality\":\"valid\",\"source\":\"simulator\"}]}",
+    "valid": false,
+    "browserValid": false,
+    "kind": "schema"
+  },
+  {
+    "name": "timing while waiting for confirmation",
+    "schema": "Snapshot",
+    "json": "{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":{\"testId\":\"10000000-0000-4000-8000-000000000001\",\"demo\":true,\"operatorId\":\"demo\",\"parameters\":{\"valve\":\"V\",\"areaM2\":0.1,\"pmaxPa\":1000,\"measurementSeconds\":1.5,\"direction\":\"pressure\",\"actuator\":false},\"stopCommandId\":\"10000000-0000-4000-8000-000000000002\",\"stage\":\"running\",\"outcome\":\"pending\",\"dataQuality\":\"pending\",\"saveStatus\":\"saved\",\"createdAt\":\"2026-11-05T10:00:00.123456789Z\"},\"pendingAction\":{\"actionId\":\"10000000-0000-4000-8000-000000000001\",\"testId\":\"10000000-0000-4000-8000-000000000002\",\"instruction\":\"confirm\"},\"measurementBatch\":7,\"measurementTiming\":{\"elapsedSeconds\":1,\"remainingSeconds\":59},\"measurements\":[{\"sequence\":1,\"channel\":\"dd1\",\"quantity\":\"pressure\",\"value\":0,\"unit\":\"Pa\",\"observedAt\":\"2026-11-05T10:00:00.123456789Z\",\"measuredAt\":\"2026-11-05T10:00:00.123456789Z\",\"quality\":\"valid\",\"source\":\"simulator\"}]}",
+    "valid": false,
+    "browserValid": false,
+    "kind": "schema"
+  },
+  {
+    "name": "stopping with last accepted packet",
+    "schema": "Snapshot",
+    "json": "{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":{\"testId\":\"10000000-0000-4000-8000-000000000001\",\"demo\":true,\"operatorId\":\"demo\",\"parameters\":{\"valve\":\"V\",\"areaM2\":0.1,\"pmaxPa\":1000,\"measurementSeconds\":1.5,\"direction\":\"pressure\",\"actuator\":false},\"stopCommandId\":\"10000000-0000-4000-8000-000000000002\",\"stage\":\"stopping\",\"outcome\":\"pending\",\"dataQuality\":\"pending\",\"saveStatus\":\"saved\",\"createdAt\":\"2026-11-05T10:00:00.123456789Z\"},\"pendingAction\":null,\"measurementBatch\":1,\"measurementTiming\":null,\"measurements\":[{\"sequence\":1,\"channel\":\"dd1\",\"quantity\":\"pressure\",\"value\":0,\"unit\":\"Pa\",\"observedAt\":\"2026-11-05T10:00:00.123456789Z\",\"measuredAt\":\"2026-11-05T10:00:00.123456789Z\",\"quality\":\"valid\",\"source\":\"simulator\"}]}",
+    "valid": true,
+    "browserValid": true,
+    "kind": "schema"
+  },
+  {
+    "name": "finished with last accepted packet",
+    "schema": "Snapshot",
+    "json": "{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":{\"testId\":\"10000000-0000-4000-8000-000000000001\",\"demo\":true,\"operatorId\":\"demo\",\"parameters\":{\"valve\":\"V\",\"areaM2\":0.1,\"pmaxPa\":1000,\"measurementSeconds\":1.5,\"direction\":\"pressure\",\"actuator\":false},\"stopCommandId\":\"10000000-0000-4000-8000-000000000002\",\"stage\":\"finished\",\"outcome\":\"pending\",\"dataQuality\":\"pending\",\"saveStatus\":\"saved\",\"createdAt\":\"2026-11-05T10:00:00.123456789Z\"},\"pendingAction\":null,\"measurementBatch\":1,\"measurementTiming\":null,\"measurements\":[{\"sequence\":1,\"channel\":\"dd1\",\"quantity\":\"pressure\",\"value\":0,\"unit\":\"Pa\",\"observedAt\":\"2026-11-05T10:00:00.123456789Z\",\"measuredAt\":\"2026-11-05T10:00:00.123456789Z\",\"quality\":\"valid\",\"source\":\"simulator\"}]}",
+    "valid": true,
+    "browserValid": true,
+    "kind": "schema"
+  },
+  {
     "name": "missing required Snapshot",
     "schema": "Snapshot",
     "json": "{}",
@@ -1698,7 +1738,7 @@
   {
     "name": "observed timing Snapshot",
     "schema": "Snapshot",
-    "json": "{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":null,\"pendingAction\":null,\"measurements\":[],\"measurementBatch\":null,\"measurementTiming\":{\"elapsedSeconds\":1.25,\"remainingSeconds\":58.75}}",
+    "json": "{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":{\"testId\":\"10000000-0000-4000-8000-000000000001\",\"demo\":true,\"operatorId\":\"demo\",\"parameters\":{\"valve\":\"V\",\"areaM2\":0.1,\"pmaxPa\":1000,\"measurementSeconds\":60,\"direction\":\"pressure\",\"actuator\":false},\"stopCommandId\":\"10000000-0000-4000-8000-000000000002\",\"stage\":\"running\",\"outcome\":\"pending\",\"dataQuality\":\"pending\",\"saveStatus\":\"saved\",\"createdAt\":\"2026-11-05T10:00:00.123456789Z\"},\"pendingAction\":null,\"measurements\":[{\"sequence\":1,\"channel\":\"dd1\",\"quantity\":\"pressure\",\"value\":0,\"unit\":\"Pa\",\"observedAt\":\"2026-11-05T10:00:00.123456789Z\",\"measuredAt\":\"2026-11-05T10:00:00.123456789Z\",\"quality\":\"valid\",\"source\":\"simulator\"}],\"measurementBatch\":1,\"measurementTiming\":{\"elapsedSeconds\":1.25,\"remainingSeconds\":58.75}}",
     "valid": true,
     "browserValid": true,
     "kind": "schema"
@@ -1706,7 +1746,7 @@
   {
     "name": "negative elapsed Snapshot",
     "schema": "Snapshot",
-    "json": "{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":null,\"pendingAction\":null,\"measurements\":[],\"measurementBatch\":null,\"measurementTiming\":{\"elapsedSeconds\":-1,\"remainingSeconds\":60}}",
+    "json": "{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":{\"testId\":\"10000000-0000-4000-8000-000000000001\",\"demo\":true,\"operatorId\":\"demo\",\"parameters\":{\"valve\":\"V\",\"areaM2\":0.1,\"pmaxPa\":1000,\"measurementSeconds\":60,\"direction\":\"pressure\",\"actuator\":false},\"stopCommandId\":\"10000000-0000-4000-8000-000000000002\",\"stage\":\"running\",\"outcome\":\"pending\",\"dataQuality\":\"pending\",\"saveStatus\":\"saved\",\"createdAt\":\"2026-11-05T10:00:00.123456789Z\"},\"pendingAction\":null,\"measurements\":[{\"sequence\":1,\"channel\":\"dd1\",\"quantity\":\"pressure\",\"value\":0,\"unit\":\"Pa\",\"observedAt\":\"2026-11-05T10:00:00.123456789Z\",\"measuredAt\":\"2026-11-05T10:00:00.123456789Z\",\"quality\":\"valid\",\"source\":\"simulator\"}],\"measurementBatch\":1,\"measurementTiming\":{\"elapsedSeconds\":-1,\"remainingSeconds\":60}}",
     "valid": false,
     "browserValid": false,
     "kind": "schema"
@@ -1714,7 +1754,7 @@
   {
     "name": "missing remaining Snapshot",
     "schema": "Snapshot",
-    "json": "{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":null,\"pendingAction\":null,\"measurements\":[],\"measurementBatch\":null,\"measurementTiming\":{\"elapsedSeconds\":1}}",
+    "json": "{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":{\"testId\":\"10000000-0000-4000-8000-000000000001\",\"demo\":true,\"operatorId\":\"demo\",\"parameters\":{\"valve\":\"V\",\"areaM2\":0.1,\"pmaxPa\":1000,\"measurementSeconds\":60,\"direction\":\"pressure\",\"actuator\":false},\"stopCommandId\":\"10000000-0000-4000-8000-000000000002\",\"stage\":\"running\",\"outcome\":\"pending\",\"dataQuality\":\"pending\",\"saveStatus\":\"saved\",\"createdAt\":\"2026-11-05T10:00:00.123456789Z\"},\"pendingAction\":null,\"measurements\":[{\"sequence\":1,\"channel\":\"dd1\",\"quantity\":\"pressure\",\"value\":0,\"unit\":\"Pa\",\"observedAt\":\"2026-11-05T10:00:00.123456789Z\",\"measuredAt\":\"2026-11-05T10:00:00.123456789Z\",\"quality\":\"valid\",\"source\":\"simulator\"}],\"measurementBatch\":1,\"measurementTiming\":{\"elapsedSeconds\":1}}",
     "valid": false,
     "browserValid": false,
     "kind": "schema"
@@ -1722,7 +1762,7 @@
   {
     "name": "extra timing field Snapshot",
     "schema": "Snapshot",
-    "json": "{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":null,\"pendingAction\":null,\"measurements\":[],\"measurementBatch\":null,\"measurementTiming\":{\"elapsedSeconds\":1,\"remainingSeconds\":2,\"extra\":true}}",
+    "json": "{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":{\"testId\":\"10000000-0000-4000-8000-000000000001\",\"demo\":true,\"operatorId\":\"demo\",\"parameters\":{\"valve\":\"V\",\"areaM2\":0.1,\"pmaxPa\":1000,\"measurementSeconds\":60,\"direction\":\"pressure\",\"actuator\":false},\"stopCommandId\":\"10000000-0000-4000-8000-000000000002\",\"stage\":\"running\",\"outcome\":\"pending\",\"dataQuality\":\"pending\",\"saveStatus\":\"saved\",\"createdAt\":\"2026-11-05T10:00:00.123456789Z\"},\"pendingAction\":null,\"measurements\":[{\"sequence\":1,\"channel\":\"dd1\",\"quantity\":\"pressure\",\"value\":0,\"unit\":\"Pa\",\"observedAt\":\"2026-11-05T10:00:00.123456789Z\",\"measuredAt\":\"2026-11-05T10:00:00.123456789Z\",\"quality\":\"valid\",\"source\":\"simulator\"}],\"measurementBatch\":1,\"measurementTiming\":{\"elapsedSeconds\":1,\"remainingSeconds\":2,\"extra\":true}}",
     "valid": false,
     "browserValid": false,
     "kind": "schema"
@@ -1730,7 +1770,7 @@
   {
     "name": "remaining beyond interval limit Snapshot",
     "schema": "Snapshot",
-    "json": "{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":null,\"pendingAction\":null,\"measurements\":[],\"measurementBatch\":null,\"measurementTiming\":{\"elapsedSeconds\":1,\"remainingSeconds\":3601}}",
+    "json": "{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":{\"testId\":\"10000000-0000-4000-8000-000000000001\",\"demo\":true,\"operatorId\":\"demo\",\"parameters\":{\"valve\":\"V\",\"areaM2\":0.1,\"pmaxPa\":1000,\"measurementSeconds\":60,\"direction\":\"pressure\",\"actuator\":false},\"stopCommandId\":\"10000000-0000-4000-8000-000000000002\",\"stage\":\"running\",\"outcome\":\"pending\",\"dataQuality\":\"pending\",\"saveStatus\":\"saved\",\"createdAt\":\"2026-11-05T10:00:00.123456789Z\"},\"pendingAction\":null,\"measurements\":[{\"sequence\":1,\"channel\":\"dd1\",\"quantity\":\"pressure\",\"value\":0,\"unit\":\"Pa\",\"observedAt\":\"2026-11-05T10:00:00.123456789Z\",\"measuredAt\":\"2026-11-05T10:00:00.123456789Z\",\"quality\":\"valid\",\"source\":\"simulator\"}],\"measurementBatch\":1,\"measurementTiming\":{\"elapsedSeconds\":1,\"remainingSeconds\":3601}}",
     "valid": false,
     "browserValid": false,
     "kind": "schema"

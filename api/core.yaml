@@ -860,6 +860,15 @@ components:
             properties:
               measurements: { minItems: 1 }
               activeTest: { type: object }
+        - if:
+            properties: { measurementTiming: { type: object } }
+          then:
+            properties:
+              measurementBatch: { type: integer }
+              activeTest:
+                type: object
+                properties: { stage: { const: running } }
+              pendingAction: { type: "null" }
       properties:
         apiVersion: { type: string }
         backendRunId: { type: string, format: uuid }

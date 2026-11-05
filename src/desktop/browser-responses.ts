@@ -282,7 +282,12 @@ function snapshot(value: unknown): value is Contract.Snapshot {
     counter(value['lastEventSequence']) &&
     (value['activeTest'] === null || testRecord(value['activeTest'])) &&
     (value['pendingAction'] === null || pendingAction(value['pendingAction'])) &&
-    (value['measurementTiming'] === null || measurementTiming(value['measurementTiming'])) &&
+    (value['measurementTiming'] === null ||
+      (measurementTiming(value['measurementTiming']) &&
+        value['measurementBatch'] !== null &&
+        testRecord(value['activeTest']) &&
+        value['activeTest'].stage === 'running' &&
+        value['pendingAction'] === null)) &&
     Array.isArray(value['measurements']) &&
     value['measurements'].length <= 3 &&
     value['measurements'].every(measurement) &&
