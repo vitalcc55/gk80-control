@@ -16,6 +16,9 @@ export const emptyHistoryFilters: HistoryFilters = {
   through: '',
   outcome: '',
 };
+export function normalizeHistoryQuery(value: string): string {
+  return value.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, '');
+}
 export interface HistoryRow {
   id: string;
   valve: string;
@@ -68,7 +71,7 @@ export function TestsScreen({
   active?: ReactNode;
   children?: ReactNode;
 }) {
-  const queryTooLong = Array.from(filters.query.trim()).length > 200;
+  const queryTooLong = Array.from(normalizeHistoryQuery(filters.query)).length > 200;
   const dateRangeInvalid = !!filters.from && !!filters.through && filters.from > filters.through;
   return (
     <section className="workpage" aria-labelledby="tests-title">

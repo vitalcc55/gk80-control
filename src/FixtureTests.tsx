@@ -1,5 +1,10 @@
 import { useState } from 'react';
-import { emptyHistoryFilters, type HistoryFilters, TestsScreen } from './components/TestsScreen';
+import {
+  emptyHistoryFilters,
+  type HistoryFilters,
+  normalizeHistoryQuery,
+  TestsScreen,
+} from './components/TestsScreen';
 import type { TestParameters } from './model';
 import './components/screens.css';
 
@@ -29,7 +34,7 @@ export function FixtureTests({
   const [filters, setFilters] = useState<HistoryFilters>(emptyHistoryFilters);
   const [applied, setApplied] = useState<HistoryFilters>(emptyHistoryFilters);
   const [rangeError, setRangeError] = useState(false);
-  const query = applied.query;
+  const query = normalizeHistoryQuery(applied.query);
   const entries = empty
     ? []
     : [
@@ -43,7 +48,7 @@ export function FixtureTests({
   const matches = entries.filter(
     (item) =>
       [item.id, item.valve].some((value) =>
-        value.toLocaleLowerCase('ru').includes(query.trim().toLocaleLowerCase('ru')),
+        value.toLocaleLowerCase('ru').includes(query.toLocaleLowerCase('ru')),
       ) &&
       !applied.from &&
       !applied.through &&
@@ -52,7 +57,7 @@ export function FixtureTests({
   const activeMatches =
     activeParameters &&
     [activeParameters.id, activeParameters.valve].some((value) =>
-      value.toLocaleLowerCase('ru').includes(query.trim().toLocaleLowerCase('ru')),
+      value.toLocaleLowerCase('ru').includes(query.toLocaleLowerCase('ru')),
     ) &&
     !applied.from &&
     !applied.through &&
@@ -89,7 +94,7 @@ export function FixtureTests({
         })),
       ]}
       filters={filters}
-      filtered={!!(applied.query.trim() || applied.from || applied.through || applied.outcome)}
+      filtered={!!(query || applied.from || applied.through || applied.outcome)}
       error={rangeError ? 'Начало диапазона должно быть не позже конца.' : ''}
       onFilters={setFilters}
       onSearch={() => {

@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ResultScreen } from '../components/ResultScreen';
-import { emptyHistoryFilters, type HistoryFilters, TestsScreen } from '../components/TestsScreen';
+import {
+  emptyHistoryFilters,
+  type HistoryFilters,
+  normalizeHistoryQuery,
+  TestsScreen,
+} from '../components/TestsScreen';
 import type {
   ListTestsParams,
   TestList,
@@ -16,7 +21,8 @@ type RecordReadFailure = { text: string; testId: string };
 
 function queryParameters(filters: HistoryFilters): ListTestsParams {
   const params: ListTestsParams = {};
-  if (filters.query.trim()) params.q = filters.query.trim();
+  const query = normalizeHistoryQuery(filters.query);
+  if (query) params.q = query;
   // Calendar boundaries are local midnights; advancing the date also handles DST.
   if (filters.from) params.createdFrom = new Date(`${filters.from}T00:00:00`).toISOString();
   if (filters.through) {
@@ -268,6 +274,15 @@ export function History({
         }}
         onNew={() => onCopy(selected.parameters)}
       >
+        {completedRecord &&
+          selected.testId === completedRecord.testId &&
+          selectedKey !== completedKey && (
+            <p role="status">
+              В истории сохранена другая версия. По последнему снимку:{' '}
+              {outcomeLabel(completedRecord.outcome)}; сохранение:{' '}
+              {saveLabel(completedRecord.saveStatus)}.
+            </p>
+          )}
         {visible && recordFailure && (
           <div role="alert">
             <p>{recordFailure.text}</p>
@@ -299,7 +314,12 @@ export function History({
         pressure: item.parameters.pmaxPa,
         actuator: false,
         outcome: outcomeLabel(item.outcome),
-        saving: saveLabel(item.saveStatus),
+        saving:
+          completedRecord &&
+          item.testId === completedRecord.testId &&
+          resultReadVersion(item) !== completedKey
+            ? `${saveLabel(item.saveStatus)}. По последнему снимку: ${outcomeLabel(completedRecord.outcome)}; сохранение: ${saveLabel(completedRecord.saveStatus)}.`
+            : saveLabel(item.saveStatus),
         active: item.testId === activeTestId,
       }))}
       filters={filters}

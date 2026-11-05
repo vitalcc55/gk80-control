@@ -45,6 +45,79 @@ const record: TestRecord = {
 };
 const callbacks = { onNew: vi.fn(), onCopy: vi.fn(), onDiscard: vi.fn() };
 
+it('normalizes history whitespace like the core without removing a byte order mark', async () => {
+  const service = {
+    ...desktopDemoService,
+    listTests: vi.fn().mockResolvedValue({ items: [], nextAfter: null }),
+  };
+  render(
+    <History {...callbacks} service={service} available disabled={false} draftAvailable={false} />,
+  );
+  const user = userEvent.setup();
+  const input = screen.getByLabelText('Поиск по номеру или изделию');
+  await user.click(input);
+  await user.paste('\ufeff');
+  await user.click(screen.getByRole('button', { name: 'Найти' }));
+  await waitFor(() =>
+    expect(service.listTests).toHaveBeenLastCalledWith(expect.objectContaining({ q: '\ufeff' })),
+  );
+  await user.clear(input);
+  const name = 'А'.repeat(200);
+  await user.paste(`\u0085${name}\u0085`);
+  await user.click(screen.getByRole('button', { name: 'Найти' }));
+  await waitFor(() =>
+    expect(service.listTests).toHaveBeenLastCalledWith(expect.objectContaining({ q: name })),
+  );
+});
+
+it('distinguishes the stored record from an unsaved latest result in the list and detail', async () => {
+  const stored = {
+    ...record,
+    stage: TestRecordStage.Running,
+    outcome: TestRecordOutcome.TestRecordOutcomePending,
+    dataQuality: TestRecordDataQuality.TestRecordDataQualityPending,
+  };
+  const latest = {
+    ...record,
+    outcome: TestRecordOutcome.TestRecordOutcomeInterrupted,
+    dataQuality: TestRecordDataQuality.TestRecordDataQualityIncomplete,
+    saveStatus: TestRecordSaveStatus.TestRecordSaveStatusFailed,
+  };
+  const service = {
+    ...desktopDemoService,
+    listTests: vi.fn().mockResolvedValue({ items: [stored], nextAfter: null }),
+    test: vi.fn().mockResolvedValue(stored),
+  };
+  const draw = (completedRecord: TestRecord) => (
+    <History
+      {...callbacks}
+      service={service}
+      available
+      disabled={false}
+      draftAvailable={false}
+      completedRecord={completedRecord}
+    />
+  );
+  const view = render(draw(latest));
+  expect(await screen.findByText(/По последнему снимку: Прервано.*Ошибка сохранения/)).toBeTruthy();
+  await userEvent.setup().click(screen.getByRole('button', { name: /Открыть Первая/ }));
+  expect(await screen.findByText(/В истории сохранена другая версия/)).toBeTruthy();
+  expect(screen.getByText(/По последнему снимку: Прервано.*Ошибка сохранения/)).toBeTruthy();
+  expect(screen.getByText('Ожидается')).toBeTruthy();
+  expect(screen.getByText('Сохранено')).toBeTruthy();
+  view.unmount();
+  const uncertain = { ...latest, saveStatus: TestRecordSaveStatus.TestRecordSaveStatusUnknown };
+  const uncertainView = render(draw(uncertain));
+  await userEvent.setup().click(await screen.findByRole('button', { name: /Открыть Первая/ }));
+  expect(screen.getByText(/По последнему снимку: Прервано.*Не подтверждено/)).toBeTruthy();
+  const saved = { ...uncertain, saveStatus: TestRecordSaveStatus.TestRecordSaveStatusSaved };
+  service.test.mockResolvedValue(saved);
+  uncertainView.rerender(draw(saved));
+  await waitFor(() => expect(screen.queryByText(/В истории сохранена другая версия/)).toBeNull());
+  expect(screen.getByText('Прервано')).toBeTruthy();
+  expect(screen.getByText('Сохранено')).toBeTruthy();
+});
+
 function FocusShell({ children }: { children: ReactNode }) {
   return (
     <AppShell

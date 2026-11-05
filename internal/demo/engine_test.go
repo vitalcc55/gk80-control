@@ -56,7 +56,11 @@ func TestMeasurementTimingUsesAcceptedSamplesAndEndsWithMeasurement(t *testing.T
 			}
 			defer func() { _ = store.Close() }()
 			engine := newTestEngine(t, store, NewSimulator(), uuid.New())
-			created, err := engine.Create(ctx, command(1.1))
+			duration := 1.1
+			if stop {
+				duration = 30
+			}
+			created, err := engine.Create(ctx, command(duration))
 			if err != nil || created.TestId == nil {
 				t.Fatalf("create: %+v %v", created, err)
 			}
@@ -74,9 +78,11 @@ func TestMeasurementTimingUsesAcceptedSamplesAndEndsWithMeasurement(t *testing.T
 			if _, err := engine.Confirm(ctx, id, pending.PendingAction.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: 2}); err != nil {
 				t.Fatal(err)
 			}
-			observed := waitFor(t, engine, func(s State) bool { return s.MeasurementTiming != nil && s.MeasurementTiming.ElapsedSeconds > 0 })
+			observed := waitFor(t, engine, func(s State) bool {
+				return s.MeasurementTiming != nil && (!stop || s.MeasurementTiming.ElapsedSeconds > 0)
+			})
 			clock := *observed.MeasurementTiming
-			if math.Abs(clock.RemainingSeconds-max(0, 1.1-clock.ElapsedSeconds)) > 1e-9 {
+			if math.Abs(clock.RemainingSeconds-max(0, duration-clock.ElapsedSeconds)) > 1e-9 {
 				t.Fatalf("unrelated clock: %+v", clock)
 			}
 			observed.MeasurementTiming.ElapsedSeconds = 999
