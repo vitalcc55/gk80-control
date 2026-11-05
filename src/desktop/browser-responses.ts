@@ -251,6 +251,18 @@ function exactLookup(value: unknown): value is Contract.ExactLookupResult {
   );
 }
 
+function measurementTiming(value: unknown): value is Contract.MeasurementTiming {
+  return (
+    fields(value, ['elapsedSeconds', 'remainingSeconds']) &&
+    finite(value['elapsedSeconds']) &&
+    value['elapsedSeconds'] >= 0 &&
+    value['elapsedSeconds'] <= Number.MAX_SAFE_INTEGER &&
+    finite(value['remainingSeconds']) &&
+    value['remainingSeconds'] >= 0 &&
+    value['remainingSeconds'] <= 3600
+  );
+}
+
 function snapshot(value: unknown): value is Contract.Snapshot {
   return (
     fields(value, [
@@ -261,6 +273,7 @@ function snapshot(value: unknown): value is Contract.Snapshot {
       'activeTest',
       'pendingAction',
       'measurements',
+      'measurementTiming',
     ]) &&
     text(value['apiVersion']) &&
     uuid(value['backendRunId']) &&
@@ -268,6 +281,7 @@ function snapshot(value: unknown): value is Contract.Snapshot {
     counter(value['lastEventSequence']) &&
     (value['activeTest'] === null || testRecord(value['activeTest'])) &&
     (value['pendingAction'] === null || pendingAction(value['pendingAction'])) &&
+    (value['measurementTiming'] === null || measurementTiming(value['measurementTiming'])) &&
     Array.isArray(value['measurements']) &&
     value['measurements'].length <= 3 &&
     value['measurements'].every(measurement)

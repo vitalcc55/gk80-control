@@ -37,34 +37,36 @@ type Repository interface {
 
 // State is an internal observation, not yet the transport snapshot or event stream.
 type State struct {
-	BackendRunID  uuid.UUID
-	Record        *contract.TestRecord
-	PendingAction *contract.PendingAction
-	Measurements  []contract.Measurement
-	Stop          *contract.CommandStatus
-	Revision      int64
+	MeasurementTiming *contract.MeasurementTiming
+	BackendRunID      uuid.UUID
+	Record            *contract.TestRecord
+	PendingAction     *contract.PendingAction
+	Measurements      []contract.Measurement
+	Stop              *contract.CommandStatus
+	Revision          int64
 }
 
 type run struct {
-	record         contract.TestRecord
-	revision       int64
-	pending        *contract.PendingAction
-	latest         []contract.Measurement
-	startID        uuid.UUID
-	started        bool
-	stopping       bool
-	naturalDone    bool
-	finishDone     chan struct{}
-	finishElapsed  time.Duration
-	finalized      bool
-	stopStatus     *contract.CommandStatus
-	stopDone       chan struct{}
-	stopDetails    storage.StopDetails
-	writerDone     chan struct{}
-	writerErr      error
-	pendingSamples int
-	ctx            context.Context
-	cancel         context.CancelFunc
+	measurementTiming *contract.MeasurementTiming
+	record            contract.TestRecord
+	revision          int64
+	pending           *contract.PendingAction
+	latest            []contract.Measurement
+	startID           uuid.UUID
+	started           bool
+	stopping          bool
+	naturalDone       bool
+	finishDone        chan struct{}
+	finishElapsed     time.Duration
+	finalized         bool
+	stopStatus        *contract.CommandStatus
+	stopDone          chan struct{}
+	stopDetails       storage.StopDetails
+	writerDone        chan struct{}
+	writerErr         error
+	pendingSamples    int
+	ctx               context.Context
+	cancel            context.CancelFunc
 }
 
 type pendingCreate struct {
@@ -616,6 +618,10 @@ func (e *Engine) State() State {
 		record.FinishedAt = &finished
 	}
 	state.Record = &record
+	if !e.active.stopping && record.Stage == "running" && e.active.pending == nil && e.active.measurementTiming != nil {
+		timing := *e.active.measurementTiming
+		state.MeasurementTiming = &timing
+	}
 	state.Revision = e.active.revision
 	if e.active.pending != nil {
 		action := *e.active.pending
@@ -1546,6 +1552,9 @@ func (e *Engine) measure(current *run) {
 		}
 		select {
 		case queue <- packet:
+			current.measurementTiming = &contract.MeasurementTiming{
+				ElapsedSeconds: elapsed.Seconds(), RemainingSeconds: max(0, (duration - elapsed).Seconds()),
+			}
 			current.pendingSamples += len(packet)
 			current.record.SaveStatus = "pending"
 			current.latest = latest

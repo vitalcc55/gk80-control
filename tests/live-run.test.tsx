@@ -81,6 +81,7 @@ const snapshot: Snapshot = {
   lastEventSequence: 1,
   activeTest: record,
   pendingAction: null,
+  measurementTiming: null,
   measurements: [first],
 };
 
@@ -99,6 +100,7 @@ it('retains isolated recent source contexts and evicts the least recently observ
     'source-A/database-A/test-A',
     {
       ...snapshot,
+      measurementTiming: null,
       measurements: [{ ...first, sequence: 2, measuredAt: '2026-10-30T00:00:03Z', value: 1002 }],
     },
     true,
@@ -124,6 +126,7 @@ it('isolates a new test and bounds retained points without changing the original
         record={record}
         snapshot={{
           ...snapshot,
+          measurementTiming: null,
           measurements: [
             {
               ...first,
@@ -162,6 +165,7 @@ it('isolates a new test and bounds retained points without changing the original
 it('keeps the last received reading visible while a new snapshot is being confirmed', () => {
   const withAction = {
     ...snapshot,
+    measurementTiming: null,
     measurements: [
       first,
       { ...first, channel: MeasurementChannel.Dd2, value: 150 },
@@ -216,6 +220,7 @@ it('keeps the last received reading visible while a new snapshot is being confir
       record={record}
       snapshot={{
         ...snapshot,
+        measurementTiming: null,
         measurements: [
           {
             ...first,
@@ -238,6 +243,7 @@ it('keeps the last received reading visible while a new snapshot is being confir
       record={record}
       snapshot={{
         ...snapshot,
+        measurementTiming: null,
         measurements: [
           {
             ...first,
@@ -275,6 +281,7 @@ it('breaks the chart across an unavailable measurement and labels pending confir
       record={record}
       snapshot={{
         ...snapshot,
+        measurementTiming: null,
         measurements: [unavailable],
         pendingAction: {
           testId: record.testId,

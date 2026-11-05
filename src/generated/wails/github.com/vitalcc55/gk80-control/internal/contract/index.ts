@@ -35,6 +35,7 @@ export type {
     ListTestsParams,
     Measurement,
     MeasurementPage,
+    MeasurementTiming,
     PendingAction,
     Readiness,
     ReadinessCheck,

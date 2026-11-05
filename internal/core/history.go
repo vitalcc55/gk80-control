@@ -15,7 +15,7 @@ import (
 )
 
 type historyReader interface {
-	ListTests(context.Context, *uuid.UUID, int) ([]contract.TestRecord, *uuid.UUID, error)
+	ListTests(context.Context, contract.ListTestsParams) ([]contract.TestRecord, *uuid.UUID, error)
 	Test(context.Context, uuid.UUID) (contract.TestRecord, error)
 	MeasurementsPage(context.Context, uuid.UUID, int64, int) (contract.MeasurementPage, error)
 	AuditPage(context.Context, uuid.UUID, int64, int) (contract.AuditPage, error)
@@ -113,19 +113,17 @@ func (h *coreHTTP) historyList(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	values, limit, err := historyQuery(r, true)
-	var after *uuid.UUID
-	if err == nil && values.Get("after") != "" {
-		var id uuid.UUID
-		id, err = parsePathID(values.Get("after"))
-		after = &id
+	values, err := url.ParseQuery(r.URL.RawQuery)
+	params := contract.ListTestsParams{}
+	if err == nil {
+		params, err = contract.ParseTestListQuery(values)
 	}
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, "invalid_request", "Invalid request")
 		return
 	}
 	h.readHistory(w, r, owner, func(ctx context.Context) (any, error) {
-		items, next, err := h.history.ListTests(ctx, after, limit)
+		items, next, err := h.history.ListTests(ctx, params)
 		return contract.TestList{Items: items, NextAfter: next}, err
 	})
 }

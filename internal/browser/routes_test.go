@@ -43,6 +43,7 @@ type routeService struct {
 	createFunc                   func(context.Context) (contract.CommandDispatch, error)
 	history                      []historyCall
 	historyErr                   error
+	lastListParams               contract.ListTestsParams
 	testFunc                     func(context.Context, string) (contract.TestRecord, error)
 }
 
@@ -55,6 +56,7 @@ type historyCall struct {
 func (f *routeService) ListTests(_ context.Context, params contract.ListTestsParams) (contract.TestList, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.lastListParams = params
 	call := historyCall{name: "list", limit: 100}
 	if params.Limit != nil {
 		call.limit = *params.Limit
@@ -630,6 +632,9 @@ func TestHistoryRoutesUseServiceAndValidateCursors(t *testing.T) {
 	}
 	for _, path := range []string{
 		"/api/tests?limit=0", "/api/tests?limit=501", "/api/tests?limit=1&limit=2", "/api/tests?after=", "/api/tests?unknown=1",
+		"/api/tests?q=a&q=b", "/api/tests?q=" + strings.Repeat("%D1%8F", 201), "/api/tests?outcome=all", "/api/tests?createdFrom=bad",
+		"/api/tests?createdFrom=2026-11-06T00:00:00Z&createdBefore=2026-11-05T00:00:00Z",
+		"/api/tests/" + first + "/audit?q=valve",
 		"/api/tests/" + first + "?after=1", "/api/tests/" + first + "/measurements?after=-1", "/api/tests/" + first + "/audit?after=9223372036854775808",
 		"/api/tests/00000000-0000-0000-0000-000000000000", "/api/tests/" + strings.ReplaceAll(first, "-", "") + "/readiness",
 	} {
@@ -642,6 +647,15 @@ func TestHistoryRoutesUseServiceAndValidateCursors(t *testing.T) {
 	fake.mu.Unlock()
 	if len(calls) != 7 || calls[0] != (historyCall{name: "list", limit: 100}) || calls[1] != (historyCall{name: "list", limit: 1}) || calls[2] != (historyCall{name: "list", cursor: first, limit: 1}) || calls[3] != (historyCall{name: "test", id: first}) || calls[4] != (historyCall{name: "readiness", id: first}) || calls[5] != (historyCall{name: "measurements", id: first, after: 3, limit: 500}) || calls[6] != (historyCall{name: "audit", id: first, limit: 100}) {
 		t.Fatalf("history calls: %+v", calls)
+	}
+	if status, _ := request("/api/tests?q=valve%25_&outcome=completed&createdFrom=2026-11-05T00:00:00Z&createdBefore=2026-11-06T00:00:00Z&limit=1", true); status != http.StatusOK {
+		t.Fatalf("filtered request: %d", status)
+	}
+	fake.mu.Lock()
+	params := fake.lastListParams
+	fake.mu.Unlock()
+	if params.Q == nil || *params.Q != "valve%_" || params.Outcome == nil || *params.Outcome != "completed" || params.CreatedFrom == nil || *params.CreatedFrom != "2026-11-05T00:00:00Z" || params.CreatedBefore == nil || params.Limit == nil || *params.Limit != 1 {
+		t.Fatalf("lost filters: %+v", params)
 	}
 	fake.mu.Lock()
 	fake.historyErr = errors.New("read failed")

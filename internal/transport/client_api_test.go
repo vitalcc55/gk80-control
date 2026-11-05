@@ -292,6 +292,23 @@ func TestNativeClientRunsAndReopensDemo(t *testing.T) {
 	if err != nil || len(secondPage.Items) != 1 || secondPage.NextAfter != nil || firstPage.Items[0].TestId == secondPage.Items[0].TestId {
 		t.Fatalf("second page: %+v %v", secondPage, err)
 	}
+	secondRecord, err := client.Test(ctx, lease.LeaseId, *second.TestId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := "v2"
+	from, before := secondRecord.CreatedAt.Format(time.RFC3339Nano), secondRecord.CreatedAt.Add(time.Hour).Format(time.RFC3339Nano)
+	outcome := contract.TestRecordOutcome("pending")
+	filters := contract.ListTestsParams{Q: &query, CreatedFrom: &from, CreatedBefore: &before, Outcome: &outcome, Limit: &limit}
+	filtered, err := client.ListTests(ctx, lease.LeaseId, filters)
+	if err != nil || len(filtered.Items) != 1 || filtered.Items[0].TestId != *second.TestId || filtered.NextAfter != nil {
+		t.Fatalf("filtered native history: %+v %v", filtered, err)
+	}
+	outcome = "completed"
+	filtered, err = client.ListTests(ctx, lease.LeaseId, filters)
+	if err != nil || len(filtered.Items) != 0 {
+		t.Fatalf("combined outcome filter: %+v %v", filtered, err)
+	}
 	if firstPage.Items[0].TestId != id && firstPage.Items[0].TestId != *second.TestId || secondPage.Items[0].TestId != id && secondPage.Items[0].TestId != *second.TestId {
 		t.Fatal("unexpected history IDs")
 	}

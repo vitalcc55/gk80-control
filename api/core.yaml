@@ -195,6 +195,33 @@ paths:
     get:
       operationId: listTests
       parameters:
+        - name: q
+          in: query
+          required: false
+          description: Подстрока UUID или изделия без учёта Unicode-регистра; внешние пробелы игнорируются, % и _ буквальные.
+          schema: { type: string, maxLength: 200 }
+        - name: createdFrom
+          in: query
+          required: false
+          description: Начало диапазона createdAt включительно; RFC 3339, точность до наносекунды.
+          schema:
+            type: string
+            format: date-time
+            x-go-type: string
+            pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-5][0-9](\.[0-9]{1,9})?(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$'
+        - name: createdBefore
+          in: query
+          required: false
+          description: Конец диапазона createdAt исключительно; позже createdFrom, точность до наносекунды.
+          schema:
+            type: string
+            format: date-time
+            x-go-type: string
+            pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-5][0-9](\.[0-9]{1,9})?(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$'
+        - name: outcome
+          in: query
+          required: false
+          schema: { $ref: "#/components/schemas/TestRecordOutcome" }
         - name: after
           in: query
           required: false
@@ -757,6 +784,9 @@ components:
         actionId: { type: string, format: uuid }
         testId: { type: string, format: uuid }
         instruction: { type: string }
+    TestRecordOutcome:
+      type: string
+      enum: [pending, completed, interrupted, unknown]
     TestRecord:
       type: object
       additionalProperties: false
@@ -783,7 +813,7 @@ components:
           format: uuid
           description: Заранее сохранённый идентификатор единственной команды остановки этого испытания.
         stage: { type: string, enum: [preparing, running, stopping, finished] }
-        outcome: { type: string, enum: [pending, completed, interrupted, unknown] }
+        outcome: { $ref: "#/components/schemas/TestRecordOutcome" }
         dataQuality: { type: string, enum: [pending, complete, incomplete, unknown] }
         saveStatus: { type: string, enum: [saved, pending, failed, unknown] }
         createdAt: { type: string, format: date-time }
@@ -798,6 +828,14 @@ components:
           maxItems: 500
           items: { $ref: "#/components/schemas/TestRecord" }
         nextAfter: { type: [string, "null"], format: uuid }
+    MeasurementTiming:
+      type: object
+      additionalProperties: false
+      description: Монотонное время Engine на последнем принятом отсчёте. Нулевой остаток не подтверждает завершение этапа.
+      required: [elapsedSeconds, remainingSeconds]
+      properties:
+        elapsedSeconds: { type: number, format: double, minimum: 0, maximum: 9007199254740991 }
+        remainingSeconds: { type: number, format: double, minimum: 0, maximum: 3600 }
     Snapshot:
       type: object
       additionalProperties: false
@@ -810,6 +848,7 @@ components:
           activeTest,
           pendingAction,
           measurements,
+          measurementTiming,
         ]
       properties:
         apiVersion: { type: string }
@@ -823,6 +862,11 @@ components:
         pendingAction:
           oneOf:
             - $ref: "#/components/schemas/PendingAction"
+            - type: "null"
+        measurementTiming:
+          description: Неизвестно до первого принятого отсчёта и вне измерения; это последнее наблюдение, не таймер UI.
+          oneOf:
+            - $ref: "#/components/schemas/MeasurementTiming"
             - type: "null"
         measurements:
           type: array

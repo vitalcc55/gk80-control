@@ -242,7 +242,7 @@
   {
     "name": "complete Snapshot",
     "schema": "Snapshot",
-    "json": "{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":null,\"pendingAction\":null,\"measurements\":[]}",
+    "json": "{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":null,\"pendingAction\":null,\"measurementTiming\":null,\"measurements\":[]}",
     "valid": true,
     "browserValid": true,
     "kind": "schema"
@@ -258,7 +258,7 @@
   {
     "name": "additional property Snapshot",
     "schema": "Snapshot",
-    "json": "{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":null,\"pendingAction\":null,\"measurements\":[],\"extra\":true}",
+    "json": "{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":null,\"pendingAction\":null,\"measurementTiming\":null,\"measurements\":[],\"extra\":true}",
     "valid": false,
     "browserValid": false,
     "kind": "schema"
@@ -266,7 +266,7 @@
   {
     "name": "complete SessionView",
     "schema": "SessionView",
-    "json": "{\"connection\":{\"hostRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"status\":\"live\",\"linkValid\":true,\"leaseAcquireUnknown\":false,\"streamGeneration\":0},\"snapshot\":{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":null,\"pendingAction\":null,\"measurements\":[]},\"validForMs\":0,\"linkValidForMs\":0}",
+    "json": "{\"connection\":{\"hostRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"status\":\"live\",\"linkValid\":true,\"leaseAcquireUnknown\":false,\"streamGeneration\":0},\"snapshot\":{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":null,\"pendingAction\":null,\"measurementTiming\":null,\"measurements\":[]},\"validForMs\":0,\"linkValidForMs\":0}",
     "valid": true,
     "browserValid": true,
     "kind": "schema"
@@ -282,7 +282,7 @@
   {
     "name": "additional property SessionView",
     "schema": "SessionView",
-    "json": "{\"connection\":{\"hostRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"status\":\"live\",\"linkValid\":true,\"leaseAcquireUnknown\":false,\"streamGeneration\":0},\"snapshot\":{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":null,\"pendingAction\":null,\"measurements\":[]},\"validForMs\":0,\"linkValidForMs\":0,\"extra\":true}",
+    "json": "{\"connection\":{\"hostRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"status\":\"live\",\"linkValid\":true,\"leaseAcquireUnknown\":false,\"streamGeneration\":0},\"snapshot\":{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":null,\"pendingAction\":null,\"measurementTiming\":null,\"measurements\":[]},\"validForMs\":0,\"linkValidForMs\":0,\"extra\":true}",
     "valid": false,
     "browserValid": false,
     "kind": "schema"
@@ -650,7 +650,7 @@
   {
     "name": "negative deadline",
     "schema": "SessionView",
-    "json": "{\"connection\":{\"hostRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"status\":\"live\",\"linkValid\":true,\"leaseAcquireUnknown\":false,\"streamGeneration\":0},\"snapshot\":{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":null,\"pendingAction\":null,\"measurements\":[]},\"validForMs\":-1,\"linkValidForMs\":0}",
+    "json": "{\"connection\":{\"hostRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"status\":\"live\",\"linkValid\":true,\"leaseAcquireUnknown\":false,\"streamGeneration\":0},\"snapshot\":{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":null,\"pendingAction\":null,\"measurementTiming\":null,\"measurements\":[]},\"validForMs\":-1,\"linkValidForMs\":0}",
     "valid": false,
     "browserValid": false,
     "kind": "schema"
@@ -658,7 +658,7 @@
   {
     "name": "zero deadline is structural not fresh",
     "schema": "SessionView",
-    "json": "{\"connection\":{\"hostRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"status\":\"live\",\"linkValid\":true,\"leaseAcquireUnknown\":false,\"streamGeneration\":0},\"snapshot\":{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":null,\"pendingAction\":null,\"measurements\":[]},\"validForMs\":0,\"linkValidForMs\":0}",
+    "json": "{\"connection\":{\"hostRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"status\":\"live\",\"linkValid\":true,\"leaseAcquireUnknown\":false,\"streamGeneration\":0},\"snapshot\":{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":null,\"pendingAction\":null,\"measurementTiming\":null,\"measurements\":[]},\"validForMs\":0,\"linkValidForMs\":0}",
     "valid": true,
     "browserValid": true,
     "kind": "schema"
@@ -666,7 +666,7 @@
   {
     "name": "null measurements",
     "schema": "Snapshot",
-    "json": "{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":null,\"pendingAction\":null,\"measurements\":null}",
+    "json": "{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":null,\"pendingAction\":null,\"measurementTiming\":null,\"measurements\":null}",
     "valid": false,
     "browserValid": false,
     "kind": "schema"
@@ -674,7 +674,7 @@
   {
     "name": "too many measurements",
     "schema": "Snapshot",
-    "json": "{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":null,\"pendingAction\":null,\"measurements\":[{\"sequence\":1,\"channel\":\"dd1\",\"quantity\":\"pressure\",\"value\":0,\"unit\":\"Pa\",\"observedAt\":\"2026-11-05T10:00:00.123456789Z\",\"measuredAt\":\"2026-11-05T10:00:00.123456789Z\",\"quality\":\"valid\",\"source\":\"simulator\"},{\"sequence\":1,\"channel\":\"dd1\",\"quantity\":\"pressure\",\"value\":0,\"unit\":\"Pa\",\"observedAt\":\"2026-11-05T10:00:00.123456789Z\",\"measuredAt\":\"2026-11-05T10:00:00.123456789Z\",\"quality\":\"valid\",\"source\":\"simulator\"},{\"sequence\":1,\"channel\":\"dd1\",\"quantity\":\"pressure\",\"value\":0,\"unit\":\"Pa\",\"observedAt\":\"2026-11-05T10:00:00.123456789Z\",\"measuredAt\":\"2026-11-05T10:00:00.123456789Z\",\"quality\":\"valid\",\"source\":\"simulator\"},{\"sequence\":1,\"channel\":\"dd1\",\"quantity\":\"pressure\",\"value\":0,\"unit\":\"Pa\",\"observedAt\":\"2026-11-05T10:00:00.123456789Z\",\"measuredAt\":\"2026-11-05T10:00:00.123456789Z\",\"quality\":\"valid\",\"source\":\"simulator\"}]}",
+    "json": "{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":null,\"pendingAction\":null,\"measurementTiming\":null,\"measurements\":[{\"sequence\":1,\"channel\":\"dd1\",\"quantity\":\"pressure\",\"value\":0,\"unit\":\"Pa\",\"observedAt\":\"2026-11-05T10:00:00.123456789Z\",\"measuredAt\":\"2026-11-05T10:00:00.123456789Z\",\"quality\":\"valid\",\"source\":\"simulator\"},{\"sequence\":1,\"channel\":\"dd1\",\"quantity\":\"pressure\",\"value\":0,\"unit\":\"Pa\",\"observedAt\":\"2026-11-05T10:00:00.123456789Z\",\"measuredAt\":\"2026-11-05T10:00:00.123456789Z\",\"quality\":\"valid\",\"source\":\"simulator\"},{\"sequence\":1,\"channel\":\"dd1\",\"quantity\":\"pressure\",\"value\":0,\"unit\":\"Pa\",\"observedAt\":\"2026-11-05T10:00:00.123456789Z\",\"measuredAt\":\"2026-11-05T10:00:00.123456789Z\",\"quality\":\"valid\",\"source\":\"simulator\"},{\"sequence\":1,\"channel\":\"dd1\",\"quantity\":\"pressure\",\"value\":0,\"unit\":\"Pa\",\"observedAt\":\"2026-11-05T10:00:00.123456789Z\",\"measuredAt\":\"2026-11-05T10:00:00.123456789Z\",\"quality\":\"valid\",\"source\":\"simulator\"}]}",
     "valid": false,
     "browserValid": false,
     "kind": "schema"
@@ -682,7 +682,7 @@
   {
     "name": "complete last known snapshot",
     "schema": "Snapshot",
-    "json": "{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":{\"testId\":\"10000000-0000-4000-8000-000000000001\",\"demo\":true,\"operatorId\":\"demo\",\"parameters\":{\"valve\":\"V\",\"areaM2\":0.1,\"pmaxPa\":1000,\"measurementSeconds\":1.5,\"direction\":\"pressure\",\"actuator\":false},\"stopCommandId\":\"10000000-0000-4000-8000-000000000002\",\"stage\":\"running\",\"outcome\":\"pending\",\"dataQuality\":\"pending\",\"saveStatus\":\"saved\",\"createdAt\":\"2026-11-05T10:00:00.123456789Z\"},\"pendingAction\":{\"actionId\":\"10000000-0000-4000-8000-000000000001\",\"testId\":\"10000000-0000-4000-8000-000000000002\",\"instruction\":\"\"},\"measurements\":[{\"sequence\":1,\"channel\":\"dd1\",\"quantity\":\"pressure\",\"value\":0,\"unit\":\"Pa\",\"observedAt\":\"2026-11-05T10:00:00.123456789Z\",\"measuredAt\":\"2026-11-05T10:00:00.123456789Z\",\"quality\":\"valid\",\"source\":\"simulator\"}]}",
+    "json": "{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":{\"testId\":\"10000000-0000-4000-8000-000000000001\",\"demo\":true,\"operatorId\":\"demo\",\"parameters\":{\"valve\":\"V\",\"areaM2\":0.1,\"pmaxPa\":1000,\"measurementSeconds\":1.5,\"direction\":\"pressure\",\"actuator\":false},\"stopCommandId\":\"10000000-0000-4000-8000-000000000002\",\"stage\":\"running\",\"outcome\":\"pending\",\"dataQuality\":\"pending\",\"saveStatus\":\"saved\",\"createdAt\":\"2026-11-05T10:00:00.123456789Z\"},\"pendingAction\":{\"actionId\":\"10000000-0000-4000-8000-000000000001\",\"testId\":\"10000000-0000-4000-8000-000000000002\",\"instruction\":\"\"},\"measurementTiming\":null,\"measurements\":[{\"sequence\":1,\"channel\":\"dd1\",\"quantity\":\"pressure\",\"value\":0,\"unit\":\"Pa\",\"observedAt\":\"2026-11-05T10:00:00.123456789Z\",\"measuredAt\":\"2026-11-05T10:00:00.123456789Z\",\"quality\":\"valid\",\"source\":\"simulator\"}]}",
     "valid": true,
     "browserValid": true,
     "kind": "schema"
@@ -690,7 +690,7 @@
   {
     "name": "non-v1 snapshot is schema-valid",
     "schema": "Snapshot",
-    "json": "{\"apiVersion\":\"future\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":null,\"pendingAction\":null,\"measurements\":[]}",
+    "json": "{\"apiVersion\":\"future\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":null,\"pendingAction\":null,\"measurementTiming\":null,\"measurements\":[]}",
     "valid": true,
     "browserValid": true,
     "kind": "schema"
@@ -1630,5 +1630,53 @@
     "valid": false,
     "browserValid": false,
     "kind": "json"
+  },
+  {
+    "name": "observed timing Snapshot",
+    "schema": "Snapshot",
+    "json": "{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":null,\"pendingAction\":null,\"measurements\":[],\"measurementTiming\":{\"elapsedSeconds\":1.25,\"remainingSeconds\":58.75}}",
+    "valid": true,
+    "browserValid": true,
+    "kind": "schema"
+  },
+  {
+    "name": "negative elapsed Snapshot",
+    "schema": "Snapshot",
+    "json": "{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":null,\"pendingAction\":null,\"measurements\":[],\"measurementTiming\":{\"elapsedSeconds\":-1,\"remainingSeconds\":60}}",
+    "valid": false,
+    "browserValid": false,
+    "kind": "schema"
+  },
+  {
+    "name": "missing remaining Snapshot",
+    "schema": "Snapshot",
+    "json": "{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":null,\"pendingAction\":null,\"measurements\":[],\"measurementTiming\":{\"elapsedSeconds\":1}}",
+    "valid": false,
+    "browserValid": false,
+    "kind": "schema"
+  },
+  {
+    "name": "extra timing field Snapshot",
+    "schema": "Snapshot",
+    "json": "{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":null,\"pendingAction\":null,\"measurements\":[],\"measurementTiming\":{\"elapsedSeconds\":1,\"remainingSeconds\":2,\"extra\":true}}",
+    "valid": false,
+    "browserValid": false,
+    "kind": "schema"
+  },
+  {
+    "name": "remaining beyond interval limit Snapshot",
+    "schema": "Snapshot",
+    "json": "{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":null,\"pendingAction\":null,\"measurements\":[],\"measurementTiming\":{\"elapsedSeconds\":1,\"remainingSeconds\":3601}}",
+    "valid": false,
+    "browserValid": false,
+    "kind": "schema"
+  },
+  {
+    "name": "missing timing Snapshot",
+    "schema": "Snapshot",
+    "json": "{\"apiVersion\":\"v1\",\"backendRunId\":\"10000000-0000-4000-8000-000000000001\",\"revision\":0,\"lastEventSequence\":0,\"activeTest\":null,\"pendingAction\":null,\"measurements\":[]}",
+    "valid": false,
+    "browserValid": false,
+    "kind": "schema"
   }
 ]

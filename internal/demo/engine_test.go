@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -42,6 +43,61 @@ func waitFor(t *testing.T, engine *Engine, predicate func(State) bool) State {
 		case <-timer.C:
 			t.Fatalf("state did not arrive: %+v", state)
 		}
+	}
+}
+
+func TestMeasurementTimingUsesAcceptedSamplesAndEndsWithMeasurement(t *testing.T) {
+	for _, stop := range []bool{false, true} {
+		t.Run(fmt.Sprint(stop), func(t *testing.T) {
+			ctx := context.Background()
+			store, err := storage.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = store.Close() }()
+			engine := newTestEngine(t, store, NewSimulator(), uuid.New())
+			created, err := engine.Create(ctx, command(1.1))
+			if err != nil || created.TestId == nil {
+				t.Fatalf("create: %+v %v", created, err)
+			}
+			id := *created.TestId
+			if engine.State().MeasurementTiming != nil {
+				t.Fatal("preparation has no measurement clock")
+			}
+			if _, err := engine.Start(ctx, id, contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: 1, ValveClosed: true, ConnectionConfirmed: true}); err != nil {
+				t.Fatal(err)
+			}
+			pending := engine.State()
+			if pending.MeasurementTiming != nil || pending.PendingAction == nil {
+				t.Fatal("operator wait must have unknown timing")
+			}
+			if _, err := engine.Confirm(ctx, id, pending.PendingAction.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: 2}); err != nil {
+				t.Fatal(err)
+			}
+			observed := waitFor(t, engine, func(s State) bool { return s.MeasurementTiming != nil && s.MeasurementTiming.ElapsedSeconds > 0 })
+			clock := *observed.MeasurementTiming
+			if math.Abs(clock.RemainingSeconds-max(0, 1.1-clock.ElapsedSeconds)) > 1e-9 {
+				t.Fatalf("unrelated clock: %+v", clock)
+			}
+			observed.MeasurementTiming.ElapsedSeconds = 999
+			if next := engine.State(); next.MeasurementTiming != nil && next.MeasurementTiming.ElapsedSeconds == 999 {
+				t.Fatal("mutable timing escaped Engine")
+			}
+			if stop {
+				if _, err := engine.Stop(ctx, id, observed.Record.StopCommandId); err != nil {
+					t.Fatal(err)
+				}
+				if engine.State().MeasurementTiming != nil {
+					t.Fatal("stop must not promise measurement remaining time")
+				}
+			}
+			finished := waitFor(t, engine, func(s State) bool {
+				return s.Record != nil && s.Record.Stage == "finished" && s.Record.SaveStatus == "saved"
+			})
+			if finished.MeasurementTiming != nil {
+				t.Fatal("finished test retained an active clock")
+			}
+		})
 	}
 }
 

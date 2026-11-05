@@ -1,7 +1,10 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { createBrowserBridge } from '../src/desktop/browser-bridge';
 import { CommandConflictError } from '../src/desktop/demo-service';
-import { TestParametersDirection } from '../src/generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
+import {
+  TestParametersDirection,
+  TestRecordOutcome,
+} from '../src/generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
 import responseExamples from './fixtures/browser-responses.json';
 
 afterEach(() => vi.useRealTimers());
@@ -38,6 +41,44 @@ it.each(['invalid UTF-8', 'leading BOM'])(
 );
 
 type Browser = ReturnType<typeof createBrowserBridge>;
+
+it.each(['outcome', 'createdFrom', 'createdBefore'] as const)(
+  'does not silently remove an invalid empty %s filter',
+  async (field) => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response('{}', { status: 400 }));
+    const service = createBrowserBridge(channel, fetcher).service;
+    await expect(service.listTests({ [field]: '' })).rejects.toThrow();
+    const query = new URL(String(fetcher.mock.calls[0]?.[0]), 'http://127.0.0.1:17880')
+      .searchParams;
+    expect(query.has(field)).toBe(true);
+    expect(query.get(field)).toBe('');
+  },
+);
+
+it('passes history filters and cursor together to the bounded read operation', async () => {
+  const fetcher = vi
+    .fn<typeof fetch>()
+    .mockResolvedValue(Response.json({ items: [], nextAfter: null }));
+  const service = createBrowserBridge(channel, fetcher).service;
+  await service.listTests({
+    q: 'Клапан 100%_',
+    createdFrom: '2026-11-05T00:00:00+03:00',
+    createdBefore: '2026-11-06T00:00:00+03:00',
+    outcome: TestRecordOutcome.TestRecordOutcomeCompleted,
+    after: responseId,
+    limit: 20,
+  });
+  const query = new URL(String(fetcher.mock.calls[0]?.[0]), 'http://127.0.0.1:17880').searchParams;
+  expect(Object.fromEntries(query)).toEqual({
+    q: 'Клапан 100%_',
+    createdFrom: '2026-11-05T00:00:00+03:00',
+    createdBefore: '2026-11-06T00:00:00+03:00',
+    outcome: 'completed',
+    after: responseId,
+    limit: '20',
+  });
+  expect(fetcher).toHaveBeenCalledOnce();
+});
 const operations: { name: string; schema: string; call: (browser: Browser) => Promise<unknown> }[] =
   [
     { name: 'status', schema: 'DesktopStatus', call: (b) => b.bridge.status() },
@@ -472,6 +513,7 @@ it('rejects malformed session data rather than confirming a connection', async (
         lastEventSequence: 1,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [null],
       },
       validForMs: 1000,
@@ -524,6 +566,7 @@ it('accepts a complete session snapshot with a simulated measurement', async () 
       },
     },
     pendingAction: null,
+    measurementTiming: null,
     measurements: [
       {
         sequence: 1,

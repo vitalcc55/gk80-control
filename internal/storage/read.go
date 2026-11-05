@@ -5,40 +5,97 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
+	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/vitalcc55/gk80-control/internal/contract"
 )
 
 // ListTests returns a bounded page in stable UUID order; it is not a chronological sort.
-func (s *Store) ListTests(ctx context.Context, after *uuid.UUID, limit int) ([]contract.TestRecord, *uuid.UUID, error) {
-	if limit < 1 || limit > 500 || (after != nil && *after == uuid.Nil) {
+func (s *Store) ListTests(ctx context.Context, params contract.ListTestsParams) ([]contract.TestRecord, *uuid.UUID, error) {
+	params, err := contract.NormalizeTestListParams(params)
+	if err != nil {
 		return nil, nil, ErrInvalidCommand
 	}
+	limit := *params.Limit
+	var createdFrom, createdBefore time.Time
+	if params.CreatedFrom != nil {
+		createdFrom, err = contract.ParseHistoryTime(*params.CreatedFrom)
+		if err != nil {
+			return nil, nil, ErrInvalidCommand
+		}
+	}
+	if params.CreatedBefore != nil {
+		createdBefore, err = contract.ParseHistoryTime(*params.CreatedBefore)
+		if err != nil {
+			return nil, nil, ErrInvalidCommand
+		}
+	}
 	cursor := ""
-	if after != nil {
-		cursor = after.String()
+	if params.After != nil {
+		cursor = params.After.String()
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, record FROM tests WHERE id > ? ORDER BY id LIMIT ?`, cursor, limit+1)
-	if err != nil {
-		return nil, nil, err
+	query := ""
+	if params.Q != nil {
+		query = foldHistoryText(*params.Q)
 	}
-	defer func() { _ = rows.Close() }()
 	items := make([]contract.TestRecord, 0)
-	for rows.Next() {
-		var id string
-		var body []byte
-		if err := rows.Scan(&id, &body); err != nil {
+	// Decode bounded portions for Unicode matching and exact timestamp comparisons.
+	// Close each cursor before scanning again so history does not retain the single connection.
+	const chunkSize = 128
+	for len(items) <= limit {
+		if err := ctx.Err(); err != nil {
 			return nil, nil, err
 		}
-		var record contract.TestRecord
-		if err := json.Unmarshal(body, &record); err != nil || record.TestId.String() != id {
-			return nil, nil, errors.New("invalid stored test")
+		rows, err := s.db.QueryContext(ctx, `SELECT id, record FROM tests WHERE id > ? ORDER BY id LIMIT ?`, cursor, chunkSize)
+		if err != nil {
+			return nil, nil, readError(ctx, err)
 		}
-		items = append(items, record)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, nil, err
+		count := 0
+		err = func() error {
+			defer func() { _ = rows.Close() }()
+			for rows.Next() {
+				var id string
+				var body []byte
+				if err := rows.Scan(&id, &body); err != nil {
+					return err
+				}
+				var record contract.TestRecord
+				if err := json.Unmarshal(body, &record); err != nil || record.TestId.String() != id {
+					return errors.New("invalid stored test")
+				}
+				cursor = id
+				count++
+				if query != "" && !strings.Contains(foldHistoryText(id), query) && !strings.Contains(foldHistoryText(record.Parameters.Valve), query) {
+					continue
+				}
+				if params.CreatedFrom != nil && record.CreatedAt.Before(createdFrom) {
+					continue
+				}
+				if params.CreatedBefore != nil && !record.CreatedAt.Before(createdBefore) {
+					continue
+				}
+				if params.Outcome != nil && record.Outcome != *params.Outcome {
+					continue
+				}
+				items = append(items, record)
+				if len(items) > limit {
+					break
+				}
+			}
+			return rows.Err()
+		}()
+		if err != nil {
+			return nil, nil, readError(ctx, err)
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		if count < chunkSize || len(items) > limit {
+			break
+		}
 	}
 	if len(items) <= limit {
 		return items, nil, nil
@@ -46,6 +103,17 @@ func (s *Store) ListTests(ctx context.Context, after *uuid.UUID, limit int) ([]c
 	items = items[:limit]
 	next := items[len(items)-1].TestId
 	return items, &next, nil
+}
+
+// SimpleFold also unifies case variants such as Greek final sigma; lowercase alone does not.
+func foldHistoryText(value string) string {
+	return strings.Map(func(r rune) rune {
+		canonical := r
+		for next := unicode.SimpleFold(r); next != r; next = unicode.SimpleFold(next) {
+			canonical = min(canonical, next)
+		}
+		return canonical
+	}, value)
 }
 
 // Command reads the stored result without replaying its original request.

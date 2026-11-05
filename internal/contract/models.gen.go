@@ -345,30 +345,6 @@ func (e TestRecordDataQuality) Valid() bool {
 	}
 }
 
-// Defines values for TestRecordOutcome.
-const (
-	TestRecordOutcomeCompleted   TestRecordOutcome = "completed"
-	TestRecordOutcomeInterrupted TestRecordOutcome = "interrupted"
-	TestRecordOutcomePending     TestRecordOutcome = "pending"
-	TestRecordOutcomeUnknown     TestRecordOutcome = "unknown"
-)
-
-// Valid indicates whether the value is a known member of the TestRecordOutcome enum.
-func (e TestRecordOutcome) Valid() bool {
-	switch e {
-	case TestRecordOutcomeCompleted:
-		return true
-	case TestRecordOutcomeInterrupted:
-		return true
-	case TestRecordOutcomePending:
-		return true
-	case TestRecordOutcomeUnknown:
-		return true
-	default:
-		return false
-	}
-}
-
 // Defines values for TestRecordSaveStatus.
 const (
 	TestRecordSaveStatusFailed  TestRecordSaveStatus = "failed"
@@ -411,6 +387,30 @@ func (e TestRecordStage) Valid() bool {
 	case Running:
 		return true
 	case Stopping:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for TestRecordOutcome.
+const (
+	TestRecordOutcomeCompleted   TestRecordOutcome = "completed"
+	TestRecordOutcomeInterrupted TestRecordOutcome = "interrupted"
+	TestRecordOutcomePending     TestRecordOutcome = "pending"
+	TestRecordOutcomeUnknown     TestRecordOutcome = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the TestRecordOutcome enum.
+func (e TestRecordOutcome) Valid() bool {
+	switch e {
+	case TestRecordOutcomeCompleted:
+		return true
+	case TestRecordOutcomeInterrupted:
+		return true
+	case TestRecordOutcomePending:
+		return true
+	case TestRecordOutcomeUnknown:
 		return true
 	default:
 		return false
@@ -639,6 +639,12 @@ type MeasurementPage struct {
 	NextAfter *int64 `json:"nextAfter"`
 }
 
+// MeasurementTiming Монотонное время Engine на последнем принятом отсчёте. Нулевой остаток не подтверждает завершение этапа.
+type MeasurementTiming struct {
+	ElapsedSeconds   float64 `json:"elapsedSeconds"`
+	RemainingSeconds float64 `json:"remainingSeconds"`
+}
+
 // PendingAction defines model for PendingAction.
 type PendingAction struct {
 	ActionId    openapi_types.UUID `json:"actionId"`
@@ -681,6 +687,9 @@ type Snapshot struct {
 	ApiVersion        string             `json:"apiVersion"`
 	BackendRunId      openapi_types.UUID `json:"backendRunId"`
 	LastEventSequence int64              `json:"lastEventSequence"`
+
+	// MeasurementTiming Неизвестно до первого принятого отсчёта и вне измерения; это последнее наблюдение, не таймер UI.
+	MeasurementTiming *MeasurementTiming `json:"measurementTiming"`
 	Measurements      []Measurement      `json:"measurements"`
 	PendingAction     *PendingAction     `json:"pendingAction"`
 	Revision          int64              `json:"revision"`
@@ -757,14 +766,14 @@ type TestRecord struct {
 // TestRecordDataQuality defines model for TestRecord.DataQuality.
 type TestRecordDataQuality string
 
-// TestRecordOutcome defines model for TestRecord.Outcome.
-type TestRecordOutcome string
-
 // TestRecordSaveStatus defines model for TestRecord.SaveStatus.
 type TestRecordSaveStatus string
 
 // TestRecordStage defines model for TestRecord.Stage.
 type TestRecordStage string
+
+// TestRecordOutcome defines model for TestRecordOutcome.
+type TestRecordOutcome string
 
 // UiLease defines model for UiLease.
 type UiLease struct {
@@ -810,6 +819,16 @@ type LookupStopExactParams struct {
 
 // ListTestsParams defines parameters for ListTests.
 type ListTestsParams struct {
+	// Q Подстрока UUID или изделия без учёта Unicode-регистра; внешние пробелы игнорируются, % и _ буквальные.
+	Q *string `form:"q,omitempty" json:"q,omitempty"`
+
+	// CreatedFrom Начало диапазона createdAt включительно; RFC 3339, точность до наносекунды.
+	CreatedFrom *string `form:"createdFrom,omitempty" json:"createdFrom,omitempty"`
+
+	// CreatedBefore Конец диапазона createdAt исключительно; позже createdFrom, точность до наносекунды.
+	CreatedBefore *string            `form:"createdBefore,omitempty" json:"createdBefore,omitempty"`
+	Outcome       *TestRecordOutcome `form:"outcome,omitempty" json:"outcome,omitempty"`
+
 	// After Последний прочитанный UUID; порядок по UUID, не по времени.
 	After *openapi_types.UUID `form:"after,omitempty" json:"after,omitempty"`
 	Limit *int                `form:"limit,omitempty" json:"limit,omitempty"`

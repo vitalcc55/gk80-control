@@ -29,6 +29,7 @@ const view: SessionView = {
     lastEventSequence: 0,
     activeTest: null,
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   },
   validForMs: 1000,

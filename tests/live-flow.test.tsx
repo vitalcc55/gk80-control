@@ -174,6 +174,7 @@ it.each(['history', 'bridge'] as const)(
       lastEventSequence: index,
       activeTest: { ...record, stage: TestRecordStage.Running },
       pendingAction: null,
+      measurementTiming: null,
       measurements: [
         {
           channel: MeasurementChannel.Dd1,
@@ -314,6 +315,7 @@ it('does not attribute an unbound legacy command to the confirmed database', asy
         lastEventSequence: 0,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -372,6 +374,7 @@ it.each([false, true])(
           lastEventSequence: 0,
           activeTest: null,
           pendingAction: null,
+          measurementTiming: null,
           measurements: [],
         },
         validForMs: 6000,
@@ -425,6 +428,7 @@ it('restores the browser profile pending attempt from shared storage without rep
         lastEventSequence: 0,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -510,6 +514,7 @@ it('keeps Stop available when the legacy command list cannot be read', async () 
         lastEventSequence: 2,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -567,6 +572,7 @@ it('isolates pending commands and late lookups across databases', async () => {
         lastEventSequence: 0,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -618,6 +624,7 @@ it('tracks Stop separately from a restored ordinary command with the same identi
     lastEventSequence: 2,
     activeTest: { ...record, stage: TestRecordStage.Running },
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -764,6 +771,7 @@ it('shows diagnostics already degraded when the live session opens', async () =>
         lastEventSequence: 0,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -818,6 +826,7 @@ it('preserves the live form when diagnostics degrade', async () => {
         lastEventSequence: 0,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -872,6 +881,7 @@ it('retains the browser form when a replacement bridge cannot confirm status', a
         lastEventSequence: 0,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -964,6 +974,7 @@ it('accepts a verified browser bridge when the initial status read fails', async
         lastEventSequence: 0,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -1018,6 +1029,7 @@ it('keeps stop available when diagnostics degrade during a live test', async () 
         lastEventSequence: 2,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -1071,6 +1083,7 @@ it('finishes a pending history list and uses the replacement for later reads', a
         lastEventSequence: 0,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -1246,6 +1259,7 @@ it('does not reuse a pending readiness response after the core identity changes'
         lastEventSequence: 0,
         activeTest: record,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -1309,6 +1323,7 @@ it('preserves the unsaved form when the service wrapper changes', async () => {
         lastEventSequence: 0,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -1341,6 +1356,7 @@ it('uses core confirmation and measurements for the operator path', async () => 
     lastEventSequence: 0,
     activeTest: null,
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   let lastCommand = {
@@ -1460,6 +1476,7 @@ it('uses core confirmation and measurements for the operator path', async () => 
         ...snapshot,
         lastEventSequence: 3,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [
           {
             channel: MeasurementChannel.Dd1,
@@ -1547,6 +1564,7 @@ it('does not infer a legacy Stop without its original contents', async () => {
         lastEventSequence: 0,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -1569,6 +1587,7 @@ it('persists the Stop attempt before sending and reconciles it after remount wit
     lastEventSequence: 2,
     activeTest: { ...record, stage: TestRecordStage.Running },
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -1635,6 +1654,7 @@ it('distinguishes a Stop lookup conflict from rejecting the actual request', asy
         lastEventSequence: 2,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -1673,6 +1693,7 @@ it('keeps a storage conflict visible after the direct Stop succeeds', async () =
         lastEventSequence: 2,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -1719,6 +1740,7 @@ it('retains a confirmed Stop in volatile memory after remount', async () => {
         lastEventSequence: 2,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -1826,6 +1848,7 @@ it('does not repeatedly write a confirmed observation while storage remains unav
         lastEventSequence: 2,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -1887,6 +1910,7 @@ it('does not give an old Stop without contents the result of a new attempt', asy
         lastEventSequence: 2,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -1930,6 +1954,7 @@ it('does not attribute another Stop with the same ID but different JSON to the c
         lastEventSequence: 2,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -2004,6 +2029,7 @@ it('does not send another creation after an unknown response and remount', async
     lastEventSequence: 0,
     activeTest: null,
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -2054,6 +2080,7 @@ it.each(['wails', 'browser'])(
       lastEventSequence: 0,
       activeTest: null,
       pendingAction: null,
+      measurementTiming: null,
       measurements: [],
     };
     const bridge: SessionBridge = {
@@ -2146,6 +2173,7 @@ it.each(['lost', 'malformed'] as const)(
           lastEventSequence: 0,
           activeTest: null,
           pendingAction: null,
+          measurementTiming: null,
           measurements: [],
         },
         validForMs: 6000,
@@ -2257,6 +2285,7 @@ it.each([
         lastEventSequence: 0,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -2309,6 +2338,7 @@ it('does not replace a confirmed command with a late unknown exact lookup', asyn
         lastEventSequence: 0,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -2381,6 +2411,7 @@ it.each(['failure', 'invalid'])(
           lastEventSequence: 0,
           activeTest: null,
           pendingAction: null,
+          measurementTiming: null,
           measurements: [],
         },
         validForMs: 6000,
@@ -2442,6 +2473,7 @@ it('accepts a valid direct receipt without testId', async () => {
         lastEventSequence: 0,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -2489,6 +2521,7 @@ it('links a completed Create without testId to its exact result and snapshot', a
         lastEventSequence: revision,
         activeTest,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -2564,6 +2597,7 @@ it('checks an exact ordinary attempt even when its ID is reserved for Stop', asy
         lastEventSequence: 2,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -2610,6 +2644,7 @@ it('can confirm Stop while an exact lookup with the same ID is waiting', async (
         lastEventSequence: 2,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -2666,6 +2701,7 @@ it('keeps the first unresolved Stop when a later Stop attempt is rejected', asyn
         lastEventSequence: 2,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -2717,6 +2753,7 @@ it('shows the restored terminal Stop status when the operator requests it again'
         lastEventSequence: 2,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -2767,6 +2804,7 @@ it.each(['failed', 'rejected'])(
           lastEventSequence: 2,
           activeTest: { ...record, stage: TestRecordStage.Running },
           pendingAction: null,
+          measurementTiming: null,
           measurements: [],
         },
         validForMs: 6000,
@@ -2804,6 +2842,7 @@ it('does not let a late rejected Stop replace a confirmed finished outcome', asy
     lastEventSequence: 2,
     activeTest: { ...record, stage: TestRecordStage.Running },
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -2878,6 +2917,7 @@ it('does not discard a Stop observation while an earlier request is still in fli
         lastEventSequence: 2,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -2927,6 +2967,7 @@ it.each(['conflict', 'wrongTest', 'badStatus'])('does not confirm Stop from %s',
         lastEventSequence: 2,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -2991,6 +3032,7 @@ it('allows an explicitly reviewed legacy observation to be removed from a full l
         lastEventSequence: 0,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -3044,6 +3086,7 @@ it.each(['start', 'confirm'] as const)(
           lastEventSequence: 2,
           activeTest: { ...record, stage: TestRecordStage.Running },
           pendingAction: { testId, actionId, instruction: 'Подтвердите измерение' },
+          measurementTiming: null,
           measurements: [],
         },
         validForMs: 6000,
@@ -3117,6 +3160,7 @@ it('does not report an unpersisted Stop when an ordinary browser receipt cannot 
         lastEventSequence: 0,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -3179,6 +3223,7 @@ it.each(['rejected response', 'not sent response'] as const)(
       lastEventSequence: 0,
       activeTest: null,
       pendingAction: null,
+      measurementTiming: null,
       measurements: [],
     };
     const bridge: SessionBridge = {
@@ -3274,6 +3319,7 @@ it('does not restore an unknown message after a later successful lookup', async 
         lastEventSequence: 0,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -3319,6 +3365,7 @@ it('keeps an unknown stop message when a different command is confirmed', async 
     lastEventSequence: 0,
     activeTest: null,
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -3389,6 +3436,7 @@ it('keeps another command unknown when an earlier command fails', async () => {
         lastEventSequence: 0,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -3460,6 +3508,7 @@ it('keeps separate failed stop results visible until the operator hides them', a
         lastEventSequence: 0,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -3510,6 +3559,7 @@ it.each(['notSent', 'rejected', 'failed', 'lookupRejected', 'storageUnavailable'
       lastEventSequence: 0,
       activeTest: null,
       pendingAction: null,
+      measurementTiming: null,
       measurements: [],
     };
     const bridge: SessionBridge = {
@@ -3610,6 +3660,7 @@ it('keeps an earlier test command failure when creating an unrelated test', asyn
     lastEventSequence: 0,
     activeTest: null,
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -3692,6 +3743,7 @@ it('brings a repeated readiness error back into view after another notice', asyn
     lastEventSequence: 1,
     activeTest: record,
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -3765,6 +3817,7 @@ it('keeps a confirmed not-sent result when the service wrapper changes', async (
     lastEventSequence: 0,
     activeTest: null,
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -3841,6 +3894,7 @@ it('allows stopping while another command is unresolved and reports a confirmed 
     lastEventSequence: 2,
     activeTest: { ...record, stage: TestRecordStage.Running },
     pendingAction: { testId, actionId, instruction: 'Подтвердите измерение' },
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -3890,6 +3944,7 @@ it('does not report an unknown stop after its confirmed response', async () => {
     lastEventSequence: 2,
     activeTest: { ...record, stage: TestRecordStage.Running },
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -3957,6 +4012,7 @@ it('keeps a storage warning when stop fails', async () => {
     lastEventSequence: 2,
     activeTest: { ...record, stage: TestRecordStage.Running },
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -4024,6 +4080,7 @@ it('clears an unknown stop when the separate stop check confirms it', async () =
     lastEventSequence: 2,
     activeTest: { ...record, stage: TestRecordStage.Running },
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -4132,6 +4189,7 @@ it('explains when a pending start was canceled by stop', async () => {
         lastEventSequence: 2,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -4159,6 +4217,7 @@ it('offers the reserved stop after remount even when heartbeat cannot be confirm
     lastEventSequence: 2,
     activeTest: { ...record, stage: TestRecordStage.Running },
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -4216,6 +4275,7 @@ it('does not carry an active snapshot into a different database before a new obs
     lastEventSequence: 2,
     activeTest: { ...record, stage: TestRecordStage.Running },
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const current: SessionView = {
@@ -4263,6 +4323,7 @@ it('does not reuse a previous database snapshot after full remount', async () =>
     lastEventSequence: 2,
     activeTest: { ...record, stage: TestRecordStage.Running },
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const current: SessionView = {
@@ -4319,6 +4380,7 @@ it('retains the running display and reserved Stop while replacing the session wr
     lastEventSequence: 2,
     activeTest: { ...record, stage: TestRecordStage.Running },
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const current: SessionView = {
@@ -4361,6 +4423,7 @@ it('continues checking Stop after the interrupted result and keeps saving separa
     lastEventSequence: 2,
     activeTest: { ...record, stage: TestRecordStage.Running },
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   let revision = 0;
@@ -4424,6 +4487,7 @@ it('does not let an older confirmed view hide a newer active test from fallback'
     lastEventSequence: 0,
     activeTest: null,
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const newer: Snapshot = { ...older, revision: 1, lastEventSequence: 1, activeTest: record };
@@ -4492,6 +4556,7 @@ it('keeps an earlier unknown Stop observable when stopping a later test', async 
       stage: TestRecordStage.Running,
     },
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -4540,6 +4605,7 @@ it('keeps Stop available and reserves its identifier when the command list is fu
     lastEventSequence: 2,
     activeTest: { ...record, stage: TestRecordStage.Running },
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -4585,6 +4651,7 @@ it('keeps an unpersisted Stop observable across remount when session storage fai
     lastEventSequence: 2,
     activeTest: { ...record, stage: TestRecordStage.Running },
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -4658,6 +4725,7 @@ it('preserves a newer shared attempt when restoring an unpersisted Stop', async 
     lastEventSequence: 2,
     activeTest: { ...record, stage: TestRecordStage.Running },
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -4810,6 +4878,7 @@ it.each([
         lastEventSequence: 2,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -4949,6 +5018,7 @@ it('retains a new Stop when an initially unreadable older observation is later r
         lastEventSequence: 2,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -5026,6 +5096,7 @@ it('still sends Stop when the observation version cannot be generated', async ()
         lastEventSequence: 2,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -5100,6 +5171,7 @@ it('retains overflow until multiple requested removals can be saved, while Stop 
         lastEventSequence: 2,
         activeTest: active,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -5190,6 +5262,7 @@ it('merges the previously unread command list before storing an emergency Stop',
     lastEventSequence: 2,
     activeTest: { ...record, stage: TestRecordStage.Running },
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -5253,6 +5326,7 @@ it('can retry reading an unavailable command list without sending a command', as
     lastEventSequence: 0,
     activeTest: null,
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -5392,6 +5466,7 @@ it.each([false, true])(
           lastEventSequence: 2,
           activeTest: { ...record, stage: TestRecordStage.Running },
           pendingAction: null,
+          measurementTiming: null,
           measurements: [],
         },
         validForMs: 6000,
@@ -5431,6 +5506,7 @@ it('does not accept a raw Stop status as a dispatch response', async () => {
         lastEventSequence: 2,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -5480,6 +5556,7 @@ it.each([
           },
           pendingAction:
             kind === 'confirm' ? { testId, actionId, instruction: 'Подтвердите измерение' } : null,
+          measurementTiming: null,
           measurements: [],
         },
         validForMs: 6000,
@@ -5568,6 +5645,7 @@ it('retains an unread earlier Stop after Storage recovers and a new request is n
         lastEventSequence: 2,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,

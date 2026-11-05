@@ -59,6 +59,7 @@ function input(api: DemoService): CommandInput {
     lastEventSequence: 0,
     activeTest: null,
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const connection = {
