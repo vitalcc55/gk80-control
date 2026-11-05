@@ -246,6 +246,7 @@ h2 {
   flex: 1;
   padding: 18px 30px 34px;
   max-width: 1760px;
+  overflow-wrap: anywhere;
 }
 .main-content:focus {
   outline: none;
@@ -253,6 +254,30 @@ h2 {
 .session-status {
   font-size: var(--font-caption);
   color: var(--muted);
+}
+.snapshot-state {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: var(--font-caption);
+  line-height: 1.45;
+}
+.snapshot-state:where([data-confirmed="false"]) {
+  color: var(--warning);
+}
+.snapshot-state-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: currentColor;
+}
+.run-timing {
+  margin: 20px 0;
+  color: var(--muted);
+  font-size: var(--font-caption);
 }
 .live-statusbar {
   display: flex;
@@ -476,7 +501,7 @@ h2 {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
-  margin: 20px 0;
+  margin: 12px 0;
   font-variant-numeric: tabular-nums;
 }
 .run-time dt {
@@ -487,10 +512,6 @@ h2 {
   margin: 0;
   font-weight: 650;
   font-size: var(--font-action-title);
-}
-.run-time p {
-  grid-column: 1 / -1;
-  font-size: var(--font-caption);
 }
 .active-route-layout {
   display: grid;
@@ -653,7 +674,13 @@ h2 {
   background: var(--danger-surface);
 }
 .stop-button:disabled {
-  opacity: 1;
+  opacity: 0.6;
+  border-style: dashed;
+}
+.stop-help {
+  margin-top: 8px;
+  color: var(--warning);
+  font-size: var(--font-caption);
 }
 .full-width {
   width: 100%;

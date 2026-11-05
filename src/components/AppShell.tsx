@@ -17,12 +17,14 @@ export function AppShell({
   onTests,
   onRun,
   onParameters,
+  onResult,
   mainRef,
   children,
   status,
   notice,
   footer,
   announcement,
+  historyResult = false,
 }: {
   screen: Screen;
   active: boolean;
@@ -30,29 +32,31 @@ export function AppShell({
   onTests: () => void;
   onRun: () => void;
   onParameters: () => void;
+  onResult?: (() => void) | undefined;
   mainRef?: Ref<HTMLElement>;
   children: ReactNode;
   status?: ReactNode;
   notice?: ReactNode;
   footer?: ReactNode;
   announcement?: ReactNode;
+  historyResult?: boolean;
 }) {
   useEffect(() => {
     document.title = `${screenTitles[screen]} — ГК80`;
   }, [screen]);
   const section =
-    screen === 'run' || (screen === 'readiness' && active)
-      ? 'run'
-      : screen === 'parameters' || screen === 'readiness'
-        ? 'parameters'
-        : 'tests';
+    screen === 'result' && onResult && !historyResult
+      ? 'result'
+      : screen === 'run' || (screen === 'readiness' && active)
+        ? 'run'
+        : screen === 'parameters' || screen === 'readiness'
+          ? 'parameters'
+          : 'tests';
   return (
     <div className={footer ? 'app-shell' : 'app-shell app-shell-live'}>
-      {announcement && (
-        <span className="sr-only" role="status" aria-atomic="true">
-          {announcement}
-        </span>
-      )}
+      <span className="sr-only" role="status" aria-atomic="true">
+        {announcement}
+      </span>
       <div className="workspace">
         <nav className="sidebar" aria-label="Навигация">
           <div className="brand">
@@ -81,6 +85,17 @@ export function AppShell({
             >
               <Activity size={18} aria-hidden="true" />
               <span>Текущее испытание</span>
+            </button>
+          )}
+          {!active && onResult && (
+            <button
+              type="button"
+              className={section === 'result' ? 'nav-item active' : 'nav-item'}
+              aria-current={section === 'result' ? 'page' : undefined}
+              onClick={onResult}
+            >
+              <Activity size={18} aria-hidden="true" />
+              <span>Результат прохода</span>
             </button>
           )}
           {(active || draftAvailable) && (

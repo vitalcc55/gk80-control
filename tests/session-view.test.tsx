@@ -123,6 +123,9 @@ it('reports unknown initial acquisition from a passive view without restoring fr
   });
   expect(screen.getByText('Получение управления не подтверждено')).toBeTruthy();
   expect(screen.getByText(/Запустите снова только после завершения ядра/)).toBeTruthy();
+  expect(
+    screen.getByText(/Запустите снова только после завершения ядра/).closest('[role="status"]'),
+  ).not.toBeNull();
   expect(screen.queryByText('При последней проверке связь с ядром подтверждена')).toBeNull();
   expect(onView.mock.calls.every(([snapshot]) => snapshot === null)).toBe(true);
   expect(keepAlive).toHaveBeenCalledTimes(1);
@@ -752,6 +755,7 @@ it('keeps the link visible during snapshot updates but revokes stale data and de
   );
   expect(screen.getByText('При последней проверке связь с ядром подтверждена')).toBeTruthy();
   expect(onView).toHaveBeenLastCalledWith(null, 0);
+  expect(screen.getByText('Снимок не подтверждён')).toBeTruthy();
   act(() =>
     notify({
       ...view.connection,
@@ -768,7 +772,7 @@ it('keeps the link visible during snapshot updates but revokes stale data and de
   ).toBeTruthy();
 });
 
-it('explains a prolonged snapshot update without changing the link status', async () => {
+it('shows currentness immediately and reports sustained unavailability without changing link status', async () => {
   vi.useFakeTimers();
   const bridge: SessionBridge = {
     beginSessionCheck: async () => 'ticket',
@@ -786,6 +790,7 @@ it('explains a prolonged snapshot update without changing the link status', asyn
   await act(async () => {
     await vi.advanceTimersByTimeAsync(0);
   });
+  expect(screen.getByText('Снимок подтверждён')).toBeTruthy();
   mounted.rerender(
     <SessionStatus
       bridge={bridge}
@@ -794,12 +799,39 @@ it('explains a prolonged snapshot update without changing the link status', asyn
       snapshotAccepted={false}
     />,
   );
-  expect(screen.queryByText(/Ожидаем актуальное состояние ядра/)).toBeNull();
+  expect(screen.getByText('Снимок не подтверждён')).toBeTruthy();
+  expect(
+    screen.queryByText('Снимок не подтверждён; обычные команды временно недоступны.'),
+  ).toBeNull();
   await act(async () => {
     await vi.advanceTimersByTimeAsync(500);
   });
-  expect(screen.getByText(/Ожидаем актуальное состояние ядра/)).toBeTruthy();
+  expect(
+    screen.queryByText('Снимок не подтверждён; обычные команды временно недоступны.'),
+  ).toBeNull();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+  expect(
+    screen
+      .getByText('Снимок не подтверждён; обычные команды временно недоступны.')
+      .closest('[role="status"]'),
+  ).not.toBeNull();
+  expect(screen.getByText('Снимок не подтверждён')).toBeTruthy();
   expect(screen.getByText('При последней проверке связь с ядром подтверждена')).toBeTruthy();
+  mounted.rerender(
+    <SessionStatus
+      bridge={bridge}
+      hostRunId={view.connection.hostRunId}
+      backendRunId={view.snapshot?.backendRunId ?? ''}
+      snapshotAccepted
+    />,
+  );
+  expect(screen.getAllByText('Снимок подтверждён')).toHaveLength(2);
+  expect(
+    screen.getAllByText('Снимок подтверждён').some((item) => item.closest('[role="status"]')),
+  ).toBe(true);
+  expect(screen.queryByText('Снимок не подтверждён')).toBeNull();
 });
 
 it('refreshes immediately after live notification without sending another heartbeat', async () => {

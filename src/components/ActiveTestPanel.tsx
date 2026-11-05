@@ -20,7 +20,7 @@ export function ActiveTestPanel({
           {status}
         </span>
         <h2>{title}</h2>
-        <p>{description}</p>
+        <div className="active-route-description">{description}</div>
         <button className="work-button work-button-secondary" type="button" onClick={onReturn}>
           Вернуться к испытанию
         </button>

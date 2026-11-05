@@ -1,6 +1,6 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { type ComponentProps, StrictMode } from 'react';
+import { type ComponentProps, Profiler, StrictMode } from 'react';
 import { beforeEach, expect, it, vi } from 'vitest';
 import type { DesktopBridge, SessionBridge } from '../src/desktop/bridge';
 import { createBrowserBridge } from '../src/desktop/browser-bridge';
@@ -8,6 +8,7 @@ import { DesktopApp as RealDesktopApp } from '../src/desktop/DesktopApp';
 import { CommandConflictError } from '../src/desktop/demo-service';
 import { History } from '../src/desktop/History';
 import { LiveApp as RealLiveApp } from '../src/desktop/LiveApp';
+import { MeasurementSeriesContext } from '../src/desktop/measurement-series';
 import { sessionObservation } from '../src/desktop/session-observation';
 import { desktopDemoService } from '../src/desktop/wails-bridge';
 import {
@@ -164,6 +165,95 @@ const record = {
   },
 };
 
+it('isolates a series-only update from hidden screens and keeps the completed result reachable', async () => {
+  const measurementContext = new MeasurementSeriesContext();
+  let snapshot: Snapshot = {
+    apiVersion: 'v1',
+    backendRunId: backend,
+    revision: 1,
+    lastEventSequence: 1,
+    activeTest: { ...record, stage: TestRecordStage.Running },
+    pendingAction: null,
+    measurementTiming: null,
+    measurements: [
+      {
+        channel: MeasurementChannel.Dd1,
+        measuredAt: '2026-10-30T00:00:01Z',
+        observedAt: '2026-10-30T00:00:01Z',
+        quality: MeasurementQuality.MeasurementQualityValid,
+        quantity: MeasurementQuantity.MeasurementQuantityPressure,
+        sequence: 1,
+        source: MeasurementSource.MeasurementSourceSimulator,
+        unit: MeasurementUnit.Pa,
+        value: 1000,
+      },
+    ],
+  };
+  const session: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: snapshot.revision,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot,
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.list.mockResolvedValue({ items: [], nextAfter: null });
+  const commits = vi.fn();
+  render(
+    <Profiler id="operator-view" onRender={commits}>
+      <LiveApp
+        session={session}
+        hostRunId={host}
+        backendRunId={backend}
+        measurementContext={measurementContext}
+      />
+    </Profiler>,
+  );
+  await screen.findByRole('heading', { name: 'Проведение испытания' });
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Испытания' }));
+  await screen.findByText('История пуста');
+  commits.mockClear();
+  const key = `${host}:${backend}:${database}:${testId}`;
+  const next = {
+    ...snapshot,
+    measurements:
+      snapshot.measurements?.map((item) => ({
+        ...item,
+        sequence: 2,
+        measuredAt: '2026-10-30T00:00:02Z',
+        value: 1001,
+      })) ?? [],
+  };
+  act(() => measurementContext.accept(key, next, true, 0));
+  expect(measurementContext.read(key).points.at(-1)?.pressure).toBe(1001);
+  expect(commits).not.toHaveBeenCalled();
+  snapshot = {
+    ...snapshot,
+    revision: 2,
+    lastEventSequence: 2,
+    activeTest: {
+      ...record,
+      stage: TestRecordStage.Finished,
+      outcome: TestRecordOutcome.TestRecordOutcomeCompleted,
+    },
+  };
+  await userEvent
+    .setup()
+    .click(await screen.findByRole('button', { name: 'Результат прохода' }, { timeout: 8000 }));
+  expect(screen.getByRole('heading', { name: 'Результат испытания' })).toBeTruthy();
+  expect(screen.getByText('Завершено')).toBeTruthy();
+  expect(api.stop).not.toHaveBeenCalled();
+}, 12000);
+
 it.each(['history', 'bridge'] as const)(
   'retains chart points and time origin through %s without sending commands',
   async (route) => {
@@ -221,7 +311,10 @@ it.each(['history', 'bridge'] as const)(
       verify: async () => desktop.status(),
       subscribe: () => () => {},
     };
-    const view = render(<DesktopApp bridge={desktop} session={session} />);
+    const measurementContext = new MeasurementSeriesContext();
+    const view = render(
+      <DesktopApp bridge={desktop} session={session} measurementContext={measurementContext} />,
+    );
     const points = () =>
       screen.getByRole('img', { name: 'График показаний симулятора' }).getAttribute('data-points');
     await waitFor(() => expect(points()).toContain('1000'));
@@ -249,6 +342,7 @@ it.each(['history', 'bridge'] as const)(
             },
           }}
           session={session}
+          measurementContext={measurementContext}
         />,
       );
       await screen.findByRole('button', { name: 'Повторить связь' });
@@ -259,13 +353,29 @@ it.each(['history', 'bridge'] as const)(
       await waitFor(
         () =>
           expect(
-            sessionObservation(host, backend).getSnapshotFor(session).lastSnapshot
-              ?.lastEventSequence,
-          ).toBe(3),
+            measurementContext
+              .read(`${host}:${backend}:${database}:${testId}`)
+              .points.map((point) => point.pressure),
+          ).toEqual([1000, 1001, 1002]),
         { timeout: 8000 },
       );
+      expect(screen.queryByRole('img', { name: 'График показаний симулятора' })).toBeNull();
+      snapshot = sample(4);
+      await waitFor(
+        () =>
+          expect(
+            measurementContext
+              .read(`${host}:${backend}:${database}:${testId}`)
+              .points.map((point) => point.pressure),
+          ).toEqual([1000, 1001, 1002, 1003]),
+        { timeout: 8000 },
+      );
+      expect(screen.queryByRole('img', { name: 'График показаний симулятора' })).toBeNull();
       await user.click(screen.getByRole('button', { name: 'Текущее испытание' }));
-    } else view.rerender(<DesktopApp bridge={desktop} session={session} />);
+    } else
+      view.rerender(
+        <DesktopApp bridge={desktop} session={session} measurementContext={measurementContext} />,
+      );
     await waitFor(
       () =>
         expect(points()).toBe(
@@ -274,6 +384,7 @@ it.each(['history', 'bridge'] as const)(
             { seconds: 1, pressure: 1001, differential: null },
             ...(route === 'bridge' ? [{ seconds: 1.5, pressure: null, differential: null }] : []),
             { seconds: 2, pressure: 1002, differential: null },
+            ...(route === 'history' ? [{ seconds: 3, pressure: 1003, differential: null }] : []),
           ]),
         ),
       { timeout: 8000 },
@@ -281,7 +392,7 @@ it.each(['history', 'bridge'] as const)(
     for (const command of [api.create, api.start, api.confirm, api.stop])
       expect(command).not.toHaveBeenCalled();
   },
-  20000,
+  30000,
 );
 
 beforeEach(() => {

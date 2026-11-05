@@ -188,8 +188,10 @@ export function App() {
     initial.screen === 'readiness' || initial.screen === 'parameters',
   );
   const [screen, setScreenValue] = useState<Screen>(initial.screen);
+  const [historyResult, setHistoryResult] = useState(false);
   const { mainRef, requestFocus } = useScreenFocus(screen);
   const setScreen = (destination: Screen) => {
+    setHistoryResult(false);
     requestFocus(destination);
     setScreenValue(destination);
   };
@@ -327,6 +329,7 @@ export function App() {
   return (
     <AppShell
       screen={screen}
+      historyResult={historyResult}
       active={active}
       draftAvailable={draftAvailable}
       announcement={
@@ -335,6 +338,18 @@ export function App() {
       onTests={openList}
       onRun={openRun}
       onParameters={openParameters}
+      onResult={
+        !active && history.length
+          ? () => {
+              const last = history[0];
+              if (last) {
+                setParameters(last);
+                setFixture(fixtureSource.get('measuring'));
+                setScreen('result');
+              }
+            }
+          : undefined
+      }
       mainRef={mainRef}
       notice={active && screen !== 'run' ? activeNotice : null}
       footer={
@@ -374,6 +389,7 @@ export function App() {
                 setFixture(fixtureSource.get('measuring'));
                 setParameters(selected);
                 setScreen('result');
+                setHistoryResult(true);
               }}
               empty={emptyHistory}
               showExample={showExample}

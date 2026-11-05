@@ -9,8 +9,10 @@ import type {
 import { TestRecordOutcome } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
 import type { DemoService } from './demo-service';
 import { outcomeLabel, saveLabel } from './display';
-import { parametersForDisplay } from './presentation';
+import { parametersForDisplay, resultReadVersion } from './presentation';
 import { RecordDetails } from './RecordDetails';
+
+type RecordReadFailure = { text: string; testId: string };
 
 function queryParameters(filters: HistoryFilters): ListTestsParams {
   const params: ListTestsParams = {};
@@ -56,6 +58,7 @@ export function History({
   onViewChange,
   resetVersion = 0,
   activeTestId,
+  completedRecord = null,
 }: {
   onNew: () => void;
   onCopy: (parameters: TestRecord['parameters']) => void;
@@ -68,11 +71,14 @@ export function History({
   onViewChange?: (result: boolean) => void;
   resetVersion?: number;
   activeTestId?: string | undefined;
+  completedRecord?: TestRecord | null;
 }) {
   const [list, setList] = useState<TestList | null>(null);
   const [selected, setSelected] = useState<TestRecord | null>(null);
   const [filters, setFilters] = useState(emptyHistoryFilters);
-  const [error, setError] = useState('');
+  const [validationError, setValidationError] = useState('');
+  const [listError, setListError] = useState('');
+  const [recordFailure, setRecordFailure] = useState<RecordReadFailure | null>(null);
   const [loading, setLoading] = useState(false);
   const [opening, setOpening] = useState(false);
   const [discarding, setDiscarding] = useState(false);
@@ -81,10 +87,24 @@ export function History({
   // Null is an explicitly rejected search, never a fallback to the previous query.
   const applied = useRef<ListTestsParams | null>({});
   const cursor = useRef<string | null>(null);
+  const needsRead = useRef(true);
+  const selectedRefresh = useRef('');
+  const completedKey = completedRecord ? resultReadVersion(completedRecord) : '';
+  const readTriggers = useRef({ visible: false, resetVersion, completedKey: '' });
+  const completedId = completedRecord?.testId;
+  const selectedId = selected?.testId;
+  const selectedKey = selected ? resultReadVersion(selected) : '';
   const currentService = useRef(service);
   useLayoutEffect(() => {
     currentService.current = service;
   }, [service]);
+  const cancelSelected = useCallback((clear: boolean) => {
+    selectedGeneration.current++;
+    selectedRefresh.current = '';
+    setOpening(false);
+    setRecordFailure(null);
+    if (clear) setSelected(null);
+  }, []);
   useEffect(
     () => () => {
       listGeneration.current++;
@@ -95,11 +115,12 @@ export function History({
   const load = useCallback(async (after: string | null = null) => {
     const params = applied.current;
     if (params === null) return;
+    needsRead.current = false;
     const generation = ++listGeneration.current;
     cursor.current = after;
     setList(null);
     setLoading(true);
-    setError('');
+    setListError('');
     try {
       const page = await currentService.current.listTests({
         ...params,
@@ -109,29 +130,52 @@ export function History({
       if (generation === listGeneration.current) setList(page);
     } catch {
       if (generation === listGeneration.current)
-        setError('Не удалось прочитать список испытаний из ядра.');
+        setListError('Не удалось прочитать список испытаний из ядра.');
     } finally {
       if (generation === listGeneration.current) setLoading(false);
     }
   }, []);
   useEffect(() => {
-    if (visible && available) void load(cursor.current);
-    return () => {
-      listGeneration.current++;
-      selectedGeneration.current++;
-      setLoading(false);
-      setOpening(false);
-    };
-  }, [visible, available, load]);
+    const previous = readTriggers.current;
+    const reset = previous.resetVersion !== resetVersion;
+    if ((visible && !previous.visible) || reset || previous.completedKey !== completedKey)
+      needsRead.current = true;
+    readTriggers.current = { visible, resetVersion, completedKey };
+    if ((!visible && previous.visible) || reset) {
+      cancelSelected(reset);
+    }
+    if (visible && available && needsRead.current) void load(cursor.current);
+  }, [visible, available, resetVersion, completedKey, load, cancelSelected]);
   useEffect(() => {
-    void resetVersion;
-    selectedGeneration.current++;
-    setSelected(null);
-    setOpening(false);
-  }, [resetVersion]);
+    if (
+      !visible ||
+      !available ||
+      !selectedId ||
+      selectedId !== completedId ||
+      selectedKey === completedKey
+    )
+      return;
+    const key = `${selectedId}:${completedKey}`;
+    if (selectedRefresh.current === key) return;
+    selectedRefresh.current = key;
+    const generation = ++selectedGeneration.current;
+    setRecordFailure(null);
+    void currentService.current.test(selectedId).then(
+      (value) => {
+        if (generation === selectedGeneration.current) setSelected(value);
+      },
+      () => {
+        if (generation === selectedGeneration.current)
+          setRecordFailure({
+            testId: selectedId,
+            text: 'Не удалось обновить запись после сохранения.',
+          });
+      },
+    );
+  }, [visible, available, selectedId, selectedKey, completedId, completedKey]);
   async function open(testId: string) {
     const generation = ++selectedGeneration.current;
-    setError('');
+    setRecordFailure(null);
     setOpening(true);
     try {
       const record = await currentService.current.test(testId);
@@ -140,51 +184,78 @@ export function History({
         onViewChange?.(true);
       }
     } catch {
-      if (generation === selectedGeneration.current) setError('Не удалось открыть запись из ядра.');
+      if (generation === selectedGeneration.current)
+        setRecordFailure({ testId, text: 'Не удалось открыть запись из ядра.' });
     } finally {
       if (generation === selectedGeneration.current) setOpening(false);
     }
   }
   function search(value: HistoryFilters) {
     listGeneration.current++;
-    selectedGeneration.current++;
+    cancelSelected(false);
     cursor.current = null;
     setOpening(false);
+    setLoading(false);
     setList(null);
     applied.current = null;
+    needsRead.current = true;
+    setValidationError('');
+    setListError('');
     try {
       applied.current = queryParameters(value);
       if (available) void load();
-      else setError('Ожидание связи для чтения истории…');
     } catch (reason) {
       setLoading(false);
-      setError(reason instanceof Error ? reason.message : 'Проверьте даты.');
+      setValidationError(reason instanceof Error ? reason.message : 'Проверьте даты.');
     }
   }
+  const retry = recordFailure
+    ? () => {
+        if (available) void open(recordFailure.testId);
+      }
+    : listError
+      ? () => {
+          if (available) void load(cursor.current);
+        }
+      : undefined;
+  const retryLabel = recordFailure ? 'Повторить открытие записи' : 'Повторить чтение списка';
   if (selected)
     return (
       <ResultScreen
         parameters={parametersForDisplay(selected)}
         record={selected}
+        hidden={!visible}
         saveError={selected.saveStatus === 'failed'}
         interrupted={selected.outcome === 'interrupted'}
         active={disabled || draftAvailable}
         draftAvailable={false}
         onList={() => {
-          setSelected(null);
+          cancelSelected(true);
           onViewChange?.(false);
         }}
         onNew={() => onCopy(selected.parameters)}
       >
+        {visible && recordFailure && (
+          <div role="alert">
+            <p>{recordFailure.text}</p>
+            {retry && (
+              <button type="button" onClick={retry}>
+                {retryLabel}
+              </button>
+            )}
+          </div>
+        )}
         {draftAvailable && <p>Продолжите текущий черновик перед созданием другого.</p>}
         <RecordDetails
           key={selected.testId}
           record={selected}
           service={service}
           available={available}
+          visible={visible}
         />
       </ResultScreen>
     );
+  if (!visible) return null;
   return (
     <TestsScreen
       rows={(list?.items ?? [])
@@ -200,6 +271,7 @@ export function History({
           saving: saveLabel(item.saveStatus),
         }))}
       filters={filters}
+      filtered={!!(applied.current && Object.keys(applied.current).length)}
       onFilters={setFilters}
       onSearch={() => search(filters)}
       onReset={() => {
@@ -211,10 +283,14 @@ export function History({
       disabled={disabled}
       draftAvailable={draftAvailable}
       loading={loading || opening}
-      error={error || (!available ? 'Ожидание связи для чтения истории…' : '')}
-      onRetry={() => {
-        if (available) search(filters);
-      }}
+      error={
+        validationError ||
+        recordFailure?.text ||
+        listError ||
+        (!available && !list ? 'Ожидание связи для чтения истории…' : '')
+      }
+      onRetry={retry}
+      retryLabel={retryLabel}
       onFirst={() => {
         if (available) void load();
       }}
@@ -240,7 +316,7 @@ export function History({
               Удалить черновик
             </button>{' '}
             <button type="button" onClick={() => setDiscarding(false)}>
-              Сохранить черновик
+              Оставить черновик
             </button>
           </p>
         ) : (

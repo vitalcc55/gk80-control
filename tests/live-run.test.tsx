@@ -4,21 +4,19 @@ import { type ComponentProps, useState } from 'react';
 import { expect, it, vi } from 'vitest';
 import { LiveRun as LiveRunView } from '../src/desktop/LiveRun';
 import { MeasurementSeriesContext } from '../src/desktop/measurement-series';
-import { useMeasurementSeries } from '../src/desktop/use-measurement-series';
+import { useMeasurementObservation } from '../src/desktop/use-measurement-series';
 
 function LiveRun({
   gapVersion = 0,
   ...props
-}: Omit<ComponentProps<typeof LiveRunView>, 'series'> & { gapVersion?: number }) {
+}: Omit<ComponentProps<typeof LiveRunView>, 'measurementContext' | 'measurementKey'> & {
+  gapVersion?: number;
+}) {
   const [context] = useState(() => new MeasurementSeriesContext());
-  const series = useMeasurementSeries(
-    context,
-    props.record.testId,
-    props.snapshot,
-    props.fresh,
-    gapVersion,
+  useMeasurementObservation(context, props.record.testId, props.snapshot, props.fresh, gapVersion);
+  return (
+    <LiveRunView {...props} measurementContext={context} measurementKey={props.record.testId} />
   );
-  return <LiveRunView {...props} series={series} />;
 }
 
 import {
@@ -110,7 +108,7 @@ it('shows channel staleness without opening details and identifies the time obse
   );
   const reading = screen.getByText('Перепад на диафрагме').closest('.reading');
   if (!(reading instanceof HTMLElement)) throw new Error('Differential reading missing');
-  expect(within(reading).getByText('устарело')).toBeTruthy();
+  expect(within(reading).getByText('устарело · последний отсчёт')).toBeTruthy();
   expect(screen.getByText('Время на последнем принятом отсчёте ядра')).toBeTruthy();
   expect(screen.getByText('5 с')).toBeTruthy();
   expect(screen.getByText('55 с')).toBeTruthy();
@@ -235,11 +233,19 @@ it('keeps the last received reading visible while a new snapshot is being confir
     />
   );
   const view = render(renderRun(true));
+  expect(screen.getByText('Снимок подтверждён')).toBeTruthy();
   expect(screen.getAllByText(/≈ 1\s?000 Па/)[0]).toBeTruthy();
   expect(
     screen.getByRole('button', { name: 'Подтвердить действие' }).hasAttribute('disabled'),
   ).toBe(false);
   view.rerender(renderRun(false));
+  expect(
+    within(screen.getByRole('complementary', { name: /по последнему.*снимку/ })).getByText(
+      'По последнему полученному снимку',
+    ),
+  ).toBeTruthy();
+  expect(screen.getByText('Снимок не подтверждён')).toBeTruthy();
+  expect(screen.getByText('Подтвердите')).toBeTruthy();
   expect(screen.getAllByText(/≈ 1\s?000 Па/)[0]).toBeTruthy();
   expect(screen.getByText('≈ 150 Па')).toBeTruthy();
   expect(screen.queryByText(/ДД3:.*≈ 80 Па/)).toBeNull();

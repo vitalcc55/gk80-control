@@ -105,6 +105,24 @@ function currentPlot(): PlotStub {
   return plot;
 }
 
+it('reuses number formatters for repeated axis labels without changing physical values', () => {
+  render(
+    <MeasurementChart
+      points={[{ seconds: 0, pressure: 10000, differential: 100 }]}
+      target={10000}
+    />,
+  );
+  const formats = vi.spyOn(Intl, 'NumberFormat');
+  const plot = currentPlot();
+  const values = [9990, 10000, 10010];
+  const splits = values.map((value) => value / 10000);
+  expect(axisNumbers(plot, 1, splits)).toEqual(values);
+  const constructed = formats.mock.calls.length;
+  for (let sample = 0; sample < 20; sample++) expect(axisNumbers(plot, 1, splits)).toEqual(values);
+  expect(formats).toHaveBeenCalledTimes(constructed);
+  formats.mockRestore();
+});
+
 it('builds the sample table only while open and updates the same plot while closed', async () => {
   const draw = (pressure: number) => (
     <MeasurementChart points={[{ seconds: 0, pressure, differential: null }]} target={10000} />

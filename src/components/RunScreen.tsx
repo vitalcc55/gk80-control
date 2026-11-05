@@ -17,6 +17,7 @@ export function RunScreen({
   chartNote,
   actionTitle,
   instruction,
+  actionLabel,
   time,
   action,
   stop,
@@ -38,6 +39,7 @@ export function RunScreen({
   stageNote?: ReactNode;
   actionTitle: string;
   instruction: string;
+  actionLabel?: string;
   time?: ReactNode;
   action?: ReactNode;
   stop?: ReactNode;
@@ -129,11 +131,12 @@ export function RunScreen({
             <MeasurementChart {...chart} />
           </div>
         </section>
-        <aside className="action-panel" aria-label="Текущее действие">
+        <aside className="action-panel" aria-label={actionLabel ?? 'Текущее действие'}>
           <div>
             <h2 ref={headingRef} tabIndex={-1}>
               {actionTitle}
             </h2>
+            {actionLabel && <p>По последнему полученному снимку</p>}
             <p className="action-instruction">{instruction}</p>
             {time}
             {action}

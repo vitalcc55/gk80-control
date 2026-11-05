@@ -2,7 +2,11 @@ const numberFormats = new Map<string, Intl.NumberFormat>();
 const dateFormat = new Intl.DateTimeFormat('ru-RU', { dateStyle: 'short', timeStyle: 'short' });
 
 /** Display precision never changes the underlying measurements. At most 42 formatter variants. */
-export function formatNumber(value: number, maximumSignificantDigits = 21): string {
+export function formatNumber(
+  value: number,
+  maximumSignificantDigits = 21,
+  notationOverride?: 'standard' | 'scientific',
+): string {
   if (
     !Number.isInteger(maximumSignificantDigits) ||
     maximumSignificantDigits < 1 ||
@@ -11,7 +15,8 @@ export function formatNumber(value: number, maximumSignificantDigits = 21): stri
     throw new RangeError('Invalid display precision');
   const magnitude = Math.abs(value);
   const notation =
-    magnitude >= 1e12 || (magnitude > 0 && magnitude < 1e-9) ? 'scientific' : 'standard';
+    notationOverride ??
+    (magnitude >= 1e12 || (magnitude > 0 && magnitude < 1e-9) ? 'scientific' : 'standard');
   const key = `${notation}:${maximumSignificantDigits}`;
   let formatter = numberFormats.get(key);
   if (!formatter) {

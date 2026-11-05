@@ -2,6 +2,7 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../src/App';
+import { AppShell } from '../src/components/AppShell';
 
 // uPlot requires a canvas; its real rendering is covered in the browser tests.
 vi.mock('../src/components/MeasurementChart', () => ({
@@ -13,6 +14,41 @@ beforeEach(() => {
 });
 
 describe('подготовленные состояния оператора', () => {
+  it('отмечает историю при просмотре исторического результата и сохраняет доступ к текущему', () => {
+    render(
+      <AppShell
+        screen="result"
+        active={false}
+        draftAvailable={false}
+        historyResult
+        onTests={() => {}}
+        onRun={() => {}}
+        onParameters={() => {}}
+        onResult={() => {}}
+      >
+        Результат истории
+      </AppShell>,
+    );
+    expect(screen.getByRole('button', { name: 'Испытания' }).getAttribute('aria-current')).toBe(
+      'page',
+    );
+    expect(
+      screen.getByRole('button', { name: 'Результат прохода' }).hasAttribute('aria-current'),
+    ).toBe(false);
+  });
+  it('создаёт область объявления до появления текста этапа', async () => {
+    render(<App />);
+    const announcement = screen.getByRole('status');
+    expect(announcement.textContent).toBe('');
+    await userEvent
+      .setup()
+      .selectOptions(
+        screen.getByRole('combobox', { name: 'Выбрать подготовленное состояние' }),
+        'measuring',
+      );
+    expect(screen.getByRole('status')).toBe(announcement);
+    expect(announcement.textContent).toContain('Этап:');
+  });
   it('останавливает активный пример из чужого результата, сохраняя потерю ДД1 и исходные параметры', async () => {
     const user = userEvent.setup();
     window.history.replaceState(null, '', '/?fixture=empty');
@@ -61,6 +97,11 @@ describe('подготовленные состояния оператора', (
     await user.click(screen.getByRole('button', { name: 'К списку' }));
     expect(screen.getByText('ДЕМО-001')).toBeTruthy();
     await user.click(screen.getByRole('button', { name: /^Открыть / }));
+    expect(
+      within(screen.getByRole('navigation'))
+        .getByRole('button', { name: 'Испытания' })
+        .getAttribute('aria-current'),
+    ).toBe('page');
     await user.click(screen.getByRole('button', { name: 'К списку' }));
     expect(screen.getByText('ДЕМО-001')).toBeTruthy();
     await user.selectOptions(

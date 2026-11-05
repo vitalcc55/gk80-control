@@ -59,6 +59,7 @@ export function FixtureTests({
         saving: 'Пример: сохранено',
       }))}
       filters={filters}
+      filtered={Object.values(filters).some(Boolean)}
       onFilters={setFilters}
       onSearch={() => {}}
       onReset={() => setFilters(emptyHistoryFilters)}

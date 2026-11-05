@@ -39,6 +39,8 @@ export function TestsScreen({
   disabled,
   loading = false,
   error = '',
+  filtered = false,
+  retryLabel = 'Повторить чтение списка',
   onRetry,
   onNext,
   onFirst,
@@ -56,7 +58,9 @@ export function TestsScreen({
   disabled: boolean;
   loading?: boolean;
   error?: string;
-  onRetry?: () => void;
+  filtered?: boolean;
+  retryLabel?: string;
+  onRetry?: (() => void) | undefined;
   onNext?: (() => void) | undefined;
   onFirst?: () => void;
   active?: ReactNode;
@@ -140,7 +144,7 @@ export function TestsScreen({
             <p>{error}</p>
             {onRetry && (
               <button type="button" onClick={onRetry}>
-                Повторить чтение списка
+                {retryLabel}
               </button>
             )}
           </div>
@@ -202,8 +206,7 @@ export function TestsScreen({
             </div>
           ) : (
             <div className="empty-example">
-              <p>История пуста</p>
-              <p>Записей по заданным условиям нет.</p>
+              <p>{filtered ? 'По заданным условиям записей нет' : 'История пуста'}</p>
             </div>
           ))
         )}

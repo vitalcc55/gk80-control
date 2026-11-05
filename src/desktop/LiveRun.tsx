@@ -1,12 +1,14 @@
 import { type ReactNode, useState } from 'react';
 import { RunScreen } from '../components/RunScreen';
+import { SnapshotStatus } from '../components/SnapshotStatus';
 import type {
   Measurement,
   Snapshot,
   TestRecord,
 } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
 import { formatElapsedSeconds, formatNumber, formatRemainingSeconds } from '../lib/format';
-import type { MeasurementSeries } from './measurement-series';
+import type { MeasurementSeriesContext } from './measurement-series';
+import { useMeasurementSeries } from './use-measurement-series';
 
 function shown(item: Measurement | undefined): string {
   return (item?.quality === 'valid' || item?.quality === 'stale') && item.value !== null
@@ -26,7 +28,8 @@ export function LiveRun({
   record,
   snapshot,
   fresh,
-  series,
+  measurementContext,
+  measurementKey,
   pending,
   onConfirm,
   stop,
@@ -34,11 +37,13 @@ export function LiveRun({
   record: TestRecord;
   snapshot: Snapshot;
   fresh: boolean;
-  series: MeasurementSeries;
+  measurementContext: MeasurementSeriesContext;
+  measurementKey: string;
   pending: boolean;
   onConfirm: () => void;
   stop?: ReactNode;
 }) {
+  const series = useMeasurementSeries(measurementContext, measurementKey);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const pressure = snapshot.measurements?.find((item) => item.channel === 'dd1');
   const differential = snapshot.measurements?.find((item) => item.channel === 'dd2');
@@ -61,13 +66,9 @@ export function LiveRun({
       pressure={shown(pressure)}
       differential={shown(differential)}
       target={`${formatNumber(record.parameters.pmaxPa)} Па`}
-      pressureNote={<p>{!fresh ? 'Актуальность не подтверждена' : quality(pressure)}</p>}
-      differentialNote={<p>{!fresh ? 'Актуальность не подтверждена' : quality(differential)}</p>}
-      readingNote={
-        fresh
-          ? 'Показания симулятора · округление до 6 значащих цифр'
-          : 'Последние полученные показания · устарело; текущие значения не подтверждены.'
-      }
+      pressureNote={<p>{quality(pressure)} · последний отсчёт</p>}
+      differentialNote={<p>{quality(differential)} · последний отсчёт</p>}
+      readingNote="Последние полученные показания · округление до 6 значащих цифр"
       details={
         <details className="reading-details" onToggle={(e) => setDetailsOpen(e.currentTarget.open)}>
           <summary>Время и качество показаний</summary>
@@ -90,31 +91,32 @@ export function LiveRun({
       actionTitle={
         stopping ? 'Остановка' : awaiting ? 'Подтверждение оператора' : 'Демонстрационное измерение'
       }
+      actionLabel="Текущее действие по последнему полученному снимку"
       instruction={
         stopping
-          ? 'Остановка выполняется; безопасное давление не подтверждено.'
-          : !fresh
-            ? 'Данные устарели. Ожидаем подтверждение состояния ядром.'
-            : (snapshot.pendingAction?.instruction ??
-              (pressure
-                ? 'Идёт сбор показаний симулятора. Дождитесь завершения измерения.'
-                : 'Ожидаем первые показания ядра.'))
+          ? 'По последнему снимку: остановка выполняется; безопасное давление не подтверждено.'
+          : (snapshot.pendingAction?.instruction ??
+            (pressure
+              ? 'Идёт сбор показаний симулятора. Дождитесь завершения измерения.'
+              : 'Ожидаем первые показания ядра.'))
       }
       time={
-        <dl className="run-time">
+        <div className="run-timing">
           <p>Время на последнем принятом отсчёте ядра</p>
-          <div>
-            <dt>Прошло</dt>
-            <dd>{timing ? `${formatElapsedSeconds(timing.elapsedSeconds)} с` : 'Неизвестно'}</dd>
-          </div>
-          <div>
-            <dt>Осталось</dt>
-            <dd>
-              {timing ? `${formatRemainingSeconds(timing.remainingSeconds)} с` : 'Неизвестно'}
-            </dd>
-          </div>
-          {!fresh && timing && <p>Время по последнему снимку · устарело</p>}
-        </dl>
+          <dl className="run-time">
+            <div>
+              <dt>Прошло</dt>
+              <dd>{timing ? `${formatElapsedSeconds(timing.elapsedSeconds)} с` : 'Неизвестно'}</dd>
+            </div>
+            <div>
+              <dt>Осталось</dt>
+              <dd>
+                {timing ? `${formatRemainingSeconds(timing.remainingSeconds)} с` : 'Неизвестно'}
+              </dd>
+            </div>
+          </dl>
+          <SnapshotStatus confirmed={fresh} />
+        </div>
       }
       action={
         awaiting &&

@@ -17,6 +17,7 @@ import {
 } from '../components/ParametersScreen';
 import { ReadinessScreen } from '../components/ReadinessScreen';
 import { ResultScreen } from '../components/ResultScreen';
+import { SnapshotStatus } from '../components/SnapshotStatus';
 import { StopButton } from '../components/StopButton';
 import { useScreenFocus } from '../components/use-screen-focus';
 import type {
@@ -40,7 +41,7 @@ import { RecordDetails } from './RecordDetails';
 import { observeReadiness } from './readiness-observation';
 import { SessionStatus } from './SessionStatus';
 import { type SessionObservation, sessionObservation } from './session-observation';
-import { useMeasurementSeries } from './use-measurement-series';
+import { useMeasurementObservation } from './use-measurement-series';
 import { useSessionObservation } from './use-session-observation';
 
 const empty: FormParameters = {
@@ -255,13 +256,10 @@ function ActiveLiveApp({
   } = state;
   const { stop, lookup, forget, showMessage } = coordinator;
   const { snapshot, record, fresh } = commandObservation({ connection, lastSnapshot });
-  const series = useMeasurementSeries(
-    measurementContext,
-    record ? `${hostRunId}:${backendRunId}:${databaseId}:${record.testId}` : '',
-    snapshot,
-    fresh,
-    gapVersion,
-  );
+  const measurementKey = record
+    ? `${hostRunId}:${backendRunId}:${databaseId}:${record.testId}`
+    : '';
+  useMeasurementObservation(measurementContext, measurementKey, snapshot, fresh, gapVersion);
   const activeId = record?.testId;
   const stage = record?.stage;
   const revision = snapshot?.revision;
@@ -316,6 +314,7 @@ function ActiveLiveApp({
     requestFocus(stage === 'preparing' ? 'readiness' : stage === 'finished' ? 'result' : 'run');
     setShowHistory(false);
     setShowSavedParameters(false);
+    setShowForm(false);
   };
   const historyVisible = showHistory || (!record && !showForm);
   const runVisible =
@@ -327,6 +326,13 @@ function ActiveLiveApp({
   const stopControl = (
     <StopButton
       disabled={stopCount >= 2 || totalStops >= 64}
+      disabledReason={
+        stopCount >= 2
+          ? 'Ответы на запросы остановки не подтверждены. Безопасное давление не подтверждено.'
+          : totalStops >= 64
+            ? 'Достигнут предел неподтверждённых запросов остановки.'
+            : undefined
+      }
       label={stopRequested ? 'Повторить запрос остановки' : 'Остановить испытание'}
       onStop={() => {
         void stop();
@@ -336,11 +342,18 @@ function ActiveLiveApp({
   return (
     <AppShell
       screen={currentScreen}
+      historyResult={historyVisible && historyResult}
       active={!!record && stage !== 'finished'}
       draftAvailable={draftAvailable || showForm}
       mainRef={mainRef}
       onTests={openHistory}
       onRun={openCurrent}
+      onResult={record?.stage === 'finished' ? openCurrent : undefined}
+      announcement={
+        record
+          ? `По последнему снимку: ${stage === 'preparing' ? 'подготовка испытания' : stage === 'finished' ? 'результат испытания доступен' : stage === 'stopping' ? 'остановка выполняется; безопасное давление не подтверждено' : snapshot?.pendingAction ? snapshot.pendingAction.instruction : 'демонстрационное измерение'}`
+          : null
+      }
       onParameters={() => {
         requestFocus('parameters');
         setShowHistory(false);
@@ -539,6 +552,7 @@ function ActiveLiveApp({
               visible={historyVisible}
               resetVersion={historyReset}
               activeTestId={active ? activeId : undefined}
+              completedRecord={record?.stage === 'finished' ? record : null}
               onViewChange={(result) => {
                 requestFocus(result ? 'result' : 'tests');
                 setHistoryResult(result);
@@ -636,7 +650,8 @@ function ActiveLiveApp({
                 record={record}
                 snapshot={snapshot}
                 fresh={fresh}
-                series={series}
+                measurementContext={measurementContext}
+                measurementKey={measurementKey}
                 stop={stopControl}
                 pending={blocking}
                 onConfirm={() => {
@@ -675,13 +690,18 @@ function ActiveLiveApp({
         {active && !runVisible && (
           <ActiveTestPanel
             title={record.parameters.valve}
-            status="Активный проход"
+            status="Проход по последнему снимку"
             description={
-              stage === 'preparing'
-                ? 'Подготовка'
-                : stage === 'stopping'
-                  ? 'Остановка выполняется; безопасное давление не подтверждено.'
-                  : 'Испытание продолжается'
+              <>
+                {stage === 'preparing'
+                  ? 'Подготовка'
+                  : stage === 'stopping'
+                    ? 'Остановка выполняется; безопасное давление не подтверждено.'
+                    : snapshot?.pendingAction
+                      ? 'Ожидание подтверждения оператора'
+                      : 'Демонстрационное измерение'}
+                <SnapshotStatus confirmed={fresh} />
+              </>
             }
             onReturn={openCurrent}
             stop={stopControl}

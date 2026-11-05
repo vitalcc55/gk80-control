@@ -315,11 +315,10 @@ for (const viewport of [
     });
 
     test('навигация сохраняет черновик и возвращает к активному проходу', async ({ page }) => {
+      const valve = 'К'.repeat(200);
       await page.goto('/?fixture=empty');
       await page.getByRole('button', { name: 'Новое испытание' }).click();
-      await page
-        .getByRole('textbox', { name: 'Обозначение или наименование клапана' })
-        .fill('Клапан навигации');
+      await page.getByRole('textbox', { name: 'Обозначение или наименование клапана' }).fill(valve);
       await page.getByRole('textbox', { name: 'Площадь клапана, квадратные метры' }).fill('0,');
       const nav = page.getByRole('navigation', { name: 'Навигация' });
       await nav.getByRole('button', { name: 'Испытания' }).click();
@@ -335,14 +334,19 @@ for (const viewport of [
       await page.getByRole('button', { name: 'Подтверждаю завершение серии' }).click();
       await nav.getByRole('button', { name: 'Параметры' }).click();
       await expect(page.getByText('Текущее испытание · только просмотр')).toBeVisible();
+      await page.evaluate(() => document.fonts.ready);
       await expect(
-        page
-          .getByRole('region', { name: 'Параметры испытания' })
-          .getByText('Клапан навигации', { exact: true }),
+        page.getByRole('region', { name: 'Параметры испытания' }).getByText(valve, { exact: true }),
       ).toBeVisible();
+      expect(
+        await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
+      ).toBe(true);
       await expect(page.getByRole('textbox')).toHaveCount(0);
       await nav.getByRole('button', { name: 'Текущее испытание' }).click();
       await expect(page.getByRole('heading', { name: 'Выход на рабочее давление' })).toBeVisible();
+      expect(
+        await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
+      ).toBe(true);
       await expect(page.getByRole('button', { name: 'Остановить испытание' })).toBeVisible();
     });
   });

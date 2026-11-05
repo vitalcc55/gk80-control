@@ -24,11 +24,9 @@ function formatAxisValues(splits: number[]): string[] {
   );
   const uniqueCount = new Set(splits).size;
   for (let digits = 3; digits <= 17; digits++) {
-    const formatter = new Intl.NumberFormat('ru-RU', {
-      notation: scientific ? 'scientific' : 'standard',
-      maximumSignificantDigits: digits,
-    });
-    const labels = splits.map((value) => (value === 0 ? '0' : formatter.format(value)));
+    const labels = splits.map((value) =>
+      value === 0 ? '0' : formatNumber(value, digits, scientific ? 'scientific' : 'standard'),
+    );
     if (new Set(labels).size === uniqueCount) return labels;
   }
   return splits.map((value) => String(value));

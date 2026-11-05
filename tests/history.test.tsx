@@ -7,6 +7,7 @@ vi.mock('../src/components/MeasurementChart', () => ({ MeasurementChart: () => n
 import type { SessionBridge } from '../src/desktop/bridge';
 import { History } from '../src/desktop/History';
 import { LiveApp } from '../src/desktop/LiveApp';
+import { RecordDetails } from '../src/desktop/RecordDetails';
 import { desktopDemoService } from '../src/desktop/wails-bridge';
 import {
   ConnectionStateStatus,
@@ -39,6 +40,295 @@ const record: TestRecord = {
   },
 };
 const callbacks = { onNew: vi.fn(), onCopy: vi.fn(), onDiscard: vi.fn() };
+
+it('refreshes a late old saved record by its complete terminal version, not saveStatus alone', async () => {
+  const old = {
+    ...record,
+    stage: TestRecordStage.Running,
+    outcome: TestRecordOutcome.TestRecordOutcomePending,
+    dataQuality: TestRecordDataQuality.TestRecordDataQualityPending,
+  };
+  let finish: (value: TestRecord) => void = () => {};
+  const delayed = new Promise<TestRecord>((resolve) => {
+    finish = resolve;
+  });
+  const service = {
+    ...desktopDemoService,
+    listTests: vi.fn().mockResolvedValue({ items: [old], nextAfter: null }),
+    test: vi.fn().mockReturnValueOnce(delayed).mockResolvedValue(record),
+  };
+  const draw = (completedRecord: TestRecord) => (
+    <History
+      {...callbacks}
+      completedRecord={completedRecord}
+      service={service}
+      available
+      disabled={false}
+      draftAvailable={false}
+    />
+  );
+  const view = render(
+    draw({ ...record, saveStatus: TestRecordSaveStatus.TestRecordSaveStatusPending }),
+  );
+  await userEvent.setup().click(await screen.findByRole('button', { name: /Открыть Первая/ }));
+  view.rerender(draw(record));
+  await act(async () => {
+    finish(old);
+    await delayed;
+  });
+  expect(await screen.findByText('Завершено')).toBeTruthy();
+  expect(screen.getByText('Полные')).toBeTruthy();
+  expect(service.test).toHaveBeenCalledTimes(2);
+});
+
+it.each(['success', 'error'])(
+  'discards a late selected refresh %s after an explicit return to the list',
+  async (outcome) => {
+    const old = { ...record, saveStatus: TestRecordSaveStatus.TestRecordSaveStatusPending };
+    let finish: (value: TestRecord) => void = () => {};
+    let fail: (reason: Error) => void = () => {};
+    const delayed = new Promise<TestRecord>((resolve, reject) => {
+      finish = resolve;
+      fail = reject;
+    });
+    const service = {
+      ...desktopDemoService,
+      listTests: vi.fn().mockResolvedValue({ items: [old], nextAfter: null }),
+      test: vi.fn().mockResolvedValueOnce(old).mockReturnValueOnce(delayed),
+    };
+    const draw = (completedRecord: TestRecord) => (
+      <History
+        {...callbacks}
+        completedRecord={completedRecord}
+        service={service}
+        available
+        disabled={false}
+        draftAvailable={false}
+      />
+    );
+    const view = render(draw(old));
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: /Открыть Первая/ }));
+    await screen.findByRole('heading', { name: 'Результат испытания' });
+    view.rerender(draw(record));
+    await waitFor(() => expect(service.test).toHaveBeenCalledTimes(2));
+    await user.click(screen.getByRole('button', { name: 'К списку' }));
+    await act(async () => {
+      if (outcome === 'success') finish(record);
+      else fail(new Error('late'));
+      await delayed.catch(() => {});
+    });
+    expect(screen.getByRole('heading', { name: 'Испытания' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Результат испытания' })).toBeNull();
+    expect(screen.queryByText('Не удалось обновить запись после сохранения.')).toBeNull();
+  },
+);
+
+it('keeps list and selected-record read failures independent and retries each original operation', async () => {
+  const old = { ...record, saveStatus: TestRecordSaveStatus.TestRecordSaveStatusPending };
+  let failList: (reason: Error) => void = () => {};
+  let failRecord: (reason: Error) => void = () => {};
+  const listFailure = new Promise<TestList>((_, reject) => {
+    failList = reject;
+  });
+  const recordFailure = new Promise<TestRecord>((_, reject) => {
+    failRecord = reject;
+  });
+  const service = {
+    ...desktopDemoService,
+    listTests: vi
+      .fn()
+      .mockResolvedValueOnce({ items: [old], nextAfter: null })
+      .mockReturnValueOnce(listFailure)
+      .mockResolvedValue({ items: [record], nextAfter: null }),
+    test: vi
+      .fn()
+      .mockResolvedValueOnce(old)
+      .mockReturnValueOnce(recordFailure)
+      .mockResolvedValue(record),
+  };
+  const draw = (completedRecord: TestRecord) => (
+    <History
+      {...callbacks}
+      completedRecord={completedRecord}
+      service={service}
+      available
+      disabled={false}
+      draftAvailable={false}
+    />
+  );
+  const view = render(draw(old));
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('button', { name: /Открыть Первая/ }));
+  await screen.findByRole('heading', { name: 'Результат испытания' });
+  view.rerender(draw(record));
+  await waitFor(() => expect(service.test).toHaveBeenCalledTimes(2));
+  await act(async () => {
+    failRecord(new Error('record'));
+    await recordFailure.catch(() => {});
+  });
+  await act(async () => {
+    failList(new Error('list'));
+    await listFailure.catch(() => {});
+  });
+  expect(screen.getByText('Не удалось обновить запись после сохранения.')).toBeTruthy();
+  await user.click(screen.getByRole('button', { name: 'Повторить открытие записи' }));
+  await screen.findByText('Сохранено');
+  expect(service.listTests).toHaveBeenCalledTimes(2);
+  await user.click(screen.getByRole('button', { name: 'К списку' }));
+  expect(screen.getByText('Не удалось прочитать список испытаний из ядра.')).toBeTruthy();
+  await user.click(screen.getByRole('button', { name: 'Повторить чтение списка' }));
+  await screen.findByRole('button', { name: /Открыть Первая/ });
+  expect(service.test).toHaveBeenCalledTimes(3);
+});
+
+it('ends the canceled loading state when a new query is submitted offline', async () => {
+  let finish: (value: TestList) => void = () => {};
+  const delayed = new Promise<TestList>((resolve) => {
+    finish = resolve;
+  });
+  const service = {
+    ...desktopDemoService,
+    listTests: vi
+      .fn()
+      .mockReturnValueOnce(delayed)
+      .mockResolvedValue({ items: [], nextAfter: null }),
+  };
+  const draw = (available: boolean) => (
+    <History
+      {...callbacks}
+      service={service}
+      available={available}
+      disabled={false}
+      draftAvailable={false}
+    />
+  );
+  const view = render(draw(true));
+  await waitFor(() => expect(service.listTests).toHaveBeenCalledOnce());
+  view.rerender(draw(false));
+  const user = userEvent.setup();
+  await user.type(screen.getByLabelText('Поиск по номеру или изделию'), 'Новая выборка');
+  await user.click(screen.getByRole('button', { name: 'Найти' }));
+  expect(screen.queryByText('Чтение истории…')).toBeNull();
+  await act(async () => {
+    finish({ items: [record], nextAfter: null });
+    await delayed;
+  });
+  expect(screen.queryByRole('button', { name: /Открыть Первая/ })).toBeNull();
+  view.rerender(draw(true));
+  await waitFor(() =>
+    expect(service.listTests).toHaveBeenLastCalledWith({
+      q: 'Новая выборка',
+      after: null,
+      limit: 100,
+    }),
+  );
+});
+
+it('refreshes open detail pages when final saving is confirmed while keeping disclosures open', async () => {
+  const audit = vi
+    .fn()
+    .mockResolvedValueOnce({ items: [], nextAfter: null })
+    .mockResolvedValue({
+      items: [
+        {
+          sequence: 1,
+          occurredAt: record.createdAt,
+          action: 'finish',
+          outcome: 'completed',
+          operatorId: 'demo',
+        },
+      ],
+      nextAfter: null,
+    });
+  const service = { ...desktopDemoService, audit };
+  const view = render(
+    <RecordDetails
+      record={{ ...record, saveStatus: TestRecordSaveStatus.TestRecordSaveStatusPending }}
+      service={service}
+      available
+    />,
+  );
+  await userEvent.setup().click(screen.getByText('Аудит', { selector: 'summary' }));
+  await screen.findByText('Событий нет.');
+  view.rerender(<RecordDetails record={record} service={service} available />);
+  expect(await screen.findByText(/finish · completed/)).toBeTruthy();
+  expect(screen.queryByText('Событий нет.')).toBeNull();
+  expect(audit).toHaveBeenCalledTimes(2);
+  expect(audit).toHaveBeenLastCalledWith(record.testId, 0, 100);
+  await userEvent.setup().click(screen.getByText('Сведения о записи', { selector: 'summary' }));
+  expect(
+    screen.getByText('Сведения о записи', { selector: 'summary' }).closest('details')?.open,
+  ).toBe(true);
+  view.rerender(<RecordDetails record={record} service={service} available visible={false} />);
+  expect(screen.queryByText(/finish · completed/)).toBeNull();
+  view.rerender(<RecordDetails record={record} service={service} available />);
+  expect(await screen.findByText(/finish · completed/)).toBeTruthy();
+  expect(
+    screen.getByText('Сведения о записи', { selector: 'summary' }).closest('details')?.open,
+  ).toBe(true);
+  expect(audit).toHaveBeenCalledTimes(2);
+});
+
+it('retries the failed page of the applied query without submitting edited filter fields', async () => {
+  const listTests = vi
+    .fn()
+    .mockResolvedValueOnce({ items: [record], nextAfter: record.testId })
+    .mockRejectedValueOnce(new Error('read failed'))
+    .mockResolvedValueOnce({ items: [record], nextAfter: null });
+  render(
+    <History
+      {...callbacks}
+      service={{ ...desktopDemoService, listTests }}
+      available
+      disabled={false}
+      draftAvailable={false}
+    />,
+  );
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('button', { name: 'Следующая страница' }));
+  await user.type(screen.getByLabelText('Поиск по номеру или изделию'), 'Не отправлено');
+  await user.click(screen.getByRole('button', { name: 'Повторить чтение списка' }));
+  await screen.findByRole('button', { name: /Открыть Первая/ });
+  expect(listTests).toHaveBeenLastCalledWith({ limit: 100, after: record.testId });
+  expect(screen.getByLabelText('Поиск по номеру или изделию')).toHaveProperty(
+    'value',
+    'Не отправлено',
+  );
+});
+
+it('keeps an already read page during snapshot renewal and refreshes it after confirmed saving', async () => {
+  const pending = {
+    ...record,
+    saveStatus: TestRecordSaveStatus.TestRecordSaveStatusPending,
+    outcome: TestRecordOutcome.TestRecordOutcomePending,
+  };
+  const listTests = vi
+    .fn()
+    .mockResolvedValueOnce({ items: [pending], nextAfter: null })
+    .mockResolvedValue({ items: [record], nextAfter: null });
+  const service = { ...desktopDemoService, listTests };
+  const draw = (available: boolean, completedRecord: TestRecord) => (
+    <History
+      {...callbacks}
+      completedRecord={completedRecord}
+      service={service}
+      available={available}
+      disabled={false}
+      draftAvailable={false}
+    />
+  );
+  const view = render(draw(true, pending));
+  await screen.findByRole('button', { name: /Открыть Первая/ });
+  const calls = listTests.mock.calls.length;
+  view.rerender(draw(false, pending));
+  expect(screen.getByRole('button', { name: /Открыть Первая/ })).toBeTruthy();
+  view.rerender(draw(true, pending));
+  expect(listTests).toHaveBeenCalledTimes(calls);
+  view.rerender(draw(true, record));
+  expect(await screen.findByText('Сохранено')).toBeTruthy();
+  expect(listTests).toHaveBeenCalledTimes(calls + 1);
+});
 
 it.each(['navigation', 'connection'])(
   'keeps an invalid applied range rejected across %s and recovers on reset',
