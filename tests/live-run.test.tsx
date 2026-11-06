@@ -9,6 +9,7 @@ import { useScreenFocus } from '../src/components/use-screen-focus';
 import { LiveRun as LiveRunView } from '../src/desktop/LiveRun';
 import { MeasurementSeriesContext } from '../src/desktop/measurement-series';
 import { useMeasurementObservation } from '../src/desktop/use-measurement-series';
+import { formatMeasurement } from '../src/lib/format';
 
 function LiveRun({
   gapVersion = 0,
@@ -88,6 +89,58 @@ const snapshot: Snapshot = {
   measurementTiming: null,
   measurements: [first],
 };
+
+it('округляет показания и различает малые значения обоих знаков и ноль', () => {
+  expect([0, -0, 0.0001, -0.0001, 0.001, -0.001, 1.2344, 1.2346].map(formatMeasurement)).toEqual([
+    '≈ 0 Па', '≈ 0 Па', '< 0,001 Па', '−0,001 < значение < 0 Па',
+    '≈ 0,001 Па', '≈ -0,001 Па', '≈ 1,234 Па', '≈ 1,235 Па',
+  ]);
+  expect(formatMeasurement(1e200)).toMatch(/E\+?200/i);
+  expect(formatMeasurement(1e200).length).toBeLessThan(40);
+  expect(formatMeasurement(1000000000000.1234)).toBe('≈ 1,000000000000123E12 Па');
+  expect(formatMeasurement(-1000000000000.1234)).toBe('≈ -1,000000000000123E12 Па');
+  expect(formatMeasurement(Number.MAX_VALUE)).not.toMatch(/Infinity|∞/);
+  expect(formatMeasurement(-Number.MAX_VALUE)).not.toMatch(/Infinity|∞/);
+});
+
+it('показывает точные границы малых показаний, сохраняя исходные точки', async () => {
+  const measured = {
+    ...snapshot,
+    measurements: [
+      { ...first, value: 0.0001 },
+      { ...first, channel: MeasurementChannel.Dd2, value: -0.0001 },
+      { ...first, channel: MeasurementChannel.Dd3, value: 1.23456 },
+    ],
+  };
+  render(<LiveRun record={record} snapshot={measured} fresh pending={false} onConfirm={() => {}} />);
+  expect(screen.getByText('< 0,001 Па')).toBeTruthy();
+  expect(screen.getByText('−0,001 < значение < 0 Па')).toBeTruthy();
+  await userEvent.setup().click(screen.getByText('Время и качество показаний'));
+  expect(await screen.findByText(/ДД3: ≈ 1,235 Па/)).toBeTruthy();
+  expect(screen.getByTestId('chart').getAttribute('data-points')).toContain('0.0001');
+  expect(screen.queryByText(/округление до 6/)).toBeNull();
+});
+
+it('называет запуском только известное подтверждение начала измерения', () => {
+  const confirm = vi.fn();
+  const action = { testId: record.testId, actionId: 'action', instruction: 'Подтвердите начало демонстрационного измерения' };
+  const draw = (pendingAction: typeof action, fresh = true) => (
+    <LiveRun record={record} snapshot={{ ...snapshot, pendingAction }} fresh={fresh} pending={false} onConfirm={confirm} />
+  );
+  const view = render(draw(action));
+  fireEvent.click(screen.getByRole('button', { name: 'Запуск испытания' }));
+  expect(confirm).toHaveBeenCalledOnce();
+  expect(screen.queryByText(action.instruction)).toBeNull();
+  view.rerender(draw(action, false));
+  expect(screen.getByRole('button', { name: 'Запуск испытания' }).hasAttribute('disabled')).toBe(true);
+  view.rerender(<LiveRun record={record} snapshot={{ ...snapshot, pendingAction: action }} fresh pending onConfirm={confirm} />);
+  expect(screen.getByRole('button', { name: 'Запуск испытания' }).hasAttribute('disabled')).toBe(true);
+  view.rerender(<LiveRun record={{ ...record, stage: TestRecordStage.Stopping }} snapshot={{ ...snapshot, pendingAction: action }} fresh pending={false} onConfirm={confirm} />);
+  expect(screen.queryByRole('button', { name: 'Запуск испытания' })).toBeNull();
+  view.rerender(draw({ ...action, instruction: 'Проверьте подключение' }));
+  expect(screen.getByText('Проверьте подключение')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Подтвердить действие' })).toBeTruthy();
+});
 
 it('leaves a gap when an accepted measurement packet was not observed', () => {
   const context = new MeasurementSeriesContext();
@@ -340,15 +393,15 @@ it('does not claim measurement progress before the first accepted observation', 
   expect(screen.getByRole('heading', { name: 'Ожидание данных измерения' })).toBeTruthy();
   expect(screen.getByText('Ожидаем данные измерения ядра.')).toBeTruthy();
   expect(
-    screen.getByText('Демонстрационное измерение').closest('li')?.getAttribute('aria-current'),
+    screen.getByText('Измерение').closest('li')?.getAttribute('aria-current'),
   ).toBeNull();
   view.rerender(
     draw({ ...snapshot, measurementTiming: { elapsedSeconds: 0, remainingSeconds: 60 } }),
   );
-  expect(screen.getByRole('heading', { name: 'Демонстрационное измерение' })).toBeTruthy();
+  expect(screen.getByRole('heading', { name: 'Измерение' })).toBeTruthy();
   expect(
     screen
-      .getByText('Демонстрационное измерение', { selector: 'strong' })
+      .getByText('Измерение', { selector: 'strong' })
       .closest('li')
       ?.getAttribute('aria-current'),
   ).toBe('step');
@@ -521,7 +574,7 @@ it('keeps the last received reading visible while a new snapshot is being confir
   expect(screen.queryByText(/ДД3:.*≈ 80 Па/)).toBeNull();
   await userEvent.setup().click(screen.getByText('Время и качество показаний'));
   expect(await screen.findByText(/ДД3:.*≈ 80 Па/)).toBeTruthy();
-  expect(screen.getByText(/Последние полученные показания/)).toBeTruthy();
+  expect(screen.queryByText(/Последние полученные показания/)).toBeNull();
   expect(screen.getAllByText(/качество последнего наблюдения: достоверно/)).toHaveLength(3);
   expect(screen.getAllByText(/2026-10-30T00:00:01Z/)).toHaveLength(3);
   expect(screen.getByText('Этап по последнему полученному снимку')).toBeTruthy();
@@ -687,6 +740,6 @@ it('rounds displayed readings without changing chart samples', () => {
       onConfirm={() => {}}
     />,
   );
-  expect(screen.getByText(/≈ 9\s?986,02 Па/)).toBeTruthy();
+  expect(screen.getByText(/≈ 9\s?986,022 Па/)).toBeTruthy();
   expect(screen.getByTestId('chart').textContent).toBe('9986.022284815022');
 });

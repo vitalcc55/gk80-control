@@ -6,7 +6,11 @@ import type { TestParameters } from '../model';
 
 /** A running record alone does not establish that the first sample was accepted. */
 export function measurementLabel(timing: Snapshot['measurementTiming'] | undefined): string {
-  return timing ? 'Демонстрационное измерение' : 'Ожидание данных измерения';
+  return timing ? 'Измерение' : 'Ожидание данных измерения';
+}
+
+export function isStartMeasurementInstruction(instruction: string | undefined): boolean {
+  return instruction === 'Подтвердите начало демонстрационного измерения';
 }
 
 /** Fields that can change while a result and its final stored pages are being published. */

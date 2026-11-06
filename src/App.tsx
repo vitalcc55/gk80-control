@@ -11,7 +11,12 @@ import { Button } from './components/ui/button';
 import { useScreenFocus } from './components/use-screen-focus';
 import { FixtureTests } from './FixtureTests';
 import { demoSteps, fixtureSource, prepareRunDisplay } from './fixtureAdapter';
-import { formatElapsedSeconds, formatNumber, formatRemainingSeconds } from './lib/format';
+import {
+  formatElapsedSeconds,
+  formatMeasurement,
+  formatNumber,
+  formatRemainingSeconds,
+} from './lib/format';
 import type { Fixture, FixtureId, Screen, TestParameters } from './model';
 
 const number = (value: number) => formatNumber(value, 12);
@@ -107,8 +112,8 @@ function RunScreen({
         ...stage,
         state: index === stageIndex ? 'current' : index < stageIndex ? 'done' : 'next',
       }))}
-      pressure={pressureValue === null ? 'Неизвестно' : `${number(pressureValue)} Па`}
-      differential={differentialValue === null ? 'Неизвестно' : `${number(differentialValue)} Па`}
+      pressure={pressureValue === null ? 'Неизвестно' : formatMeasurement(pressureValue)}
+      differential={differentialValue === null ? 'Неизвестно' : formatMeasurement(differentialValue)}
       target={`${formatNumber(parameters.pmax)} Па`}
       pressureNote={
         <>
@@ -117,7 +122,7 @@ function RunScreen({
               {isLost
                 ? lastPressure === null
                   ? 'Последнее показание недоступно'
-                  : `Последнее: ${number(lastPressure)} Па · устарело, ${fixture.pressure.time}`
+                  : `Последнее: ${formatMeasurement(lastPressure)} · устарело, ${fixture.pressure.time}`
                 : 'Показание недоступно'}
             </p>
           )}

@@ -38,7 +38,7 @@ export function RunScreen({
   chartNote?: ReactNode;
   stageNote?: ReactNode;
   actionTitle: string;
-  instruction: string;
+  instruction?: string | undefined;
   actionLabel?: string;
   time?: ReactNode;
   action?: ReactNode;
@@ -137,7 +137,7 @@ export function RunScreen({
               {actionTitle}
             </h2>
             {actionLabel && <p>По последнему полученному снимку</p>}
-            <p className="action-instruction">{instruction}</p>
+            {instruction && <p className="action-instruction">{instruction}</p>}
             {time}
             {action}
           </div>

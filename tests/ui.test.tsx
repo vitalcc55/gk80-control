@@ -620,7 +620,7 @@ describe('подготовленные состояния оператора', (
     );
     const pmax = screen.getByRole('textbox', { name: 'Pmax производителя, Па' });
     await user.clear(pmax);
-    await user.type(pmax, '0,01');
+    await user.type(pmax, '0,0001');
     await user.click(screen.getByRole('button', { name: 'Проверить готовность' }));
     await user.click(screen.getByRole('checkbox', { name: /Клапан закрыт/ }));
     await user.click(
@@ -629,10 +629,11 @@ describe('подготовленные состояния оператора', (
     await user.click(screen.getByRole('button', { name: 'Перейти к проведению' }));
     const target = screen.getByText('max').closest('.reading');
     if (!(target instanceof HTMLElement)) throw new Error('Target reading missing');
-    expect(target.textContent).toMatch(/0,01\s*Па/);
+    expect(target.textContent).toMatch(/0,0001\s*Па/);
+    await user.click(screen.getByRole('button', { name: 'Подтверждаю завершение серии' }));
     const pressure = screen.getByText('Давление в ёмкости').closest('.reading');
     if (!(pressure instanceof HTMLElement)) throw new Error('Pressure reading missing');
-    expect(pressure.querySelector('strong')?.textContent).not.toMatch(/^0(?:,0+)?\s*Па/);
+    expect(pressure.querySelector('strong')?.textContent).toBe('< 0,001 Па');
   });
 
   it('сообщает ошибку сохранения и не выдаёт её за успешную запись', async () => {

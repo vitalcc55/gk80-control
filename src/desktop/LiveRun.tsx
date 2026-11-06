@@ -5,15 +5,20 @@ import type {
   Snapshot,
   TestRecord,
 } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
-import { formatElapsedSeconds, formatNumber, formatRemainingSeconds } from '../lib/format';
+import {
+  formatElapsedSeconds,
+  formatMeasurement,
+  formatNumber,
+  formatRemainingSeconds,
+} from '../lib/format';
 import { measurementQualityLabel } from './display';
 import type { MeasurementSeriesContext } from './measurement-series';
-import { measurementLabel } from './presentation';
+import { isStartMeasurementInstruction, measurementLabel } from './presentation';
 import { useMeasurementSeries } from './use-measurement-series';
 
 function shown(item: Measurement | undefined): string {
   return (item?.quality === 'valid' || item?.quality === 'stale') && item.value !== null
-    ? `≈ ${formatNumber(item.value, 6)} Па`
+    ? formatMeasurement(item.value)
     : 'Неизвестно';
 }
 export function LiveRun({
@@ -41,12 +46,19 @@ export function LiveRun({
   const differential = snapshot.measurements?.find((item) => item.channel === 'dd2');
   const stopping = record.stage === 'stopping';
   const awaiting = !!snapshot.pendingAction;
+  const startsMeasurement = isStartMeasurementInstruction(snapshot.pendingAction?.instruction);
   const timing = snapshot.measurementTiming;
   const phase = stopping ? 2 : awaiting ? 0 : 1;
+  const instruction = stopping
+    ? 'По последнему снимку: этап остановки; безопасное давление не подтверждено.'
+    : startsMeasurement
+      ? undefined
+      : (snapshot.pendingAction?.instruction ??
+        (timing ? 'Ожидайте обновления состояния измерения ядра.' : 'Ожидаем данные измерения ядра.'));
   return (
     <RunScreen
       subtitle={<>{record.parameters.valve} · Нагнетание · Без привода</>}
-      stages={['Ожидание подтверждения', 'Демонстрационное измерение', 'Остановка'].map(
+      stages={['Ожидание подтверждения', 'Измерение', 'Остановка'].map(
         (label, index) => ({
           id: String(index),
           label,
@@ -68,7 +80,6 @@ export function LiveRun({
       target={`${formatNumber(record.parameters.pmaxPa)} Па`}
       pressureNote={<p>{measurementQualityLabel(pressure?.quality)} · последний отсчёт</p>}
       differentialNote={<p>{measurementQualityLabel(differential?.quality)} · последний отсчёт</p>}
-      readingNote="Последние полученные показания · округление до 6 значащих цифр"
       details={
         <details className="reading-details" onToggle={(e) => setDetailsOpen(e.currentTarget.open)}>
           <summary>Время и качество показаний</summary>
@@ -100,14 +111,7 @@ export function LiveRun({
           ? 'Состояние по последнему полученному снимку'
           : 'Текущее действие по последнему полученному снимку'
       }
-      instruction={
-        stopping
-          ? 'По последнему снимку: этап остановки; безопасное давление не подтверждено.'
-          : (snapshot.pendingAction?.instruction ??
-            (timing
-              ? 'Ожидайте обновления состояния измерения ядра.'
-              : 'Ожидаем данные измерения ядра.'))
-      }
+      instruction={instruction}
       time={
         <div className="run-timing">
           <p>Время на последнем принятом отсчёте ядра</p>
@@ -134,7 +138,7 @@ export function LiveRun({
             disabled={!fresh || pending}
             onClick={onConfirm}
           >
-            Подтвердить действие
+            {startsMeasurement ? 'Запуск испытания' : 'Подтвердить действие'}
           </button>
         )
       }

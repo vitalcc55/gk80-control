@@ -36,7 +36,7 @@ import type { DemoService } from './demo-service';
 import { History } from './History';
 import { LiveRun } from './LiveRun';
 import { MeasurementSeriesContext } from './measurement-series';
-import { measurementLabel, parametersForDisplay } from './presentation';
+import { isStartMeasurementInstruction, measurementLabel, parametersForDisplay } from './presentation';
 import { RecordDetails } from './RecordDetails';
 import { observeReadiness } from './readiness-observation';
 import { SessionStatus } from './SessionStatus';
@@ -406,7 +406,7 @@ function ActiveLiveApp({
       }
       announcement={
         record
-          ? `По последнему снимку: ${stage === 'preparing' ? 'подготовка испытания' : stage === 'finished' ? 'результат испытания доступен' : stage === 'stopping' ? 'этап остановки; безопасное давление не подтверждено' : snapshot?.pendingAction ? snapshot.pendingAction.instruction : measurementLabel(snapshot?.measurementTiming)}`
+          ? `По последнему снимку: ${stage === 'preparing' ? 'подготовка испытания' : stage === 'finished' ? 'результат испытания доступен' : stage === 'stopping' ? 'этап остановки; безопасное давление не подтверждено' : snapshot?.pendingAction ? (isStartMeasurementInstruction(snapshot.pendingAction.instruction) ? 'ожидается подтверждение запуска испытания' : snapshot.pendingAction.instruction) : measurementLabel(snapshot?.measurementTiming)}`
           : null
       }
       onParameters={() => {

@@ -1,5 +1,21 @@
 const numberFormats = new Map<string, Intl.NumberFormat>();
 const dateFormat = new Intl.DateTimeFormat('ru-RU', { dateStyle: 'short', timeStyle: 'short' });
+const measurementFormat = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 3 });
+const ungroupedMeasurementFormat = new Intl.NumberFormat('en-US', {
+  useGrouping: false,
+  maximumFractionDigits: 3,
+});
+
+/** Format the displayed reading without changing the stored or charted measurement. */
+export function formatMeasurement(value: number): string {
+  if (value > 0 && value < 0.001) return '< 0,001 Па';
+  if (value < 0 && value > -0.001) return '−0,001 < значение < 0 Па';
+  if (Math.abs(value) >= 1e12) {
+    const rounded = Number(ungroupedMeasurementFormat.format(value));
+    return `≈ ${formatNumber(rounded)} Па`;
+  }
+  return `≈ ${measurementFormat.format(Object.is(value, -0) ? 0 : value)} Па`;
+}
 
 /** Display precision never changes the underlying measurements. At most 42 formatter variants. */
 export function formatNumber(
