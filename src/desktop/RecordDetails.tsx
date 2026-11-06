@@ -1,13 +1,54 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type {
+  AuditEvent,
   AuditPage,
   MeasurementPage,
   TestRecord,
 } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
-import { formatDateTime, formatNumber } from '../lib/format';
+import { formatDateTime, formatEventDateTime, formatNumber } from '../lib/format';
 import type { DemoService } from './demo-service';
-import { measurementQualityLabel, measurementSourceLabel } from './display';
+import {
+  eventActionLabel,
+  eventActorLabel,
+  eventOutcomeLabel,
+  eventReasonLabels,
+  measurementQualityLabel,
+  measurementSourceLabel,
+} from './display';
 import { resultReadVersion } from './presentation';
+
+const EventRow = memo(function EventRow({ item }: { item: AuditEvent }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <li>
+      <p>
+        {eventActionLabel(item.action)} — {eventOutcomeLabel(item.outcome)}
+      </p>
+      <p>
+        <time>{formatEventDateTime(item.occurredAt)}</time> · {eventActorLabel(item.operatorId)}
+      </p>
+      {item.reason && <p>{eventReasonLabels(item.reason).join('; ')}</p>}
+      <details onToggle={(event) => setOpen(event.currentTarget.open)}>
+        <summary>Подробности события</summary>
+        {open && (
+          <dl className="result-details">
+            <div><dt>Исходное время</dt><dd>{item.occurredAt}</dd></div>
+            <div><dt>Код события</dt><dd>{item.action}</dd></div>
+            <div><dt>Код результата</dt><dd>{item.outcome}</dd></div>
+            <div><dt>Идентификатор участника</dt><dd>{item.operatorId}</dd></div>
+            <div><dt>Испытание</dt><dd>{item.testId}</dd></div>
+            <div><dt>Номер события</dt><dd>{item.sequence}</dd></div>
+            <div><dt>Версия</dt><dd>{item.revision}</dd></div>
+            {item.commandId && <div><dt>Команда</dt><dd>{item.commandId}</dd></div>}
+            {item.actionId && <div><dt>Действие</dt><dd>{item.actionId}</dd></div>}
+            {item.reason && <div><dt>Коды причин</dt><dd>{item.reason}</dd></div>}
+            {item.instruction && <div><dt>Исходная инструкция</dt><dd>{item.instruction}</dd></div>}
+          </dl>
+        )}
+      </details>
+    </li>
+  );
+});
 
 /** Only the open disclosure reads one bounded page. Wrapper replacement keeps the same source. */
 export function RecordDetails({
@@ -43,6 +84,8 @@ export function RecordDetails({
   const [measurementStale, setMeasurementStale] = useState(false);
   const [measurementRefresh, setMeasurementRefresh] = useState(0);
   const [auditLoading, setAuditLoading] = useState(false);
+  const [auditStale, setAuditStale] = useState(false);
+  const [auditRefresh, setAuditRefresh] = useState(0);
   const measurementGeneration = useRef(0);
   const measurementInFlight = useRef(false);
   const activeMeasurement = useRef<{
@@ -53,10 +96,13 @@ export function RecordDetails({
   const scrollAfterMeasurement = useRef<number | null>(null);
   const measurementTable = useRef<HTMLDivElement>(null);
   const measurementDetails = useRef<HTMLDetailsElement>(null);
+  const measurementRetryButton = useRef<HTMLButtonElement>(null);
   const mounted = useRef(false);
   const auditGeneration = useRef(0);
+  const auditInFlight = useRef(false);
   const measurementCursor = useRef(0);
   const auditCursor = useRef(0);
+  const auditRequestCursor = useRef<number | null>(null);
   const needMeasurements = useRef(false);
   const needAudit = useRef(false);
   const version = resultReadVersion(record);
@@ -142,22 +188,35 @@ export function RecordDetails({
   );
   const loadAudit = useCallback(
     async (after = 0) => {
+      if (auditInFlight.current) return;
+      auditRequestCursor.current = after;
       if (!currentAvailable.current) {
-        setAuditError('Ожидание связи для чтения аудита.');
+        needAudit.current = true;
+        setAuditError('Ожидание связи для чтения журнала.');
         return;
       }
       const generation = ++auditGeneration.current;
-      auditCursor.current = after;
+      auditInFlight.current = true;
       needAudit.current = false;
       setAuditLoading(true);
       setAuditError('');
       try {
         const page = await currentService.current.audit(record.testId, after, 100);
-        if (generation === auditGeneration.current) setAudit(page);
+        if (generation === auditGeneration.current) {
+          auditCursor.current = after;
+          auditRequestCursor.current = null;
+          setAudit(page);
+          setAuditStale(false);
+        }
       } catch {
-        if (generation === auditGeneration.current) setAuditError('Не удалось прочитать аудит.');
+        if (generation === auditGeneration.current) setAuditError('Не удалось прочитать журнал.');
       } finally {
-        if (generation === auditGeneration.current) setAuditLoading(false);
+        auditInFlight.current = false;
+        if (mounted.current) {
+          setAuditLoading(false);
+          if (generation !== auditGeneration.current && needAudit.current)
+            setAuditRefresh((value) => value + 1);
+        }
       }
     },
     [record.testId],
@@ -169,7 +228,7 @@ export function RecordDetails({
       scrollAfterMeasurement.current = null;
       auditGeneration.current++;
       setMeasurementStale(true);
-      setAudit(null);
+      setAuditStale(true);
       if (activeMeasurement.current?.manual) {
         const { after, returnToStart } = activeMeasurement.current;
         setMeasurementRetry({ after, returnToStart });
@@ -178,7 +237,7 @@ export function RecordDetails({
       }
       setAuditError('');
       setMeasurementLoading(measurementInFlight.current);
-      setAuditLoading(false);
+      setAuditLoading(auditInFlight.current);
       needMeasurements.current = true;
       needAudit.current = true;
     }
@@ -191,7 +250,8 @@ export function RecordDetails({
         measurementRetry === null
       )
         void loadMeasurements(measurementCursor.current);
-      if (auditOpen && needAudit.current) void loadAudit(auditCursor.current);
+      if (auditOpen && needAudit.current && !auditInFlight.current)
+        void loadAudit(auditRequestCursor.current ?? auditCursor.current);
     }
   }, [
     version,
@@ -203,6 +263,7 @@ export function RecordDetails({
     loadAudit,
     measurementRefresh,
     measurementRetry,
+    auditRefresh,
   ]);
   useLayoutEffect(() => {
     if (
@@ -217,6 +278,15 @@ export function RecordDetails({
       scrollAfterMeasurement.current = null;
     }
   }, [measurements, measurementLoading, visible, measurementOpen]);
+  useEffect(() => {
+    if (
+      measurementRetryVisible &&
+      !measurementRetry &&
+      !measurementLoading &&
+      document.activeElement !== measurementRetryButton.current
+    )
+      setMeasurementRetryVisible(false);
+  }, [measurementRetryVisible, measurementRetry, measurementLoading]);
   if (!visible) return null;
   return (
     <div className="record-disclosures">
@@ -236,7 +306,11 @@ export function RecordDetails({
             <dd>{formatDateTime(record.createdAt)}</dd>
           </div>
           <div>
-            <dt>Оператор demo</dt>
+            <dt>Оператор</dt>
+            <dd>{eventActorLabel(record.operatorId)}</dd>
+          </div>
+          <div>
+            <dt>Идентификатор оператора</dt>
             <dd>{record.operatorId}</dd>
           </div>
         </dl>
@@ -287,7 +361,11 @@ export function RecordDetails({
               <button
                 type="button"
                 className="measurement-retry"
+                ref={measurementRetryButton}
                 aria-disabled={measurementLoading || measurementRetry === null}
+                onBlur={() => {
+                  if (!measurementRetry && !measurementLoading) setMeasurementRetryVisible(false);
+                }}
                 onClick={() => {
                   if (measurementRetry)
                     void loadMeasurements(
@@ -360,40 +438,36 @@ export function RecordDetails({
         className="work-surface result-section"
         open={auditOpen}
         onToggle={(e) => {
+          if (e.target !== e.currentTarget) return;
           setAuditOpen(e.currentTarget.open);
-          if (e.currentTarget.open && !audit && !auditLoading) needAudit.current = true;
+          if (e.currentTarget.open && (!audit || auditStale) && !auditLoading)
+            needAudit.current = true;
         }}
       >
-        <summary>Аудит</summary>
+        <summary>Журнал событий</summary>
         {auditOpen && (
           <>
             <p>Страница до 100 событий.</p>
             {auditError && <p role="alert">{auditError}</p>}
-            {auditLoading && <p role="status">Чтение аудита…</p>}
+            {auditLoading && <p role="status">Чтение журнала…</p>}
+            {auditStale && audit && <p>Показана предыдущая страница журнала.</p>}
             <ul>
-              {audit?.items?.map((item) => (
-                <li key={item.sequence}>
-                  {item.occurredAt} · {item.action} · {item.outcome} · {item.operatorId}
-                  {item.commandId ? ` · команда ${item.commandId}` : ''}
-                  {item.actionId ? ` · действие ${item.actionId}` : ''}
-                  {item.reason
-                    ? ` · причина ${item.reason === 'canceled_by_stop' ? 'запуск отменён при остановке до подтверждения оператора' : item.reason}`
-                    : ''}
-                </li>
-              ))}
+              {audit?.items?.map((item) => <EventRow key={item.sequence} item={item} />)}
             </ul>
             {audit && !audit.items?.length && <p>На этой странице нет сохранённых событий.</p>}
             <div className="history-pages">
-              <button type="button" disabled={auditLoading} onClick={() => void loadAudit()}>
-                К началу аудита
+              <button type="button" aria-disabled={auditLoading} onClick={() => void loadAudit()}>
+                К началу журнала
               </button>
-              {!!audit?.nextAfter && (
+              {audit && (
                 <button
                   type="button"
-                  disabled={auditLoading}
-                  onClick={() => void loadAudit(audit.nextAfter ?? 0)}
+                  aria-disabled={auditLoading || !audit.nextAfter}
+                  onClick={() => {
+                    if (audit.nextAfter) void loadAudit(audit.nextAfter);
+                  }}
                 >
-                  Следующая страница аудита
+                  Следующая страница журнала
                 </button>
               )}
             </div>

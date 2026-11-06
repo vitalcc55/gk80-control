@@ -1,5 +1,6 @@
 const numberFormats = new Map<string, Intl.NumberFormat>();
 const dateFormat = new Intl.DateTimeFormat('ru-RU', { dateStyle: 'short', timeStyle: 'short' });
+const eventDateFormat = new Intl.DateTimeFormat('ru-RU', { dateStyle: 'short', timeStyle: 'medium' });
 const measurementFormat = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 3 });
 const ungroupedMeasurementFormat = new Intl.NumberFormat('en-US', {
   useGrouping: false,
@@ -45,6 +46,11 @@ export function formatNumber(
 export function formatDateTime(value: string): string {
   const timestamp = Date.parse(value);
   return Number.isFinite(timestamp) ? dateFormat.format(timestamp) : 'Время неизвестно';
+}
+
+export function formatEventDateTime(value: string): string {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? eventDateFormat.format(timestamp) : 'Время неизвестно';
 }
 
 export function formatElapsedSeconds(value: number): string {

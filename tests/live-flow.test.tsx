@@ -1326,7 +1326,7 @@ it('finishes opening history when the same session replaces its service wrapper'
   expect(audit).not.toHaveBeenCalled();
   const user = userEvent.setup();
   await user.click(screen.getByText('Измерения', { selector: 'summary' }));
-  await user.click(screen.getByText('Аудит', { selector: 'summary' }));
+  await user.click(screen.getByText('Журнал событий', { selector: 'summary' }));
   await waitFor(() => expect(measurements).toHaveBeenCalledOnce());
   await waitFor(() => expect(audit).toHaveBeenCalledOnce());
   expect(oldMeasurements).not.toHaveBeenCalled();
@@ -1341,6 +1341,8 @@ it('explains a canceled start in the saved audit', async () => {
     items: [
       {
         sequence: 1,
+        testId,
+        revision: 1,
         occurredAt: '2026-10-30T00:00:00Z',
         action: 'start',
         outcome: 'failed',
@@ -1362,9 +1364,9 @@ it('explains a canceled start in the saved audit', async () => {
     />,
   );
   await userEvent.setup().click(await screen.findByRole('button', { name: /К-1/ }));
-  await userEvent.setup().click(await screen.findByText('Аудит', { selector: 'summary' }));
+  await userEvent.setup().click(await screen.findByText('Журнал событий', { selector: 'summary' }));
   expect(
-    await screen.findByText(/причина запуск отменён при остановке до подтверждения оператора/),
+    await screen.findByText(/Запуск отменён при остановке до подтверждения оператора/),
   ).toBeTruthy();
 });
 

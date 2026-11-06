@@ -8,6 +8,7 @@ import { type ReactNode, useState } from 'react';
 import { AppShell } from '../src/components/AppShell';
 import type { SessionBridge } from '../src/desktop/bridge';
 import { History } from '../src/desktop/History';
+import { eventActionLabel, eventOutcomeLabel, eventReasonLabels } from '../src/desktop/display';
 import { LiveApp } from '../src/desktop/LiveApp';
 import { RecordDetails } from '../src/desktop/RecordDetails';
 import { desktopDemoService } from '../src/desktop/wails-bridge';
@@ -1180,6 +1181,8 @@ it('сохраняет фокус при повторном чтении пос�
   expect(document.activeElement).toBe(retry);
   await act(async () => { finish(measurementPage(null)); await delayed; });
   expect(document.activeElement).toBe(retry);
+  await user.tab();
+  expect(screen.queryByRole('button', { name: 'Повторить чтение измерений' })).toBeNull();
 });
 
 it('повторяет именно неудавшийся переход на следующую страницу', async () => {
@@ -1365,6 +1368,209 @@ it('не применяет ответ измерений после потер�
   await waitFor(() => expect(measurements).toHaveBeenCalledTimes(3));
 });
 
+it('показывает журнал событий понятным языком и сохраняет исходные сведения', async () => {
+  const audit = vi.fn().mockResolvedValue({
+    items: [{
+      sequence: 1,
+      testId: record.testId,
+      revision: 2,
+      occurredAt: '2026-11-05T12:34:56.123456Z',
+      action: 'stop',
+      outcome: 'accepted',
+      operatorId: 'demo-operator',
+      commandId: record.stopCommandId,
+      actionId: '44444444-4444-4444-8444-444444444444',
+      reason: 'measurement_write_timeout;future_reason',
+      instruction: 'Откройте клапан',
+    }, {
+      sequence: 2,
+      testId: record.testId,
+      revision: 3,
+      occurredAt: 'not-a-date',
+      action: 'future_action',
+      outcome: 'future_outcome',
+      operatorId: 'future_actor',
+      reason: null,
+    }],
+    nextAfter: null,
+  });
+  render(<RecordDetails record={record} service={{ ...desktopDemoService, audit }} available />);
+  expect(audit).not.toHaveBeenCalled();
+  const user = userEvent.setup();
+  await user.click(screen.getByText('Журнал событий', { selector: 'summary' }));
+  expect(await screen.findByText(/Остановка испытания.*Принято/)).toBeTruthy();
+  expect(screen.getByText(/Срок ожидания записи измерений истёк/)).toBeTruthy();
+  expect(screen.getByText(/Неизвестная причина/)).toBeTruthy();
+  expect(screen.getByText('Неизвестное событие — Неизвестный результат')).toBeTruthy();
+  expect(screen.getByText('Время неизвестно')).toBeTruthy();
+  expect(screen.getAllByText(/Неизвестный участник/).length).toBeGreaterThan(0);
+  expect(screen.getByText(new Intl.DateTimeFormat('ru-RU', { dateStyle: 'short', timeStyle: 'medium' }).format(new Date('2026-11-05T12:34:56.123456Z')))).toBeTruthy();
+  expect(audit).toHaveBeenCalledTimes(1);
+  const details = screen.getAllByText('Подробности события', { selector: 'summary' });
+  if (!details[0]) throw new Error('Event details missing');
+  await user.click(details[0]);
+  expect(await screen.findByText('2026-11-05T12:34:56.123456Z')).toBeTruthy();
+  expect(screen.getByText('measurement_write_timeout;future_reason')).toBeTruthy();
+  expect(screen.getByText(record.stopCommandId)).toBeTruthy();
+  expect(screen.getByText('44444444-4444-4444-8444-444444444444')).toBeTruthy();
+  expect(screen.getByText('Откройте клапан')).toBeTruthy();
+  expect(audit).toHaveBeenCalledTimes(1);
+});
+
+it('не объявляет принятую или неудачную остановку выполненной', () => {
+  expect(eventActionLabel('stop')).toBe('Остановка испытания');
+  expect(eventOutcomeLabel('accepted')).toBe('Принято');
+  expect(eventOutcomeLabel('failed')).toBe('Ошибка выполнения');
+  expect(eventOutcomeLabel('unknown')).toBe('Результат неизвестен');
+  expect(eventReasonLabels('simulator_stop_failed;measurement_write_failed;future')).toEqual([
+    'Остановка не подтверждена',
+    'Ошибка записи измерений',
+    'Неизвестная причина',
+  ]);
+});
+
+it('сохраняет раскрытие события и фокус при обновлении журнала', async () => {
+  let finish: (page: { items: typeof events; nextAfter: null }) => void = () => {};
+  const events = [{
+    sequence: 1,
+    testId: record.testId,
+    revision: 1,
+    occurredAt: record.createdAt,
+    action: 'start',
+    outcome: 'accepted',
+    operatorId: 'demo-operator',
+  }];
+  const delayed = new Promise<{ items: typeof events; nextAfter: null }>((resolve) => { finish = resolve; });
+  const audit = vi.fn().mockResolvedValueOnce({ items: events, nextAfter: null }).mockReturnValueOnce(delayed);
+  const service = { ...desktopDemoService, audit };
+  const pending = { ...record, saveStatus: TestRecordSaveStatus.TestRecordSaveStatusPending };
+  const view = render(<RecordDetails record={pending} service={service} available />);
+  const user = userEvent.setup();
+  await user.click(screen.getByText('Журнал событий', { selector: 'summary' }));
+  const summary = await screen.findByText('Подробности события', { selector: 'summary' });
+  await user.click(summary);
+  summary.focus();
+  await screen.findByText('Исходное время');
+  view.rerender(<RecordDetails record={record} service={service} available />);
+  expect(summary.isConnected).toBe(true);
+  expect(document.activeElement).toBe(summary);
+  expect(summary.closest('details')?.open).toBe(true);
+  await act(async () => { finish({ items: events, nextAfter: null }); await delayed; });
+  expect(document.activeElement).toBe(summary);
+  expect(summary.closest('details')?.open).toBe(true);
+});
+
+it('сохраняет выбранную страницу журнала при обновлении версии', async () => {
+  let finish: (page: { items: never[]; nextAfter: null }) => void = () => {};
+  const delayed = new Promise<{ items: never[]; nextAfter: null }>((resolve) => { finish = resolve; });
+  const first = {
+    sequence: 100, testId: record.testId, revision: 1, occurredAt: record.createdAt,
+    action: 'start', outcome: 'accepted', operatorId: 'demo-operator',
+  };
+  const audit = vi.fn()
+    .mockResolvedValueOnce({ items: [first], nextAfter: 100 })
+    .mockReturnValueOnce(delayed)
+    .mockResolvedValueOnce({ items: [{ ...first, sequence: 101, action: 'complete' }], nextAfter: null });
+  const service = { ...desktopDemoService, audit };
+  const pending = { ...record, saveStatus: TestRecordSaveStatus.TestRecordSaveStatusPending };
+  const view = render(<RecordDetails record={pending} service={service} available />);
+  const user = userEvent.setup();
+  await user.click(screen.getByText('Журнал событий', { selector: 'summary' }));
+  await user.click(await screen.findByRole('button', { name: 'Следующая страница журнала' }));
+  view.rerender(<RecordDetails record={record} service={service} available />);
+  expect(audit).toHaveBeenCalledTimes(2);
+  await act(async () => { finish({ items: [], nextAfter: null }); await delayed; });
+  await waitFor(() => expect(audit).toHaveBeenCalledTimes(3));
+  expect(audit).toHaveBeenLastCalledWith(record.testId, 100, 100);
+  expect(await screen.findByText('Завершение испытания — Принято')).toBeTruthy();
+});
+
+it('повторно читает устаревшую страницу журнала после ошибки и открытия', async () => {
+  const audit = vi.fn()
+    .mockResolvedValueOnce({ items: [], nextAfter: null })
+    .mockRejectedValueOnce(new Error('read failed'))
+    .mockResolvedValueOnce({ items: [], nextAfter: null });
+  const service = { ...desktopDemoService, audit };
+  const pending = { ...record, saveStatus: TestRecordSaveStatus.TestRecordSaveStatusPending };
+  const view = render(<RecordDetails record={pending} service={service} available />);
+  const user = userEvent.setup();
+  const summary = screen.getByText('Журнал событий', { selector: 'summary' });
+  await user.click(summary);
+  await waitFor(() => expect(audit).toHaveBeenCalledTimes(1));
+  view.rerender(<RecordDetails record={record} service={service} available />);
+  await screen.findByText('Не удалось прочитать журнал.');
+  await user.click(summary);
+  await user.click(summary);
+  await waitFor(() => expect(audit).toHaveBeenCalledTimes(3));
+});
+
+it('сохраняет неудавшийся переход журнала при обновлении и потере связи', async () => {
+  const event = {
+    sequence: 100, testId: record.testId, revision: 1, occurredAt: record.createdAt,
+    action: 'start', outcome: 'accepted', operatorId: 'demo-operator',
+  };
+  const audit = vi.fn()
+    .mockResolvedValueOnce({ items: [event], nextAfter: 100 })
+    .mockRejectedValueOnce(new Error('read failed'))
+    .mockResolvedValueOnce({ items: [{ ...event, sequence: 101, action: 'complete' }], nextAfter: null });
+  const service = { ...desktopDemoService, audit };
+  const pending = { ...record, saveStatus: TestRecordSaveStatus.TestRecordSaveStatusPending };
+  const view = render(<RecordDetails record={pending} service={service} available />);
+  const user = userEvent.setup();
+  await user.click(screen.getByText('Журнал событий', { selector: 'summary' }));
+  await user.click(await screen.findByRole('button', { name: 'Следующая страница журнала' }));
+  await screen.findByText('Не удалось прочитать журнал.');
+  view.rerender(<RecordDetails record={record} service={service} available={false} />);
+  await user.click(screen.getByRole('button', { name: 'Следующая страница журнала' }));
+  expect(screen.getByText('Ожидание связи для чтения журнала.')).toBeTruthy();
+  view.rerender(<RecordDetails record={record} service={service} available />);
+  await waitFor(() => expect(audit).toHaveBeenCalledTimes(3));
+  expect(audit).toHaveBeenLastCalledWith(record.testId, 100, 100);
+});
+
+it('не перечитывает журнал при раскрытии подробностей события', async () => {
+  const event = {
+    sequence: 1, testId: record.testId, revision: 1, occurredAt: record.createdAt,
+    action: 'start', outcome: 'accepted', operatorId: 'demo-operator',
+  };
+  const audit = vi.fn()
+    .mockResolvedValueOnce({ items: [event], nextAfter: null })
+    .mockRejectedValueOnce(new Error('read failed'));
+  const service = { ...desktopDemoService, audit };
+  const pending = { ...record, saveStatus: TestRecordSaveStatus.TestRecordSaveStatusPending };
+  const view = render(<RecordDetails record={pending} service={service} available />);
+  const user = userEvent.setup();
+  await user.click(screen.getByText('Журнал событий', { selector: 'summary' }));
+  const details = await screen.findByText('Подробности события', { selector: 'summary' });
+  view.rerender(<RecordDetails record={record} service={service} available />);
+  await screen.findByText('Не удалось прочитать журнал.');
+  await user.click(details);
+  await screen.findByText('Исходное время');
+  view.rerender(<RecordDetails record={record} service={service} available={false} />);
+  view.rerender(<RecordDetails record={record} service={service} available />);
+  expect(audit).toHaveBeenCalledTimes(2);
+});
+
+it('сохраняет фокус при переходе на последнюю страницу журнала', async () => {
+  const event = {
+    sequence: 100, testId: record.testId, revision: 1, occurredAt: record.createdAt,
+    action: 'start', outcome: 'accepted', operatorId: 'demo-operator',
+  };
+  const audit = vi.fn()
+    .mockResolvedValueOnce({ items: [event], nextAfter: 100 })
+    .mockResolvedValueOnce({ items: [{ ...event, sequence: 101, action: 'complete' }], nextAfter: null });
+  render(<RecordDetails record={record} service={{ ...desktopDemoService, audit }} available />);
+  const user = userEvent.setup();
+  await user.click(screen.getByText('Журнал событий', { selector: 'summary' }));
+  const next = await screen.findByRole('button', { name: 'Следующая страница журнала' });
+  await user.click(next);
+  await screen.findByText('Завершение испытания — Принято');
+  expect(audit).toHaveBeenCalledTimes(2);
+  expect(screen.getByRole('button', { name: 'Следующая страница журнала' })).toBe(next);
+  expect(next.getAttribute('aria-disabled')).toBe('true');
+  expect(document.activeElement).toBe(next);
+});
+
 it('refreshes open detail pages when final saving is confirmed while keeping disclosures open', async () => {
   const audit = vi
     .fn()
@@ -1373,8 +1579,10 @@ it('refreshes open detail pages when final saving is confirmed while keeping dis
       items: [
         {
           sequence: 1,
+          testId: record.testId,
+          revision: 1,
           occurredAt: record.createdAt,
-          action: 'finish',
+          action: 'complete',
           outcome: 'completed',
           operatorId: 'demo',
         },
@@ -1389,10 +1597,10 @@ it('refreshes open detail pages when final saving is confirmed while keeping dis
       available
     />,
   );
-  await userEvent.setup().click(screen.getByText('Аудит', { selector: 'summary' }));
+  await userEvent.setup().click(screen.getByText('Журнал событий', { selector: 'summary' }));
   await screen.findByText(/на этой странице нет сохранённых событий/i);
   view.rerender(<RecordDetails record={record} service={service} available />);
-  expect(await screen.findByText(/finish · completed/)).toBeTruthy();
+  expect(await screen.findByText('Завершение испытания — Выполнено')).toBeTruthy();
   expect(screen.queryByText(/на этой странице нет сохранённых событий/i)).toBeNull();
   expect(audit).toHaveBeenCalledTimes(2);
   expect(audit).toHaveBeenLastCalledWith(record.testId, 0, 100);
@@ -1401,9 +1609,9 @@ it('refreshes open detail pages when final saving is confirmed while keeping dis
     screen.getByText('Сведения о записи', { selector: 'summary' }).closest('details')?.open,
   ).toBe(true);
   view.rerender(<RecordDetails record={record} service={service} available visible={false} />);
-  expect(screen.queryByText(/finish · completed/)).toBeNull();
+  expect(screen.queryByText('Завершение испытания — Выполнено')).toBeNull();
   view.rerender(<RecordDetails record={record} service={service} available />);
-  expect(await screen.findByText(/finish · completed/)).toBeTruthy();
+  expect(await screen.findByText('Завершение испытания — Выполнено')).toBeTruthy();
   expect(
     screen.getByText('Сведения о записи', { selector: 'summary' }).closest('details')?.open,
   ).toBe(true);
