@@ -11,7 +11,7 @@ for (const viewport of [
       const errors: string[] = [];
       page.on('pageerror', (error) => errors.push(error.message));
       await page.goto('/?fixture=empty');
-      await expect(page.getByText('Макет · подготовленные данные')).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Испытания', exact: true })).toBeVisible();
       await page.getByRole('button', { name: 'Новое испытание' }).first().click();
       await expect(page.getByRole('heading', { name: 'Параметры испытания' })).toBeVisible();
       await expect(
@@ -143,7 +143,7 @@ for (const viewport of [
 
     test('график и таблица показывают только доступные показания', async ({ page }) => {
       await page.goto('/?fixture=measuring');
-      await expect(page.getByText('Ряд: 30 с · период усреднения утечки: 60 с')).toBeVisible();
+      await expect(page.getByText('Прошло 30 с · длительность 60 с')).toBeVisible();
       const legend = page.locator('.chart-legend');
       const chart = page.locator('.chart-container');
       const chartBounds = await chart.boundingBox();
@@ -176,7 +176,7 @@ for (const viewport of [
       await page
         .getByRole('textbox', { name: 'Обозначение или наименование клапана' })
         .fill('Клапан 100');
-      await page.getByRole('textbox', { name: 'Период усреднения утечки, с' }).fill('99');
+      await page.getByRole('textbox', { name: 'Длительность измерения, с' }).fill('99');
       await page.getByRole('button', { name: 'Проверить готовность' }).click();
       await page.getByRole('checkbox', { name: /Клапан закрыт/ }).check();
       await page.getByRole('checkbox', { name: /Подключение соответствует направлению/ }).check();
@@ -191,8 +191,8 @@ for (const viewport of [
       ]) {
         await page.getByRole('button', { name: action }).click();
       }
-      await expect(page.getByText('Ряд: 49,5 с · период усреднения утечки: 99 с')).toBeVisible();
-      await expect(page.getByText('Пример: прошло 49 с · осталось 50 с')).toBeVisible();
+      await expect(page.getByText('Прошло 49,5 с · длительность 99 с')).toBeVisible();
+      await expect(page.getByText('Прошло 49 с · осталось 50 с')).toBeVisible();
       await page.getByText('Таблица показаний').click();
       const rows = page
         .getByRole('table', { name: 'Подготовленные показания по времени' })
@@ -235,7 +235,7 @@ for (const viewport of [
           .fill('Клапан для проверки осей');
         await page.getByRole('textbox', { name: 'Pmax производителя, Па' }).fill(example.pressure);
         await page
-          .getByRole('textbox', { name: 'Период усреднения утечки, с' })
+          .getByRole('textbox', { name: 'Длительность измерения, с' })
           .fill(example.period);
         await page.getByRole('button', { name: 'Проверить готовность' }).click();
         await page.getByRole('checkbox', { name: /Клапан закрыт/ }).check();

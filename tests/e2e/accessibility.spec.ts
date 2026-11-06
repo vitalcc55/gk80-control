@@ -203,7 +203,7 @@ test('ошибки полей описаны отдельно и не меняю
   await expect(valve).toHaveAccessibleDescription('Укажите обозначение или наименование клапана.');
   await expect(pmax).toHaveAccessibleName('Pmax производителя, Па');
   await expect(pmax).toHaveAccessibleDescription('Введите максимальное давление больше нуля, Па.');
-  await expect(period).toHaveAccessibleName('Период усреднения утечки, с');
+  await expect(period).toHaveAccessibleName('Длительность измерения, с');
   await expect(period).toHaveAccessibleDescription('Введите длительность больше нуля, с.');
 });
 

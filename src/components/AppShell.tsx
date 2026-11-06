@@ -61,60 +61,67 @@ export function AppShell({
       </span>
       <div className="workspace" ref={workspaceRef}>
         <nav className="sidebar" aria-label="Навигация">
-          <div className="brand">
-            <div className="brand-symbol">
-              <Activity size={20} aria-hidden="true" />
+          <div className="sidebar-items">
+            <div className="brand">
+              <div className="brand-symbol">
+                <Activity size={20} aria-hidden="true" />
+              </div>
+              <div>
+                <strong>ГК80</strong>
+                <span>Испытания клапанов</span>
+              </div>
             </div>
-            <div>
-              <strong>ГК80</strong>
-              <span>Испытания клапанов</span>
-            </div>
+            <button
+              type="button"
+              className={section === 'tests' ? 'nav-item active' : 'nav-item'}
+              aria-current={section === 'tests' ? 'page' : undefined}
+              onClick={onTests}
+            >
+              <ListChecks size={18} aria-hidden="true" /> <span>Испытания</span>
+            </button>
+            {active && (
+              <button
+                type="button"
+                className={section === 'run' ? 'nav-item active' : 'nav-item'}
+                aria-current={section === 'run' ? 'page' : undefined}
+                onClick={onRun}
+              >
+                <Activity size={18} aria-hidden="true" />
+                <span>Текущее испытание</span>
+              </button>
+            )}
+            {!active && onResult && (
+              <button
+                type="button"
+                className={section === 'result' ? 'nav-item active' : 'nav-item'}
+                aria-current={section === 'result' ? 'page' : undefined}
+                onClick={onResult}
+              >
+                <Activity size={18} aria-hidden="true" />
+                <span>Результат прохода</span>
+              </button>
+            )}
+            {(active || draftAvailable) && (
+              <button
+                type="button"
+                className={section === 'parameters' ? 'nav-item active' : 'nav-item'}
+                aria-current={section === 'parameters' ? 'page' : undefined}
+                onClick={onParameters}
+              >
+                <FileText size={18} aria-hidden="true" />
+                <span>Параметры</span>
+              </button>
+            )}
+            {notice && (
+              <div className="nav-status" role="status">
+                {notice}
+              </div>
+            )}
           </div>
-          <button
-            type="button"
-            className={section === 'tests' ? 'nav-item active' : 'nav-item'}
-            aria-current={section === 'tests' ? 'page' : undefined}
-            onClick={onTests}
-          >
-            <ListChecks size={18} aria-hidden="true" /> Испытания
-          </button>
-          {active && (
-            <button
-              type="button"
-              className={section === 'run' ? 'nav-item active' : 'nav-item'}
-              aria-current={section === 'run' ? 'page' : undefined}
-              onClick={onRun}
-            >
-              <Activity size={18} aria-hidden="true" />
-              <span>Текущее испытание</span>
-            </button>
-          )}
-          {!active && onResult && (
-            <button
-              type="button"
-              className={section === 'result' ? 'nav-item active' : 'nav-item'}
-              aria-current={section === 'result' ? 'page' : undefined}
-              onClick={onResult}
-            >
-              <Activity size={18} aria-hidden="true" />
-              <span>Результат прохода</span>
-            </button>
-          )}
-          {(active || draftAvailable) && (
-            <button
-              type="button"
-              className={section === 'parameters' ? 'nav-item active' : 'nav-item'}
-              aria-current={section === 'parameters' ? 'page' : undefined}
-              onClick={onParameters}
-            >
-              <FileText size={18} aria-hidden="true" />
-              <span>Параметры</span>
-            </button>
-          )}
-          {notice && (
-            <div className="nav-status" role="status">
-              {notice}
-            </div>
+          {status && (
+            <section className="sidebar-session" aria-label="Связь и состояние" tabIndex={0}>
+              {status}
+            </section>
           )}
         </nav>
         <main
@@ -123,7 +130,6 @@ export function AppShell({
           tabIndex={-1}
           aria-label={screenTitles[screen]}
         >
-          {status}
           {children}
         </main>
       </div>

@@ -76,7 +76,7 @@ describe('browser entry', () => {
     render(<BrowserApp />);
     await waitFor(() => expect(Socket.instances).toHaveLength(1));
     Socket.instances[0]?.receive({ busy: true, channel: generation });
-    expect((await screen.findByRole('alert')).textContent).toContain('уже открыта');
+    expect((await screen.findByRole('alert')).textContent).toMatch(/уже открыт/);
     await new Promise((resolve) => setTimeout(resolve, 600));
     expect(Socket.instances).toHaveLength(1);
     expect(fetch).not.toHaveBeenCalled();
@@ -116,7 +116,7 @@ describe('browser entry', () => {
       await waitFor(() => expect(Socket.instances).toHaveLength(index + 1));
       Socket.instances[index]?.receive({ retry: true });
     }
-    expect((await screen.findByRole('alert')).textContent).toContain('уже открыта');
+    expect((await screen.findByRole('alert')).textContent).toMatch(/уже открыт/);
     await new Promise((resolve) => setTimeout(resolve, 600));
     expect(Socket.instances).toHaveLength(5);
   });

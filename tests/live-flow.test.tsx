@@ -1662,7 +1662,9 @@ it('uses core confirmation and measurements for the operator path', async () => 
       parameters: expect.objectContaining({ areaM2: 0.012, pmaxPa: 10000, measurementSeconds: 60 }),
     }),
   );
-  await screen.findByText('Проверки демонстрационного ядра', {}, { timeout: 8000 });
+  await screen.findByRole('heading', { name: 'Автоматические проверки' }, { timeout: 8000 });
+  expect(screen.queryByRole('button', { name: 'Вернуться к испытанию' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Остановить испытание' })).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'К параметрам' }));
   expect(screen.getByText('Текущее испытание · только просмотр')).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'Вернуться к испытанию' }));
@@ -2882,7 +2884,7 @@ it('links a completed Create without testId to its exact result and snapshot', a
   });
   activeTest = record;
   revision = 1;
-  await screen.findByText('Проверки демонстрационного ядра', {}, { timeout: 8000 });
+  await screen.findByRole('heading', { name: 'Автоматические проверки' }, { timeout: 8000 });
   await waitFor(() => expect(screen.queryByText(/Команда: выполнена/)).toBeNull(), {
     timeout: 8000,
   });
@@ -4604,7 +4606,7 @@ it('offers the reserved stop after remount even when heartbeat cannot be confirm
   );
   render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   const stop = await screen.findByRole('button', { name: 'Остановить испытание' });
-  expect(screen.getByText('Состояние управления не подтверждено')).toBeTruthy();
+  expect(screen.getByText('Связь не подтверждена')).toBeTruthy();
   await userEvent.setup().click(stop);
   expect(api.stop).toHaveBeenCalledWith(testId, { commandId: stopId });
   expect(api.start).not.toHaveBeenCalled();
@@ -4881,7 +4883,7 @@ it('does not let an older confirmed view hide a newer active test from fallback'
     await pending;
   });
   expect(screen.getByRole('button', { name: 'Остановить испытание' })).toBeTruthy();
-  expect(screen.getByText('Состояние управления не подтверждено')).toBeTruthy();
+  expect(screen.getByText('Связь не подтверждена')).toBeTruthy();
   expect(api.start).not.toHaveBeenCalled();
 });
 
@@ -5957,7 +5959,7 @@ it.each([
     render(<LiveApp session={bridge} service={service} hostRunId={host} backendRunId={backend} />);
     const user = userEvent.setup();
     if (kind === 'start') {
-      await screen.findByText('Проверки демонстрационного ядра');
+      await screen.findByRole('heading', { name: 'Автоматические проверки' });
       await user.click(screen.getByLabelText(/Клапан закрыт/));
       await user.click(screen.getByLabelText(/Подключение соответствует направлению/));
       const start = screen.getByRole('button', { name: /Перейти к проведению/ });

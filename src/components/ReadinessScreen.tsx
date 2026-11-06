@@ -60,24 +60,34 @@ export function ReadinessScreen({
       <div className="work-surface readiness-surface">
         <div className="section-heading">
           <h2>Автоматические проверки</h2>
-          <p>{readiness ? 'Проверки демонстрационного ядра' : 'Подготовленный пример состояния'}</p>
         </div>
         <ul className="checks-list">
           {readiness ? (
-            readiness.checks?.map((check) => (
-              <li key={check.code}>
-                <span>{check.label}</span>
-                <strong className={check.ready ? undefined : 'error-text'}>
-                  {stale ? 'Не подтверждено' : check.ready ? 'Готово' : 'Не готово'}
-                </strong>
-              </li>
-            ))
+            readiness.checks?.map((check) => {
+              const preparation =
+                check.code === 'demo' && check.label === 'Демонстрационный режим ядра';
+              const source = check.code === 'simulator' && check.label === 'Симулятор готов';
+              const label = preparation ? 'Подготовка разрешена' : source ? 'Источник свободен' : check.label;
+              const result = stale
+                ? 'Не подтверждено'
+                : preparation || source
+                  ? check.ready ? 'Да' : 'Нет'
+                  : check.ready ? 'Готово' : 'Не готово';
+              return (
+                <li key={check.code}>
+                  <span>{label}</span>
+                  <strong className={check.ready ? undefined : 'error-text'}>
+                    {result}
+                  </strong>
+                </li>
+              );
+            })
           ) : (
             <>
               <li>
                 <span>Связь и актуальность показаний</span>
                 <strong className={autoCheckFailed ? 'error-text' : undefined}>
-                  {autoCheckFailed ? 'Нет связи · пример' : 'Готово'}
+                  {autoCheckFailed ? 'Нет связи' : 'Готово'}
                 </strong>
               </li>
               <li>
@@ -132,7 +142,7 @@ export function ReadinessScreen({
               {stale
                 ? 'Связь или готовность не подтверждены.'
                 : pending
-                  ? 'Ожидаем ответ ядра.'
+                  ? 'Действие недоступно. Проверьте сообщения.'
                   : autoCheckFailed
                     ? 'Автоматическая проверка не пройдена.'
                     : 'Отметьте оба подтверждения оператора.'}
@@ -144,7 +154,7 @@ export function ReadinessScreen({
             disabled={!canStart}
             onClick={() => onStart({ valveClosed: valveConfirmed, connectionConfirmed })}
           >
-            {pending ? 'Ожидание ядра…' : 'Перейти к проведению'}{' '}
+            {pending ? 'Действие недоступно' : 'Перейти к проведению'}{' '}
             <ArrowRight aria-hidden="true" size={16} />
           </button>
         </div>

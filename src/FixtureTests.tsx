@@ -77,10 +77,10 @@ export function FixtureTests({
                 direction: activeParameters.direction === 'pressure' ? 'Нагнетание' : 'Разрежение',
                 pressure: activeParameters.pmax,
                 actuator: activeParameters.actuator,
-                outcome: 'Пример: не завершён',
-                saving: 'Пример',
+                outcome: 'Не завершено',
+                saving: 'Сохранение не выполнялось',
                 active: true,
-                activeLabel: 'Активный пример',
+                activeLabel: 'Текущее испытание',
               },
             ]
           : []),
@@ -91,8 +91,8 @@ export function FixtureTests({
           direction: entry.direction === 'pressure' ? 'Нагнетание' : 'Разрежение',
           pressure: entry.pmax,
           actuator: entry.actuator,
-          outcome: 'Завершён в примере',
-          saving: 'Пример: сохранено',
+          outcome: 'Завершено',
+          saving: 'Сохранение не выполнялось',
         })),
       ].slice(page * pageSize, (page + 1) * pageSize)}
       filters={filters}

@@ -2,6 +2,7 @@ import { ArrowLeft, ArrowRight } from 'lucide-react';
 import {
   type Dispatch,
   type FormEvent,
+  type ReactNode,
   type SetStateAction,
   useEffect,
   useRef,
@@ -28,6 +29,14 @@ export interface Draft {
 type Errors = Partial<
   Record<'valve' | 'area' | 'pmax' | 'openSeconds' | 'closeSeconds' | 'measurementSeconds', string>
 >;
+
+function RequiredLabel({ id, children }: { id?: string; children: ReactNode }) {
+  return (
+    <span>
+      <span id={id}>{children}</span> <span className="required-marker" aria-hidden="true">*</span>
+    </span>
+  );
+}
 
 function positiveNumber(value: string): number | null {
   const normalized = value.trim().replace(',', '.');
@@ -218,8 +227,8 @@ export function ParametersScreen({
       <div className="workpage-heading">
         <div>
           <h1 id="parameters-title">Параметры испытания</h1>
-          <p>Все поля обязательны</p>
         </div>
+        <p className="required-key">* — обязательное поле</p>
       </div>
       <form ref={formRef} onSubmit={submit} noValidate>
         <div className="work-surface form-surface">
@@ -229,7 +238,7 @@ export function ParametersScreen({
             </div>
             <div className="form-grid">
               <label className="form-field form-field-wide">
-                <span id="valve-label">Обозначение или наименование клапана</span>
+                <RequiredLabel id="valve-label">Обозначение или наименование клапана</RequiredLabel>
                 <input
                   className="work-input"
                   aria-labelledby="valve-label"
@@ -245,9 +254,9 @@ export function ParametersScreen({
                 )}
               </label>
               <label className="form-field">
-                <span>
+                <RequiredLabel>
                   Площадь клапана, м<sup>2</sup>
-                </span>
+                </RequiredLabel>
                 <input
                   className="work-input"
                   aria-label="Площадь клапана, квадратные метры"
@@ -271,9 +280,9 @@ export function ParametersScreen({
             </div>
             <div className="form-grid">
               <label className="form-field">
-                <span id="pmax-label">
+                <RequiredLabel id="pmax-label">
                   <PressureNotation /> производителя, Па
-                </span>
+                </RequiredLabel>
                 <input
                   className="work-input"
                   aria-labelledby="pmax-label"
@@ -289,9 +298,9 @@ export function ParametersScreen({
                 )}
               </label>
               <label className="form-field">
-                <span id="measurementSeconds-label">
-                  {live ? 'Интервал демонстрационного измерения, с' : 'Период усреднения утечки, с'}
-                </span>
+                <RequiredLabel id="measurementSeconds-label">
+                  Длительность измерения, с
+                </RequiredLabel>
                 <input
                   className="work-input"
                   aria-labelledby="measurementSeconds-label"
@@ -326,7 +335,7 @@ export function ParametersScreen({
                       disabled={live}
                       onChange={() => setDraft({ ...draft, direction: 'vacuum' })}
                     />{' '}
-                    Разрежение
+                    Разрежение {live && <small aria-hidden="true">Недоступно</small>}
                   </label>
                 </div>
                 <small>
@@ -360,21 +369,17 @@ export function ParametersScreen({
                     disabled={live}
                     onChange={() => setDraft({ ...draft, actuator: true })}
                   />{' '}
-                  Есть
+                  Есть {live && <small aria-hidden="true">Недоступно</small>}
                 </label>
               </div>
             </fieldset>
-            {live && (
-              <p className="field-help">
-                В этом демонстрационном проходе доступны нагнетание и клапан без привода.
-              </p>
-            )}
             {draft.actuator && (
               <div className="form-grid actuator-grid">
                 <label className="form-field">
-                  <span>Внешняя цепь, В</span>
+                  <RequiredLabel id="voltage-label">Внешняя цепь, В</RequiredLabel>
                   <select
                     className="work-input"
+                    aria-labelledby="voltage-label"
                     required
                     value={draft.voltage}
                     onChange={(event) =>
@@ -386,7 +391,7 @@ export function ParametersScreen({
                   </select>
                 </label>
                 <label className="form-field">
-                  <span id="openSeconds-label">Команда открытия, с</span>
+                  <RequiredLabel id="openSeconds-label">Команда открытия, с</RequiredLabel>
                   <input
                     className="work-input"
                     aria-labelledby="openSeconds-label"
@@ -402,7 +407,7 @@ export function ParametersScreen({
                   )}
                 </label>
                 <label className="form-field">
-                  <span id="closeSeconds-label">Команда закрытия, с</span>
+                  <RequiredLabel id="closeSeconds-label">Команда закрытия, с</RequiredLabel>
                   <input
                     className="work-input"
                     aria-labelledby="closeSeconds-label"
@@ -480,7 +485,7 @@ export function ActiveParametersScreen({
             <dd>{formatNumber(parameters.pmax)} Па</dd>
           </div>
           <div>
-            <dt>{live ? 'Интервал демонстрационного измерения' : 'Период усреднения утечки'}</dt>
+            <dt>Длительность измерения</dt>
             <dd>{formatNumber(parameters.measurementSeconds)} с</dd>
           </div>
           <div>

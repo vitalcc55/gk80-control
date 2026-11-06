@@ -186,11 +186,10 @@ export function DesktopApp({
     <main className="desktop-shell">
       <header className="desktop-header">
         <strong>ГК80</strong>
-        <span>Демонстрация · тестовые данные</span>
       </header>
       <section className="desktop-card" aria-labelledby="desktop-title">
         <p className="desktop-eyebrow">Проверка приложения</p>
-        <h1 id="desktop-title">Связь с демонстрационным ядром</h1>
+        <h1 id="desktop-title">Подключение</h1>
         <p role="status" aria-live="polite" className="desktop-status">
           {label}
         </p>

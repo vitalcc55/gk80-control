@@ -122,12 +122,12 @@ it('reports unknown initial acquisition from a passive view without restoring fr
     await observation;
     await vi.advanceTimersByTimeAsync(10000);
   });
-  expect(screen.getByText('Получение управления не подтверждено')).toBeTruthy();
+  expect(screen.getByText('Управление не подтверждено')).toBeTruthy();
   expect(screen.getByText(/Запустите снова только после завершения ядра/)).toBeTruthy();
   expect(
     screen.getByText(/Запустите снова только после завершения ядра/).closest('[role="status"]'),
   ).not.toBeNull();
-  expect(screen.queryByText('При последней проверке связь с ядром подтверждена')).toBeNull();
+  expect(screen.queryByText('Связь подтверждена')).toBeNull();
   expect(onView.mock.calls.every(([snapshot]) => snapshot === null)).toBe(true);
   expect(keepAlive).toHaveBeenCalledTimes(1);
   expect(bridge.sessionView).not.toHaveBeenCalled();
@@ -171,8 +171,8 @@ it('keeps the unknown acquisition after a delayed older live event', async () =>
   await act(async () => {
     await vi.advanceTimersByTimeAsync(10000);
   });
-  expect(screen.getByText('Получение управления не подтверждено')).toBeTruthy();
-  expect(screen.queryByText('При последней проверке связь с ядром подтверждена')).toBeNull();
+  expect(screen.getByText('Управление не подтверждено')).toBeTruthy();
+  expect(screen.queryByText('Связь подтверждена')).toBeNull();
   expect(keepAlive).toHaveBeenCalledTimes(1);
 });
 
@@ -217,7 +217,7 @@ it('retains the terminal acquisition outcome across bridge replacement and remou
   await act(async () => {
     await vi.advanceTimersByTimeAsync(10000);
   });
-  expect(screen.getByText('Получение управления не подтверждено')).toBeTruthy();
+  expect(screen.getByText('Управление не подтверждено')).toBeTruthy();
   expect(replacement.keepAlive).not.toHaveBeenCalled();
   mounted.unmount();
   const remounted = render(
@@ -226,7 +226,7 @@ it('retains the terminal acquisition outcome across bridge replacement and remou
   await act(async () => {
     await vi.advanceTimersByTimeAsync(10000);
   });
-  expect(screen.getByText('Получение управления не подтверждено')).toBeTruthy();
+  expect(screen.getByText('Управление не подтверждено')).toBeTruthy();
   expect(replacement.keepAlive).not.toHaveBeenCalled();
   const freshHost = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
   const fresh: SessionBridge = {
@@ -243,7 +243,7 @@ it('retains the terminal acquisition outcome across bridge replacement and remou
   await act(async () => {
     await vi.advanceTimersByTimeAsync(0);
   });
-  expect(screen.queryByText('Получение управления не подтверждено')).toBeNull();
+  expect(screen.queryByText('Управление не подтверждено')).toBeNull();
   expect(fresh.keepAlive).toHaveBeenCalledOnce();
 });
 
@@ -293,7 +293,7 @@ it('reports a delayed unknown observation after a newer observation fails', asyn
     });
     await delayed;
   });
-  expect(screen.getByText('Получение управления не подтверждено')).toBeTruthy();
+  expect(screen.getByText('Управление не подтверждено')).toBeTruthy();
   const attempts = keepAlive.mock.calls.length;
   await act(async () => {
     await vi.advanceTimersByTimeAsync(10000);
@@ -491,7 +491,7 @@ it('does not treat a delayed session response as fresh or overlap calls', async 
     finish(view);
     await pending;
   });
-  expect(screen.queryByText('При последней проверке связь с ядром подтверждена')).toBeNull();
+  expect(screen.queryByText('Связь подтверждена')).toBeNull();
   mounted.unmount();
   await act(async () => {
     await vi.advanceTimersByTimeAsync(10000);
@@ -518,11 +518,11 @@ it('expires a confirmed session instead of assuming the last snapshot stays live
     await Promise.resolve();
     await Promise.resolve();
   });
-  expect(screen.getByText('При последней проверке связь с ядром подтверждена')).toBeTruthy();
+  expect(screen.getByText('Связь подтверждена')).toBeTruthy();
   await act(async () => {
     await vi.advanceTimersByTimeAsync(1001);
   });
-  expect(screen.queryByText('При последней проверке связь с ядром подтверждена')).toBeNull();
+  expect(screen.queryByText('Связь подтверждена')).toBeNull();
 });
 
 it('clears confirmation immediately when the session identity changes', async () => {
@@ -543,14 +543,14 @@ it('clears confirmation immediately when the session identity changes', async ()
     await Promise.resolve();
     await Promise.resolve();
   });
-  expect(screen.getByText('При последней проверке связь с ядром подтверждена')).toBeTruthy();
+  expect(screen.getByText('Связь подтверждена')).toBeTruthy();
   const stalled: SessionBridge = {
     beginSessionCheck: () => Promise.resolve('ticket'),
     keepAlive: () => call(new Promise<void>(() => {})),
     sessionView: bridge.sessionView,
   };
   mounted.rerender(<SessionStatus bridge={stalled} hostRunId="new-host" backendRunId="new-core" />);
-  expect(screen.queryByText('При последней проверке связь с ядром подтверждена')).toBeNull();
+  expect(screen.queryByText('Связь подтверждена')).toBeNull();
 });
 
 it('shares checks across remounts and bounds unresolved calls', async () => {
@@ -581,7 +581,7 @@ it('shares checks across remounts and bounds unresolved calls', async () => {
   });
   expect(bridge.keepAlive).toHaveBeenCalledTimes(2);
   expect(bridge.sessionView).not.toHaveBeenCalled();
-  expect(screen.getByText('Состояние управления не подтверждено')).toBeTruthy();
+  expect(screen.getByText('Связь не подтверждена')).toBeTruthy();
 });
 
 it('resumes a waiting session check when an old timed-out call finally settles', async () => {
@@ -689,7 +689,7 @@ it('does not mark normal snapshot recovery or old notices as a measurement gap',
       onGap={onGap}
     />,
   );
-  await screen.findByText('При последней проверке связь с ядром подтверждена');
+  await screen.findByText('Связь подтверждена');
   act(() =>
     notify({
       ...view.connection,
@@ -745,7 +745,7 @@ it('keeps the link visible during snapshot updates but revokes stale data and de
       onView={onView}
     />,
   );
-  await screen.findByText('При последней проверке связь с ядром подтверждена');
+  await screen.findByText('Связь подтверждена');
   act(() =>
     notify({
       ...view.connection,
@@ -754,7 +754,7 @@ it('keeps the link visible during snapshot updates but revokes stale data and de
       linkValid: true,
     }),
   );
-  expect(screen.getByText('При последней проверке связь с ядром подтверждена')).toBeTruthy();
+  expect(screen.getByText('Связь подтверждена')).toBeTruthy();
   expect(onView).toHaveBeenLastCalledWith(null, 0);
   expect(screen.getByText('Состояние данных')).toBeTruthy();
   act(() =>
@@ -765,7 +765,7 @@ it('keeps the link visible during snapshot updates but revokes stale data and de
       linkValid: false,
     }),
   );
-  expect(screen.getByText('Состояние управления не подтверждено')).toBeTruthy();
+  expect(screen.getByText('Связь не подтверждена')).toBeTruthy();
   expect(
     screen.getByText(
       /Состояние испытания не подтверждено; последние показания могут быть неактуальны/,
@@ -802,13 +802,13 @@ it('keeps a neutral snapshot label during brief renewal and reports sustained un
   );
   expect(screen.getByText('Состояние данных')).toBeTruthy();
   expect(
-    screen.queryByText('Снимок не подтверждён; обычные команды временно недоступны.'),
+    screen.queryByText('Состояние не подтверждено. Обычные команды временно недоступны.'),
   ).toBeNull();
   await act(async () => {
     await vi.advanceTimersByTimeAsync(500);
   });
   expect(
-    screen.queryByText('Снимок не подтверждён; обычные команды временно недоступны.'),
+    screen.queryByText('Состояние не подтверждено. Обычные команды временно недоступны.'),
   ).toBeNull();
   mounted.rerender(
     <SessionStatus
@@ -822,7 +822,7 @@ it('keeps a neutral snapshot label during brief renewal and reports sustained un
     await vi.advanceTimersByTimeAsync(1000);
   });
   expect(screen.getByText('Состояние данных')).toBeTruthy();
-  expect(screen.queryByText('Снимок не подтверждён')).toBeNull();
+  expect(screen.queryByText('Состояние не подтверждено')).toBeNull();
   mounted.rerender(
     <SessionStatus
       bridge={bridge}
@@ -836,11 +836,11 @@ it('keeps a neutral snapshot label during brief renewal and reports sustained un
   });
   expect(
     screen
-      .getByText('Снимок не подтверждён; обычные команды временно недоступны.')
+      .getByText('Состояние не подтверждено. Обычные команды временно недоступны.')
       .closest('[role="status"]'),
   ).not.toBeNull();
-  expect(screen.getByText('Снимок не подтверждён')).toBeTruthy();
-  expect(screen.getByText('При последней проверке связь с ядром подтверждена')).toBeTruthy();
+  expect(screen.getByText('Состояние не подтверждено')).toBeTruthy();
+  expect(screen.getByText('Связь подтверждена')).toBeTruthy();
   mounted.rerender(
     <SessionStatus
       bridge={bridge}
@@ -850,8 +850,8 @@ it('keeps a neutral snapshot label during brief renewal and reports sustained un
     />,
   );
   expect(screen.getByText('Состояние данных')).toBeTruthy();
-  expect(screen.getByText('Снимок подтверждён').closest('[role="status"]')).not.toBeNull();
-  expect(screen.queryByText('Снимок не подтверждён')).toBeNull();
+  expect(screen.getByText('Состояние обновлено').closest('[role="status"]')).not.toBeNull();
+  expect(screen.queryByText('Состояние не подтверждено')).toBeNull();
 });
 
 it('refreshes immediately after live notification without sending another heartbeat', async () => {
@@ -880,7 +880,7 @@ it('refreshes immediately after live notification without sending another heartb
   await act(async () => {
     await vi.advanceTimersByTimeAsync(0);
   });
-  expect(screen.getByText('При последней проверке связь с ядром подтверждена')).toBeTruthy();
+  expect(screen.getByText('Связь подтверждена')).toBeTruthy();
   act(() =>
     notify({
       ...view.connection,
@@ -891,13 +891,13 @@ it('refreshes immediately after live notification without sending another heartb
       streamGeneration: 0,
     }),
   );
-  expect(screen.getByText('При последней проверке связь с ядром подтверждена')).toBeTruthy();
+  expect(screen.getByText('Связь подтверждена')).toBeTruthy();
   latest = { ...latest, connection: { ...latest.connection, revision: 3 } };
   await act(async () => {
     notify(latest.connection);
     await vi.advanceTimersByTimeAsync(0);
   });
-  expect(screen.getByText('При последней проверке связь с ядром подтверждена')).toBeTruthy();
+  expect(screen.getByText('Связь подтверждена')).toBeTruthy();
   expect(keepAlive).toHaveBeenCalledTimes(1);
 });
 
@@ -931,7 +931,7 @@ it('does not let an older observation restore freshness after heartbeat failure'
   await act(async () => {
     await vi.advanceTimersByTimeAsync(0);
   });
-  expect(screen.getByText('При последней проверке связь с ядром подтверждена')).toBeTruthy();
+  expect(screen.getByText('Связь подтверждена')).toBeTruthy();
   act(() =>
     notify({
       ...view.connection,
@@ -945,12 +945,12 @@ it('does not let an older observation restore freshness after heartbeat failure'
   await act(async () => {
     await vi.advanceTimersByTimeAsync(2000);
   });
-  expect(screen.getByText('Состояние управления не подтверждено')).toBeTruthy();
+  expect(screen.getByText('Связь не подтверждена')).toBeTruthy();
   await act(async () => {
     finish({ ...live, connection: { ...live.connection, revision: 2 } });
     await delayed;
   });
-  expect(screen.getByText('Состояние управления не подтверждено')).toBeTruthy();
+  expect(screen.getByText('Связь не подтверждена')).toBeTruthy();
 });
 
 it('marks a stream interruption before publishing the first recovered snapshot', async () => {
@@ -1028,7 +1028,7 @@ it('recovers from one lost session response without unbounded calls', async () =
     await vi.advanceTimersByTimeAsync(6500);
   });
   expect(bridge.keepAlive).toHaveBeenCalledTimes(2);
-  expect(screen.getByText('При последней проверке связь с ядром подтверждена')).toBeTruthy();
+  expect(screen.getByText('Связь подтверждена')).toBeTruthy();
   mounted.unmount();
 });
 
@@ -1059,7 +1059,7 @@ it('invalidates the last confirmed view when a newer connection event arrives', 
     await Promise.resolve();
     await Promise.resolve();
   });
-  expect(screen.getByText('При последней проверке связь с ядром подтверждена')).toBeTruthy();
+  expect(screen.getByText('Связь подтверждена')).toBeTruthy();
   act(() =>
     notify({
       ...view.connection,
@@ -1070,7 +1070,7 @@ it('invalidates the last confirmed view when a newer connection event arrives', 
       streamGeneration: 0,
     }),
   );
-  expect(screen.getByText('При последней проверке связь с ядром подтверждена')).toBeTruthy();
+  expect(screen.getByText('Связь подтверждена')).toBeTruthy();
   expect(acknowledge).toHaveBeenCalledWith(view.connection.hostRunId, 2);
 });
 
@@ -1117,7 +1117,7 @@ it('does not restore a view overtaken by a connection event', async () => {
     finish(view);
     await pending;
   });
-  expect(screen.queryByText('При последней проверке связь с ядром подтверждена')).toBeNull();
+  expect(screen.queryByText('Связь подтверждена')).toBeNull();
 });
 
 it('detects a connection change even when the push notification is lost', async () => {
@@ -1154,7 +1154,7 @@ it('detects a connection change even when the push notification is lost', async 
   await act(async () => {
     await vi.advanceTimersByTimeAsync(2000);
   });
-  expect(screen.getByText('При последней проверке связь с ядром подтверждена')).toBeTruthy();
+  expect(screen.getByText('Связь подтверждена')).toBeTruthy();
   await act(async () => {
     finish({
       connection: {
@@ -1171,7 +1171,7 @@ it('detects a connection change even when the push notification is lost', async 
     });
     await pending;
   });
-  expect(screen.getByText('Состояние управления не подтверждено')).toBeTruthy();
+  expect(screen.getByText('Связь не подтверждена')).toBeTruthy();
 });
 
 it('recovers from one lost wait without accumulating unlimited calls', async () => {
@@ -1207,7 +1207,7 @@ it('recovers from one lost wait without accumulating unlimited calls', async () 
     await vi.advanceTimersByTimeAsync(6500);
   });
   expect(waitConnection).toHaveBeenCalledTimes(3);
-  expect(screen.getByText('При последней проверке связь с ядром подтверждена')).toBeTruthy();
+  expect(screen.getByText('Связь подтверждена')).toBeTruthy();
   mounted.unmount();
   await act(async () => {
     await vi.advanceTimersByTimeAsync(20000);

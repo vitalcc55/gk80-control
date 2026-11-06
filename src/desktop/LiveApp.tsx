@@ -396,6 +396,14 @@ function ActiveLiveApp({
       onTests={openHistory}
       onRun={openCurrent}
       onResult={record?.stage === 'finished' ? openCurrent : undefined}
+      status={
+        <SessionStatus
+          bridge={session}
+          hostRunId={hostRunId}
+          backendRunId={backendRunId}
+          snapshotAccepted={fresh}
+        />
+      }
       announcement={
         record
           ? `По последнему снимку: ${stage === 'preparing' ? 'подготовка испытания' : stage === 'finished' ? 'результат испытания доступен' : stage === 'stopping' ? 'этап остановки; безопасное давление не подтверждено' : snapshot?.pendingAction ? snapshot.pendingAction.instruction : measurementLabel(snapshot?.measurementTiming)}`
@@ -414,15 +422,6 @@ function ActiveLiveApp({
       <span className="sr-only" role="status" aria-atomic="true">
         {historyVisible && historyResult ? 'Результат записи открыт' : ''}
       </span>
-      <header className="live-statusbar">
-        <span className="source-label">Демонстрация · тестовые данные</span>
-        <SessionStatus
-          bridge={session}
-          hostRunId={hostRunId}
-          backendRunId={backendRunId}
-          snapshotAccepted={fresh}
-        />
-      </header>
       <p role="status" aria-live="polite" className="live-diagnostics-warning">
         {diagnosticsDegraded ? 'Журнал диагностики недоступен или неполон.' : ''}
       </p>
@@ -747,19 +746,16 @@ function ActiveLiveApp({
         {active && !runVisible && (
           <ActiveTestPanel
             title={record.parameters.valve}
-            status="Проход по последнему снимку"
             description={
-              <>
-                {stage === 'preparing'
-                  ? 'Подготовка'
-                  : stage === 'stopping'
-                    ? 'Этап остановки; безопасное давление не подтверждено.'
-                    : snapshot?.pendingAction
-                      ? 'Ожидание подтверждения оператора'
-                      : measurementLabel(snapshot?.measurementTiming)}
-              </>
+              stage === 'preparing'
+                ? null
+                : stage === 'stopping'
+                  ? 'Этап остановки; безопасное давление не подтверждено.'
+                  : snapshot?.pendingAction
+                    ? 'Ожидание подтверждения оператора'
+                    : measurementLabel(snapshot?.measurementTiming)
             }
-            onReturn={openCurrent}
+            onReturn={currentScreen === 'readiness' ? undefined : openCurrent}
             stop={stopControl}
           />
         )}

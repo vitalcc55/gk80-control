@@ -23,19 +23,15 @@ export function SessionStatus({
   const isConfirmed = projection.linkValid;
   const needsRestart = projection.unknownAcquire;
   const confirmedSnapshot = snapshotAccepted && projection.connection !== null;
-  const [notice, setNotice] = useState('');
+  const [notice, setNotice] = useState<'none' | 'unconfirmed' | 'restored'>('none');
   useEffect(() => {
     if (confirmedSnapshot) {
-      setNotice((previous) =>
-        previous === 'Снимок не подтверждён; обычные команды временно недоступны.'
-          ? 'Снимок подтверждён'
-          : '',
-      );
+      setNotice((previous) => (previous === 'unconfirmed' ? 'restored' : 'none'));
       return;
     }
-    setNotice('');
+    setNotice('none');
     const timer = window.setTimeout(() => {
-      setNotice('Снимок не подтверждён; обычные команды временно недоступны.');
+      setNotice('unconfirmed');
     }, 1500);
     return () => window.clearTimeout(timer);
   }, [confirmedSnapshot]);
@@ -45,10 +41,10 @@ export function SessionStatus({
         <p className="session-status-title">
           <span>
             {needsRestart
-              ? 'Получение управления не подтверждено'
+              ? 'Управление не подтверждено'
               : isConfirmed
-                ? 'При последней проверке связь с ядром подтверждена'
-                : 'Состояние управления не подтверждено'}
+                ? 'Связь подтверждена'
+                : 'Связь не подтверждена'}
           </span>
         </p>
         <p className="session-status-help">
@@ -61,14 +57,13 @@ export function SessionStatus({
           </span>
         </p>
       </div>
-      <SnapshotStatus
-        unconfirmed={
-          !confirmedSnapshot &&
-          notice === 'Снимок не подтверждён; обычные команды временно недоступны.'
-        }
-      />
+      <SnapshotStatus unconfirmed={!confirmedSnapshot && notice === 'unconfirmed'} />
       <span className="sr-only" role="status">
-        {notice}
+        {notice === 'unconfirmed'
+          ? 'Состояние не подтверждено. Обычные команды временно недоступны.'
+          : notice === 'restored'
+            ? 'Состояние обновлено'
+            : ''}
       </span>
     </div>
   );

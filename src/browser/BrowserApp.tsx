@@ -121,16 +121,15 @@ export function BrowserApp() {
         <main className="desktop-shell">
           <header className="desktop-header">
             <strong>ГК80</strong>
-            <span>Демонстрация · тестовые данные</span>
           </header>
           <section className="desktop-card">
-            <h1>Подключение к демонстрации</h1>
+            <h1>Подключение</h1>
             {screen === 'connecting' && (
               <p role="status">Подключение… Показания не подтверждены.</p>
             )}
-            {screen === 'busy' && <p role="alert">Демонстрация уже открыта в другом интерфейсе.</p>}
+            {screen === 'busy' && <p role="alert">Приложение уже открыто в другом окне.</p>}
             {screen === 'unavailable' && (
-              <p role="alert">Подключение не подтверждено. Проверьте, что демонстрация запущена.</p>
+              <p role="alert">Подключение не подтверждено. Проверьте, что приложение запущено.</p>
             )}
             {(screen === 'busy' || screen === 'unavailable') && (
               <button type="button" onClick={() => setScreen('connecting')}>

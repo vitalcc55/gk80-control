@@ -118,7 +118,7 @@ function RunScreen({
                 ? lastPressure === null
                   ? 'Последнее показание недоступно'
                   : `Последнее: ${number(lastPressure)} Па · устарело, ${fixture.pressure.time}`
-                : 'Нет подготовленного показания'}
+                : 'Показание недоступно'}
             </p>
           )}
           {isStopping && isLost && <p>Данные ДД1 недоступны</p>}
@@ -133,7 +133,7 @@ function RunScreen({
       }}
       chartNote={
         item.stage === 'measurement'
-          ? `Ряд: ${number(parameters.measurementSeconds / 2)} с · период усреднения утечки: ${number(parameters.measurementSeconds)} с`
+          ? `Прошло ${number(parameters.measurementSeconds / 2)} с · длительность ${number(parameters.measurementSeconds)} с`
           : 'Ряд: 60 с'
       }
       headingRef={actionHeadingRef}
@@ -145,12 +145,12 @@ function RunScreen({
           <>
             {item.stage === 'measurement' && (
               <p className="action-instruction">
-                Пример: прошло {formatElapsedSeconds(parameters.measurementSeconds / 2)} с ·
+                Прошло {formatElapsedSeconds(parameters.measurementSeconds / 2)} с ·
                 осталось {formatRemainingSeconds(parameters.measurementSeconds / 2)} с
               </p>
             )}
             {isActuator && item.stage === 'cycles' && (
-              <p className="action-instruction">Цикл 4 из 10 · пример</p>
+              <p className="action-instruction">Цикл 4 из 10</p>
             )}
           </>
         )
@@ -272,7 +272,7 @@ export function App() {
   function beginNew() {
     const newParameters = {
       ...fixtureSource.initial,
-      id: `ДЕМО-${String(nextId).padStart(3, '0')}`,
+      id: `ИСП-${String(nextId).padStart(3, '0')}`,
       valve: '',
     };
     setParameters(newParameters);
@@ -322,10 +322,10 @@ export function App() {
   const activeNotice =
     activeFixture?.id === 'stopping'
       ? activeFixture.pressure.quality !== 'valid'
-        ? 'Пример: потеря ДД1 · остановка не подтверждена'
-        : 'Пример: остановка не подтверждена'
+        ? 'Потеря ДД1 · остановка не подтверждена'
+        : 'Остановка не подтверждена'
       : activeFixture && activeFixture.pressure.quality !== 'valid'
-        ? 'Пример: потеря ДД1'
+        ? 'Потеря ДД1'
         : null;
   return (
     <AppShell
@@ -356,7 +356,7 @@ export function App() {
       footer={
         <div className="fixture-toolbar">
           <div>
-            <span>Состояние макета</span>
+            <span>Состояние</span>
           </div>
           <label>
             <span className="sr-only">Выбрать подготовленное состояние</span>
@@ -374,9 +374,6 @@ export function App() {
               ))}
             </select>
           </label>
-          <span className="demo-badge">
-            <span className="demo-dot" /> Макет · подготовленные данные
-          </span>
         </div>
       }
     >
@@ -468,7 +465,7 @@ export function App() {
                 }
                 const newParameters = {
                   ...parameters,
-                  id: `ДЕМО-${String(nextId).padStart(3, '0')}`,
+                  id: `ИСП-${String(nextId).padStart(3, '0')}`,
                 };
                 setParameters(newParameters);
                 setDraftBase(newParameters);
@@ -483,8 +480,8 @@ export function App() {
         {active && screen !== 'run' && (
           <ActiveTestPanel
             title={`${(activeRun.current?.parameters ?? parameters).id} · ${(activeRun.current?.parameters ?? parameters).valve}`}
-            status="Пример активного прохода"
-            description={activeNotice ?? 'Подготовленные данные · испытание в макете'}
+            status="Текущее испытание"
+            description={activeNotice ?? 'Испытание не завершено'}
             onReturn={openRun}
             stop={
               <StopButton

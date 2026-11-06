@@ -49,8 +49,8 @@ export function ResultScreen({
                 {record
                   ? outcomeLabel(record.outcome)
                   : interrupted
-                    ? 'Прерван в примере'
-                    : 'Завершён в примере'}
+                    ? 'Прервано'
+                    : 'Завершено'}
               </strong>
             </div>
             <div>
@@ -59,8 +59,8 @@ export function ResultScreen({
                 {record
                   ? qualityLabel(record.dataQuality)
                   : interrupted
-                    ? 'Пример: частичные данные'
-                    : 'Пример: данные доступны'}
+                    ? 'Неполные'
+                    : 'Данные доступны'}
               </strong>
             </div>
             <div>
@@ -69,8 +69,8 @@ export function ResultScreen({
                 {record
                   ? saveLabel(record.saveStatus)
                   : saveError
-                    ? 'Ошибка сохранения · пример'
-                    : 'Пример: сохранено'}
+                    ? 'Сохранение не подтверждено'
+                    : 'Сохранение не выполнялось'}
               </strong>
               {saveError && <p>Запись результата не подтверждена.</p>}
             </div>
@@ -106,9 +106,7 @@ export function ResultScreen({
                   <dd>{parameters.actuator ? 'Есть' : 'Нет'}</dd>
                 </div>
                 <div>
-                  <dt>
-                    {record ? 'Интервал демонстрационного измерения' : 'Период усреднения утечки'}
-                  </dt>
+                  <dt>Длительность измерения</dt>
                   <dd>{formatNumber(parameters.measurementSeconds)} с</dd>
                 </div>
               </dl>
@@ -116,11 +114,6 @@ export function ResultScreen({
             <div className="work-surface result-section">
               <div className="section-heading">
                 <h2>Результаты расчёта</h2>
-                <p>
-                  {record
-                    ? 'В демонстрационном проходе не рассчитываются'
-                    : 'В макете не рассчитываются'}
-                </p>
               </div>
               <dl className="result-details">
                 <div>
