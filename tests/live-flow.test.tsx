@@ -1259,7 +1259,7 @@ it('finishes a pending history list and uses the replacement for later reads', a
     <LiveApp session={session} service={nextService} hostRunId={host} backendRunId={backend} />,
   );
   await act(async () => {
-    finish({ items: [record], nextAfter: null });
+    finish({ items: [record], total: null, nextAfter: null });
     await late;
   });
   expect(await screen.findByRole('button', { name: /К-1/ })).toBeTruthy();
@@ -1299,6 +1299,7 @@ it('keeps a requested history page when the same session replaces its service wr
     finish({
       items: [{ ...record, parameters: { ...record.parameters, valve: 'К-2' } }],
       nextAfter: null,
+      total: null,
     });
     await response;
   });
@@ -1519,9 +1520,13 @@ it('preserves the unsaved form when the service wrapper changes', async () => {
   expect((input as HTMLInputElement).value).toBe('Клапан');
 });
 
-it.each(['lookup', 'receipt'] as const)(
-  'uses core confirmation and measurements for the operator path (%s)',
-  async (source) => {
+it.each([
+  ['lookup', 'summary'],
+  ['receipt', 'summary'],
+  ['receipt', 'region'],
+] as const)(
+  'uses core confirmation and measurements for the operator path (%s, %s)',
+  async (source, focusTarget) => {
     let snapshot: Snapshot = {
       apiVersion: 'v1',
       backendRunId: backend,
@@ -1709,12 +1714,15 @@ it.each(['lookup', 'receipt'] as const)(
     await user.click(screen.getByRole('button', { name: /Перейти к проведению/ }));
     expect(api.start).toHaveBeenCalledTimes(1);
     let noticeSummary: HTMLElement | null = null;
+    let noticeRegion: HTMLElement | null = null;
     if (source === 'receipt') {
       const notice = await screen.findByText('Команда принята или её исход ещё не подтверждён.');
       const container = notice.closest('[role="status"]');
       if (!(container instanceof HTMLElement)) throw new Error('Command notice missing');
       noticeSummary = within(container).getByText('Сведения о команде');
-      noticeSummary.focus();
+      noticeRegion = container.parentElement;
+      if (!noticeRegion) throw new Error('Command region missing');
+      (focusTarget === 'region' ? noticeRegion : noticeSummary).focus();
       snapshot = {
         ...snapshot,
         revision: 3,
@@ -1729,7 +1737,7 @@ it.each(['lookup', 'receipt'] as const)(
     );
     if (noticeSummary) {
       expect(noticeSummary.isConnected).toBe(true);
-      expect(document.activeElement).toBe(noticeSummary);
+      expect(document.activeElement).toBe(focusTarget === 'region' ? noticeRegion : noticeSummary);
       confirm.focus();
     }
     await screen.findByText(/Команда: принята; завершение команды не подтверждено/);

@@ -22,7 +22,6 @@ export function RunScreen({
   action,
   stop,
   headingRef,
-  stageNote,
   onList,
 }: {
   subtitle: ReactNode;
@@ -36,7 +35,6 @@ export function RunScreen({
   differentialNote?: ReactNode;
   chart: ComponentProps<typeof MeasurementChart>;
   chartNote?: ReactNode;
-  stageNote?: ReactNode;
   actionTitle: string;
   instruction?: string | undefined;
   actionLabel?: string;
@@ -64,7 +62,6 @@ export function RunScreen({
           <div className="section-heading">
             <h2>Этапы</h2>
           </div>
-          {stageNote}
           <ol className="stage-list">
             {stages.map((stage, index) => (
               <li
@@ -136,7 +133,6 @@ export function RunScreen({
             <h2 ref={headingRef} tabIndex={-1}>
               {actionTitle}
             </h2>
-            {actionLabel && <p>По последнему полученному снимку</p>}
             {instruction && <p className="action-instruction">{instruction}</p>}
             {time}
             {action}

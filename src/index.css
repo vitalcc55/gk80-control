@@ -303,6 +303,12 @@ h2 {
 .demo-message-list:empty {
   display: none;
 }
+.quiet-start:not(:focus-within) {
+  display: none;
+}
+.demo-message-list:focus > .quiet-start {
+  display: block;
+}
 .live-diagnostics-warning {
   color: var(--warning);
 }

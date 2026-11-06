@@ -364,6 +364,8 @@ function ActiveLiveApp({
       sameId.length === 1 &&
       !!item &&
       !item.retired &&
+      !item.receiptRequired &&
+      !item.legacyUnverifiable &&
       item.kind === 'start' &&
       item.status?.status === 'accepted' &&
       fresh &&
@@ -376,8 +378,13 @@ function ActiveLiveApp({
   const visibleCommandMessages = [...commandMessages].filter(
     ([key, notice]) => !isExpectedStart(key, notice),
   );
+  const quietStart = (item: Pending) => {
+    const notice = commandMessages.get(item.id);
+    return !!notice && !notice.attention && isExpectedStart(item.id, notice);
+  };
   const revision = snapshot?.revision;
-  const commandMessageRegion = useRef<HTMLDivElement>(null);
+  const commandMessageRegion = useRef<HTMLElement>(null);
+  const [commandRegionFocused, setCommandRegionFocused] = useState(false);
   const stopMessageRegion = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     if ((latestNotice === 'message' ? message : commandFailure) && commandMessageRegion.current)
@@ -530,9 +537,15 @@ function ActiveLiveApp({
               </div>
             )}
           </div>
-          <div
+          <section
             className="demo-command-message"
+            aria-label="Сообщения о командах"
             ref={commandMessageRegion}
+            onFocus={() => setCommandRegionFocused(true)}
+            onBlur={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget))
+                setCommandRegionFocused(false);
+            }}
             tabIndex={
               message || commandFailure || storageMessage || visibleCommandMessages.length ? 0 : -1
             }
@@ -557,17 +570,17 @@ function ActiveLiveApp({
                     ? `${key === notice.id ? 'Команда' : 'Остановка'}: `
                     : ''
                 }
-                suppressed={isExpectedStart(key, notice)}
+                suppressed={isExpectedStart(key, notice) && !commandRegionFocused}
               />
             ))}
-          </div>
+          </section>
         </div>
         <div
           className="demo-message-list"
           tabIndex={
             legacy.unreadable ||
             legacy.items.length ||
-            pending.length ||
+            pending.some((item) => !quietStart(item)) ||
             storageUnconfirmed ||
             totalStops >= 63 ||
             stopCount >= 2 ||
@@ -644,7 +657,7 @@ function ActiveLiveApp({
             </p>
           )}
           {pending.map((item) => (
-            <div key={pendingKey(item)}>
+            <div key={pendingKey(item)} className={quietStart(item) ? 'quiet-start' : undefined}>
               <p>
                 Команда: {commandStatusLabel(item.status?.status)}.{' '}
                 {item.kind === 'stop'

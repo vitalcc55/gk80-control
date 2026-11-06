@@ -54,9 +54,7 @@ export function LiveRun({
     : startsMeasurement
       ? undefined
       : (snapshot.pendingAction?.instruction ??
-        (timing
-          ? 'Ожидайте обновления состояния измерения ядра.'
-          : 'Ожидаем данные измерения ядра.'));
+        (timing ? undefined : 'Ожидаем данные измерения ядра.'));
   return (
     <RunScreen
       subtitle={<>{record.parameters.valve} · Нагнетание · Без привода</>}
@@ -74,7 +72,6 @@ export function LiveRun({
                 ? 'done'
                 : 'next',
       }))}
-      stageNote={<p>Этап по последнему полученному снимку</p>}
       pressure={shown(pressure)}
       differential={shown(differential)}
       target={`${formatNumber(record.parameters.pmaxPa)} Па`}
@@ -114,7 +111,6 @@ export function LiveRun({
       instruction={instruction}
       time={
         <div className="run-timing">
-          <p>Время на последнем принятом отсчёте ядра</p>
           <dl className="run-time">
             <div>
               <dt>Прошло</dt>

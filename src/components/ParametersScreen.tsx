@@ -231,7 +231,6 @@ export function ParametersScreen({
         <div>
           <h1 id="parameters-title">Параметры испытания</h1>
         </div>
-        <p className="required-key">* — обязательное поле</p>
       </div>
       <form ref={formRef} onSubmit={submit} noValidate>
         <div className="work-surface form-surface">
@@ -432,6 +431,7 @@ export function ParametersScreen({
             )}
           </div>
         </div>
+        <p className="required-key">* — обязательное поле</p>
         <div className="work-actions">
           <button className="work-button work-button-secondary" type="button" onClick={onBack}>
             <ArrowLeft aria-hidden="true" size={16} /> К испытаниям

@@ -679,7 +679,6 @@ export function createCommandCoordinator({
     setCommandFailure((previous) =>
       previous?.kind === kind && previous.testId === testId ? null : previous,
     );
-    setCommandMessage(item.id, 'Команда отправлена. Ожидаем подтверждения ядра.');
     try {
       const dispatch = await attempt.send();
       if (
