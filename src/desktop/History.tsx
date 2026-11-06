@@ -84,6 +84,8 @@ export function History({
   const [list, setList] = useState<TestList | null>(null);
   const [selected, setSelected] = useState<TestRecord | null>(null);
   const [filters, setFilters] = useState(emptyHistoryFilters);
+  const [pageSize, setPageSize] = useState(20);
+  const currentPageSize = useRef(20);
   const [validationError, setValidationError] = useState('');
   const [listError, setListError] = useState('');
   const [recordFailure, setRecordFailure] = useState<RecordReadFailure | null>(null);
@@ -146,7 +148,7 @@ export function History({
     try {
       const page = await currentService.current.listTests({
         ...params,
-        limit: 100,
+        limit: currentPageSize.current,
         after,
       });
       if (generation === listGeneration.current) setList(page);
@@ -324,6 +326,19 @@ export function History({
         active: item.testId === activeTestId,
       }))}
       filters={filters}
+      pageSize={pageSize}
+      onPageSize={(value) => {
+        currentPageSize.current = value;
+        setPageSize(value);
+        listGeneration.current++;
+        cancelSelected(false);
+        cursor.current = null;
+        needsRead.current = true;
+        setList(null);
+        setListError('');
+        setLoading(false);
+        if (available && applied.current !== null) void load();
+      }}
       filtered={!!(applied.current && Object.keys(applied.current).length)}
       onFilters={setFilters}
       onSearch={() => search(filters)}

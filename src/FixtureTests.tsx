@@ -18,6 +18,8 @@ interface TestsScreenProps {
   onNew: () => void;
   onHistory: (parameters: TestParameters) => void;
   onCurrent: () => void;
+  pageSize: number;
+  onPageSize: (value: number) => void;
 }
 
 export function FixtureTests({
@@ -30,10 +32,13 @@ export function FixtureTests({
   onNew,
   onHistory,
   onCurrent,
+  pageSize,
+  onPageSize,
 }: TestsScreenProps) {
   const [filters, setFilters] = useState<HistoryFilters>(emptyHistoryFilters);
   const [applied, setApplied] = useState<HistoryFilters>(emptyHistoryFilters);
   const [rangeError, setRangeError] = useState(false);
+  const [page, setPage] = useState(0);
   const query = normalizeHistoryQuery(applied.query);
   const matchQuery = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'iu');
   const entries = empty
@@ -89,17 +94,24 @@ export function FixtureTests({
           outcome: 'Завершён в примере',
           saving: 'Пример: сохранено',
         })),
-      ]}
+      ].slice(page * pageSize, (page + 1) * pageSize)}
       filters={filters}
+      pageSize={pageSize}
+      onPageSize={(value) => {
+        setPage(0);
+        onPageSize(value);
+      }}
       filtered={!!(query || applied.from || applied.through || applied.outcome)}
       error={rangeError ? 'Начало диапазона должно быть не позже конца.' : ''}
       onFilters={setFilters}
       onSearch={() => {
+        setPage(0);
         const invalid = !!filters.from && !!filters.through && filters.from > filters.through;
         setRangeError(invalid);
         setApplied(invalid ? emptyHistoryFilters : filters);
       }}
       onReset={() => {
+        setPage(0);
         setFilters(emptyHistoryFilters);
         setApplied(emptyHistoryFilters);
         setRangeError(false);
@@ -113,6 +125,12 @@ export function FixtureTests({
         if (entry) onHistory(entry);
       }}
       onNew={onNew}
+      onFirst={() => setPage(0)}
+      onNext={
+        !rangeError && (activeMatches ? 1 : 0) + matches.length > (page + 1) * pageSize
+          ? () => setPage(page + 1)
+          : undefined
+      }
       disabled={activeParameters !== null}
       draftAvailable={draftAvailable}
     />

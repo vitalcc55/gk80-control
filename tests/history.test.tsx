@@ -4,7 +4,7 @@ import { expect, it, vi } from 'vitest';
 
 vi.mock('../src/components/MeasurementChart', () => ({ MeasurementChart: () => null }));
 
-import type { ReactNode } from 'react';
+import { type ReactNode, useState } from 'react';
 import { AppShell } from '../src/components/AppShell';
 import type { SessionBridge } from '../src/desktop/bridge';
 import { History } from '../src/desktop/History';
@@ -44,6 +44,122 @@ const record: TestRecord = {
   },
 };
 const callbacks = { onNew: vi.fn(), onCopy: vi.fn(), onDiscard: vi.fn() };
+
+it('limits the prepared history page including the active record', async () => {
+  const entries = Array.from({ length: 21 }, (_, index) => ({
+    ...fixtureSource.initial,
+    id: `record-${index}`,
+    valve: `Клапан ${index}`,
+  }));
+  function PreparedHistory() {
+    const [size, setSize] = useState(20);
+    return (
+      <FixtureTests
+        pageSize={size}
+        onPageSize={setSize}
+        empty={false}
+        showExample={false}
+        draftAvailable={false}
+        activeParameters={{ ...fixtureSource.initial, id: 'active', valve: 'Активный клапан' }}
+        history={entries}
+        example={fixtureSource.initial}
+        onNew={() => {}}
+        onHistory={() => {}}
+        onCurrent={() => {}}
+      />
+    );
+  }
+  render(<PreparedHistory />);
+  expect(screen.getAllByRole('row')).toHaveLength(21);
+  expect(screen.getByRole('button', { name: /Вернуться:.*Активный клапан/ })).toBeTruthy();
+  const user = userEvent.setup();
+  await user.click(screen.getByRole('button', { name: 'Следующая страница' }));
+  expect(screen.getAllByRole('row')).toHaveLength(3);
+  await user.selectOptions(screen.getByLabelText('Записей на странице'), '10');
+  expect(screen.getAllByRole('row')).toHaveLength(11);
+  expect(screen.getByRole('button', { name: /Вернуться:.*Активный клапан/ })).toBeTruthy();
+  await user.type(screen.getByLabelText('С даты'), '2026-11-10');
+  await user.type(screen.getByLabelText('По дату'), '2026-11-05');
+  await user.click(screen.getByRole('button', { name: 'Найти' }));
+  expect(screen.getByRole('alert').textContent).toMatch(/Начало диапазона/);
+  expect(screen.queryByRole('button', { name: 'Следующая страница' })).toBeNull();
+});
+
+it('keeps the applied search when page size changes offline while an old page is pending', async () => {
+  let finishOld: (value: TestList) => void = () => {};
+  const oldPage = new Promise<TestList>((resolve) => {
+    finishOld = resolve;
+  });
+  const listTests = vi
+    .fn()
+    .mockResolvedValueOnce({ items: [record], nextAfter: record.testId })
+    .mockResolvedValueOnce({ items: [record], nextAfter: record.testId })
+    .mockReturnValueOnce(oldPage)
+    .mockResolvedValue({ items: [], nextAfter: null });
+  const service = { ...desktopDemoService, listTests };
+  const draw = (available: boolean) => (
+    <History
+      {...callbacks}
+      service={service}
+      available={available}
+      disabled={false}
+      draftAvailable={false}
+    />
+  );
+  const view = render(draw(true));
+  const user = userEvent.setup();
+  await screen.findByRole('button', { name: /Открыть Первая/ });
+  const search = screen.getByLabelText('Поиск по номеру или изделию');
+  await user.type(search, 'Применено');
+  await user.click(screen.getByRole('button', { name: 'Найти' }));
+  await user.click(await screen.findByRole('button', { name: 'Следующая страница' }));
+  view.rerender(draw(false));
+  await user.clear(search);
+  await user.type(search, 'Черновик');
+  await user.selectOptions(screen.getByLabelText('Записей на странице'), '50');
+  await act(async () => finishOld({ items: [record], nextAfter: null }));
+  expect(screen.queryByRole('button', { name: /Открыть Первая/ })).toBeNull();
+  expect(listTests).toHaveBeenCalledTimes(3);
+  view.rerender(draw(true));
+  await waitFor(() =>
+    expect(listTests).toHaveBeenLastCalledWith({ q: 'Применено', limit: 50, after: null }),
+  );
+  expect(listTests).toHaveBeenCalledTimes(4);
+  expect(search).toHaveProperty('value', 'Черновик');
+});
+
+it('changes page size without applying an unfinished search or accepting an old page', async () => {
+  let finishOld: (value: TestList) => void = () => {};
+  const oldPage = new Promise<TestList>((resolve) => {
+    finishOld = resolve;
+  });
+  const listTests = vi
+    .fn()
+    .mockResolvedValueOnce({ items: [record], nextAfter: record.testId })
+    .mockResolvedValueOnce({ items: [record], nextAfter: record.testId })
+    .mockReturnValueOnce(oldPage)
+    .mockResolvedValue({ items: [], nextAfter: null });
+  const service = { ...desktopDemoService, listTests };
+  render(
+    <History {...callbacks} service={service} available disabled={false} draftAvailable={false} />,
+  );
+  const user = userEvent.setup();
+  expect(await screen.findByRole('button', { name: /Открыть Первая/ })).toBeTruthy();
+  expect(listTests).toHaveBeenLastCalledWith({ limit: 20, after: null });
+  const search = screen.getByLabelText('Поиск по номеру или изделию');
+  await user.type(search, 'Применено');
+  await user.click(screen.getByRole('button', { name: 'Найти' }));
+  await user.click(await screen.findByRole('button', { name: 'Следующая страница' }));
+  await user.clear(search);
+  await user.type(search, 'Не отправлено');
+  await user.selectOptions(screen.getByLabelText('Записей на странице'), '10');
+  await waitFor(() =>
+    expect(listTests).toHaveBeenLastCalledWith({ q: 'Применено', limit: 10, after: null }),
+  );
+  await act(async () => finishOld({ items: [record], nextAfter: null }));
+  expect(screen.queryByRole('button', { name: /Открыть Первая/ })).toBeNull();
+  expect(search).toHaveProperty('value', 'Не отправлено');
+});
 
 it('normalizes history whitespace like the core without removing a byte order mark', async () => {
   const service = {
@@ -214,6 +330,8 @@ it('recovers focus when one fixture history row disappears but another remains',
     const draw = (history: (typeof first)[]) => (
       <FocusShell>
         <FixtureTests
+          pageSize={20}
+          onPageSize={() => {}}
           empty={false}
           showExample={false}
           draftAvailable={false}
@@ -370,6 +488,8 @@ it.each(['ς', '[a]'])(
     const other = { ...entry, id: 'other', valve: 'Alpha' };
     render(
       <FixtureTests
+        pageSize={20}
+        onPageSize={() => {}}
         empty={false}
         showExample={false}
         draftAvailable={false}
@@ -394,6 +514,8 @@ it.each(['ς', '[a]'])(
 it('applies fixture history filters only after a valid search', async () => {
   render(
     <FixtureTests
+      pageSize={20}
+      onPageSize={() => {}}
       empty={false}
       showExample
       draftAvailable={false}
@@ -718,7 +840,7 @@ it('keeps a matching active record in search results and returns to the current 
       q: active.testId,
       outcome: TestRecordOutcome.TestRecordOutcomePending,
       after: null,
-      limit: 100,
+      limit: 20,
     }),
   );
 });
@@ -902,7 +1024,7 @@ it('ends the canceled loading state when a new query is submitted offline', asyn
     expect(service.listTests).toHaveBeenLastCalledWith({
       q: 'Новая выборка',
       after: null,
-      limit: 100,
+      limit: 20,
     }),
   );
 });
@@ -972,7 +1094,7 @@ it('retries the failed page of the applied query without submitting edited filte
   await user.type(screen.getByLabelText('Поиск по номеру или изделию'), 'Не отправлено');
   await user.click(screen.getByRole('button', { name: 'Повторить чтение списка' }));
   await screen.findByRole('button', { name: /Открыть Первая/ });
-  expect(listTests).toHaveBeenLastCalledWith({ limit: 100, after: record.testId });
+  expect(listTests).toHaveBeenLastCalledWith({ limit: 20, after: record.testId });
   expect(screen.getByLabelText('Поиск по номеру или изделию')).toHaveProperty(
     'value',
     'Не отправлено',
@@ -1035,6 +1157,8 @@ it.each(['navigation', 'connection'])(
     await user.click(screen.getByRole('button', { name: 'Найти' }));
     expect(screen.getByText('Начало диапазона должно быть не позже конца.')).toBeTruthy();
     const calls = listTests.mock.calls.length;
+    await user.selectOptions(screen.getByLabelText('Записей на странице'), '50');
+    expect(listTests).toHaveBeenCalledTimes(calls);
     view.rerender(draw(false));
     view.rerender(draw(true));
     expect(screen.getByText('Начало диапазона должно быть не позже конца.')).toBeTruthy();
@@ -1042,7 +1166,7 @@ it.each(['navigation', 'connection'])(
     expect(screen.queryByRole('button', { name: /Открыть Первая/ })).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Сбросить поиск' }));
     expect(await screen.findByRole('button', { name: /Открыть Первая/ })).toBeTruthy();
-    expect(listTests).toHaveBeenLastCalledWith({ limit: 100, after: null });
+    expect(listTests).toHaveBeenLastCalledWith({ limit: 50, after: null });
   },
 );
 
@@ -1138,7 +1262,7 @@ it('queries the whole source with calendar/outcome filters, resets the cursor an
   );
   const user = userEvent.setup();
   await user.click(await screen.findByRole('button', { name: 'Следующая страница' }));
-  expect(listTests).toHaveBeenLastCalledWith({ limit: 100, after: record.testId });
+  expect(listTests).toHaveBeenLastCalledWith({ limit: 20, after: record.testId });
   await user.type(screen.getByLabelText('Поиск по номеру или изделию'), 'За первой');
   await user.selectOptions(screen.getByLabelText('Исход'), 'completed');
   await user.type(screen.getByLabelText('С даты'), '2026-11-05');
@@ -1148,7 +1272,7 @@ it('queries the whole source with calendar/outcome filters, resets the cursor an
   const start = new Date('2026-11-05T00:00:00');
   const end = new Date('2026-11-06T00:00:00');
   expect(listTests).toHaveBeenLastCalledWith({
-    limit: 100,
+    limit: 20,
     after: null,
     q: 'За первой',
     outcome: 'completed',
@@ -1197,7 +1321,7 @@ it('keeps filters and the current bounded page across hidden navigation and igno
   view.rerender(draw(true));
   await waitFor(() => expect(listTests).toHaveBeenCalledTimes(calls + 1));
   expect(screen.getByLabelText('Поиск по номеру или изделию')).toHaveProperty('value', 'Первая');
-  expect(listTests).toHaveBeenLastCalledWith({ limit: 100, after: null, q: 'Первая' });
+  expect(listTests).toHaveBeenLastCalledWith({ limit: 20, after: null, q: 'Первая' });
 });
 
 it('opens the shared result before reading details and retains the record when a detail page fails', async () => {
@@ -1281,17 +1405,18 @@ it('starts a changed offline query at the first cursor on reconnect, including u
   await user.click(await screen.findByRole('button', { name: 'Следующая страница' }));
   await screen.findByRole('button', { name: /Открыть Первая/ });
   view.rerender(draw(false));
+  await user.selectOptions(screen.getByLabelText('Записей на странице'), '50');
   await user.type(screen.getByLabelText('Поиск по номеру или изделию'), 'Другая выборка');
   await user.click(screen.getByRole('button', { name: 'Найти' }));
   view.rerender(draw(true));
   await waitFor(() =>
-    expect(listTests).toHaveBeenLastCalledWith({ limit: 100, after: null, q: 'Другая выборка' }),
+    expect(listTests).toHaveBeenLastCalledWith({ limit: 50, after: null, q: 'Другая выборка' }),
   );
   await user.selectOptions(screen.getByLabelText('Исход'), 'unknown');
   await user.click(screen.getByRole('button', { name: 'Найти' }));
   await waitFor(() =>
     expect(listTests).toHaveBeenLastCalledWith({
-      limit: 100,
+      limit: 50,
       after: null,
       q: 'Другая выборка',
       outcome: 'unknown',

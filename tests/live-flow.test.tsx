@@ -1286,7 +1286,7 @@ it('keeps a requested history page when the same session replaces its service wr
     await response;
   });
   expect(await screen.findByRole('button', { name: /К-2/ })).toBeTruthy();
-  expect(listTests).toHaveBeenCalledWith({ limit: 100, after: testId });
+  expect(listTests).toHaveBeenCalledWith({ limit: 20, after: testId });
   expect(nextListTests).not.toHaveBeenCalled();
 });
 

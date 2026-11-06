@@ -199,6 +199,7 @@ export function App() {
   const [step, setStep] = useState(() => initialStep(initial));
   const [nextId, setNextId] = useState(2);
   const [history, setHistory] = useState<readonly TestParameters[]>([]);
+  const [historyPageSize, setHistoryPageSize] = useState(20);
   const [emptyHistory, setEmptyHistory] = useState(initial.id === 'empty');
   const [showExample, setShowExample] = useState(
     initial.id !== 'empty' && initial.id !== 'save-error',
@@ -383,6 +384,8 @@ export function App() {
         <div className="route-content">
           {screen === 'tests' && (
             <FixtureTests
+              pageSize={historyPageSize}
+              onPageSize={setHistoryPageSize}
               onCurrent={openRun}
               onNew={draftAvailable ? openParameters : beginNew}
               draftAvailable={draftAvailable}

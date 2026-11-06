@@ -49,6 +49,8 @@ export function TestsScreen({
   onRetry,
   onNext,
   onFirst,
+  pageSize,
+  onPageSize,
   active,
   children,
 }: {
@@ -68,6 +70,8 @@ export function TestsScreen({
   onRetry?: (() => void) | undefined;
   onNext?: (() => void) | undefined;
   onFirst?: () => void;
+  pageSize: number;
+  onPageSize: (value: number) => void;
   active?: ReactNode;
   children?: ReactNode;
 }) {
@@ -92,6 +96,9 @@ export function TestsScreen({
       <div className="work-surface history-surface">
         <div className="surface-heading">
           <h2>История испытаний</h2>
+          <button className="table-action" type="button" onClick={onReset}>
+            Сбросить поиск
+          </button>
         </div>
         <form
           className="history-filters"
@@ -158,9 +165,6 @@ export function TestsScreen({
           </label>
           <button className="work-button work-button-secondary" type="submit">
             Найти
-          </button>
-          <button className="table-action" type="button" onClick={onReset}>
-            Сбросить поиск
           </button>
         </form>
         {error && (
@@ -244,6 +248,16 @@ export function TestsScreen({
           ))
         )}
         <div className="history-pages">
+          <label className="history-page-size">
+            Записей на странице
+            <select value={pageSize} onChange={(event) => onPageSize(Number(event.target.value))}>
+              {[10, 20, 50, 100].map((size) => (
+                <option key={size} value={size}>
+                  {size}
+                </option>
+              ))}
+            </select>
+          </label>
           {onFirst && (
             <button className="table-action" type="button" disabled={loading} onClick={onFirst}>
               К началу списка
