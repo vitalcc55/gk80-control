@@ -399,3 +399,53 @@ test('обычные слова в истории остаются читаем�
   });
   expect(brokenWords).toEqual([]);
 });
+
+for (const fixture of ['readiness', 'measuring']) {
+  test(`широкая история не расширяет страницу (${fixture})`, async ({ page }) => {
+    await page.setViewportSize({ width: 819, height: 614 });
+    await page.goto(`/?fixture=${fixture}`);
+    await page.getByRole('button', { name: 'Испытания', exact: true }).click();
+    const table = page.locator('.history-table');
+    await expect(table.locator('tbody tr').first()).toBeVisible();
+    await page.evaluate(() => document.fonts.ready);
+    const dimensions = await page.evaluate(() => ({
+      viewport: document.documentElement.clientWidth,
+      page: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
+    }));
+    expect(dimensions.page).toBeLessThanOrEqual(dimensions.viewport);
+    const scroller = page.locator('.table-scroll');
+    const scroll = await scroller.evaluate((node) => {
+      node.scrollLeft = node.scrollWidth;
+      return {
+        left: node.scrollLeft,
+        width: node.clientWidth,
+        content: node.scrollWidth,
+        overflow: getComputedStyle(node).overflowX,
+      };
+    });
+    expect(scroll.content).toBeGreaterThan(scroll.width);
+    expect(scroll.left).toBeGreaterThan(0);
+    expect(['auto', 'scroll']).toContain(scroll.overflow);
+    const button = table
+      .locator('tbody tr')
+      .first()
+      .getByRole('button', {
+        name: fixture === 'measuring' ? /Вернуться к испытанию/ : /Открыть/,
+      });
+    const inside = await button.evaluate((node) => {
+      const box = node.getBoundingClientRect();
+      const container = node.closest('.table-scroll')?.getBoundingClientRect();
+      return (
+        !!container &&
+        box.left >= Math.max(0, container.left) &&
+        box.right <= Math.min(document.documentElement.clientWidth, container.right)
+      );
+    });
+    expect(inside).toBe(true);
+    expect(
+      await page.evaluate(() =>
+        Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
+      ),
+    ).toBeLessThanOrEqual(dimensions.viewport);
+  });
+}

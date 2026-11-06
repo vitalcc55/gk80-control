@@ -257,6 +257,7 @@
   outline: none;
 }
 .table-scroll {
+  position: relative;
   overflow-x: auto;
 }
 .work-table {
