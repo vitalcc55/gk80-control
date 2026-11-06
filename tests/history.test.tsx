@@ -874,6 +874,61 @@ it('does not publish a page requested before the active identity changed while o
   ).toBeTruthy();
 });
 
+it('объясняет невозможность открыть запись без связи', async () => {
+  const service = {
+    ...desktopDemoService,
+    listTests: vi.fn().mockResolvedValue({ items: [record], nextAfter: null }),
+    test: vi.fn(),
+  };
+  const draw = (available: boolean) => (
+    <History
+      {...callbacks}
+      service={service}
+      available={available}
+      disabled={false}
+      draftAvailable={false}
+    />
+  );
+  const view = render(draw(true));
+  await screen.findByRole('button', { name: /Открыть Первая/ });
+  view.rerender(draw(false));
+  await userEvent.setup().click(screen.getByRole('button', { name: /Открыть Первая/ }));
+  expect(screen.getByText(/Связь не подтверждена. Повторите открытие записи/)).toBeTruthy();
+  expect(service.test).not.toHaveBeenCalled();
+});
+
+it('не открывает запись по ответу, пришедшему после потери связи', async () => {
+  let finish: (value: TestRecord) => void = () => {};
+  const delayed = new Promise<TestRecord>((resolve) => {
+    finish = resolve;
+  });
+  const service = {
+    ...desktopDemoService,
+    listTests: vi.fn().mockResolvedValue({ items: [record], nextAfter: null }),
+    test: vi.fn().mockReturnValue(delayed),
+  };
+  const draw = (available: boolean) => (
+    <History
+      {...callbacks}
+      service={service}
+      available={available}
+      disabled={false}
+      draftAvailable={false}
+    />
+  );
+  const view = render(draw(true));
+  await userEvent.setup().click(await screen.findByRole('button', { name: /Открыть Первая/ }));
+  view.rerender(draw(false));
+  await act(async () => {
+    finish(record);
+    await delayed;
+  });
+  expect(screen.queryByRole('heading', { name: 'Результат испытания' })).toBeNull();
+  expect(screen.getByText(/Связь потеряна. Повторите открытие записи/)).toBeTruthy();
+  view.rerender(draw(true));
+  expect(screen.getByRole('button', { name: 'Повторить открытие записи' })).toBeTruthy();
+});
+
 it('opens the current pass when the requested record becomes active before its reply', async () => {
   let finish: (value: TestRecord) => void = () => {};
   const delayed = new Promise<TestRecord>((resolve) => {
@@ -1118,6 +1173,42 @@ it('keeps a matching active record in search results and returns to the current 
       limit: 20,
     }),
   );
+});
+
+it('возобновляет обновление открытой записи после потери связи', async () => {
+  const old = { ...record, saveStatus: TestRecordSaveStatus.TestRecordSaveStatusPending };
+  let finish: (value: TestRecord) => void = () => {};
+  const delayed = new Promise<TestRecord>((resolve) => {
+    finish = resolve;
+  });
+  const service = {
+    ...desktopDemoService,
+    listTests: vi.fn().mockResolvedValue({ items: [old], nextAfter: null }),
+    test: vi.fn().mockResolvedValueOnce(old).mockReturnValueOnce(delayed).mockResolvedValue(record),
+  };
+  const draw = (available: boolean, completedRecord: TestRecord | null = null) => (
+    <History
+      {...callbacks}
+      service={service}
+      available={available}
+      disabled={false}
+      draftAvailable={false}
+      completedRecord={completedRecord}
+    />
+  );
+  const view = render(draw(true));
+  await userEvent.setup().click(await screen.findByRole('button', { name: /Открыть Первая/ }));
+  await screen.findByRole('heading', { name: 'Результат испытания' });
+  view.rerender(draw(true, record));
+  await waitFor(() => expect(service.test).toHaveBeenCalledTimes(2));
+  view.rerender(draw(false, record));
+  await act(async () => {
+    finish(record);
+    await delayed;
+  });
+  view.rerender(draw(true, record));
+  await waitFor(() => expect(service.test).toHaveBeenCalledTimes(3));
+  expect(await screen.findByText('Сохранено')).toBeTruthy();
 });
 
 it('refreshes a late old saved record by its complete terminal version, not saveStatus alone', async () => {
@@ -2225,6 +2316,36 @@ it('повторно читает устаревшую страницу журн
   await user.click(summary);
   await user.click(summary);
   await waitFor(() => expect(audit).toHaveBeenCalledTimes(3));
+});
+
+it('повторяет неудачное обновление открытой страницы журнала с её курсором', async () => {
+  const event = {
+    sequence: 100,
+    testId: record.testId,
+    revision: 1,
+    occurredAt: record.createdAt,
+    action: 'start',
+    outcome: 'accepted',
+    operatorId: 'demo-operator',
+  };
+  const audit = vi
+    .fn()
+    .mockResolvedValueOnce({ items: [event], nextAfter: 100 })
+    .mockResolvedValueOnce({ items: [{ ...event, sequence: 200 }], nextAfter: 200 })
+    .mockRejectedValueOnce(new Error('read failed'))
+    .mockResolvedValueOnce({ items: [{ ...event, sequence: 200 }], nextAfter: 200 });
+  const service = { ...desktopDemoService, audit };
+  const pending = { ...record, saveStatus: TestRecordSaveStatus.TestRecordSaveStatusPending };
+  const view = render(<RecordDetails record={pending} service={service} available />);
+  const user = userEvent.setup();
+  await user.click(screen.getByText('Журнал событий', { selector: 'summary' }));
+  await user.click(await screen.findByRole('button', { name: 'Следующая страница журнала' }));
+  await waitFor(() => expect(audit).toHaveBeenCalledTimes(2));
+  view.rerender(<RecordDetails record={record} service={service} available />);
+  await screen.findByText('Не удалось прочитать журнал.');
+  await user.click(await screen.findByRole('button', { name: 'Повторить чтение журнала' }));
+  await waitFor(() => expect(audit).toHaveBeenCalledTimes(4));
+  expect(audit).toHaveBeenLastCalledWith(record.testId, 100, 100);
 });
 
 it('сохраняет неудавшийся переход журнала при обновлении и потере связи', async () => {

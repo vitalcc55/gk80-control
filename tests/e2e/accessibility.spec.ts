@@ -27,13 +27,13 @@ test('маршрут пяти экранов доступен с клавиат�
   await expect(page.getByRole('button', { name: 'Перейти к проведению' })).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(page.getByRole('main', { name: 'Проведение' })).toBeFocused();
-  await page.keyboard.press('Tab');
-  await page.keyboard.press('Tab');
+  for (let index = 0; index < 4; index++) await page.keyboard.press('Tab');
   await expect(page.locator('.chart-data summary')).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(page.locator('.chart-data')).toHaveAttribute('open', '');
   await page.keyboard.press('Enter');
-  await page.keyboard.press('Tab');
+  await page.keyboard.press('Shift+Tab');
+  await page.keyboard.press('Shift+Tab');
   const advance = page.locator('.action-panel .primary-button');
   await expect(advance).toBeFocused();
   for (let index = 0; index < 8; index++) await page.keyboard.press('Enter');
@@ -48,7 +48,7 @@ test('маршрут пяти экранов доступен с клавиат�
 test('фокус остаётся у состояния после клавиатурной остановки', async ({ page }) => {
   await page.goto('/?fixture=measuring');
   await expect(page.getByRole('main', { name: 'Проведение' })).toBeFocused();
-  for (let index = 0; index < 4; index++) await page.keyboard.press('Tab');
+  for (let index = 0; index < 3; index++) await page.keyboard.press('Tab');
   await expect(page.getByRole('button', { name: 'Остановить испытание' })).toBeFocused();
   await page.keyboard.press('Enter');
   const status = page.getByRole('heading', { name: 'Остановка', exact: true });
@@ -56,6 +56,8 @@ test('фокус остаётся у состояния после клавиа�
   expect(await status.evaluate((node) => node.matches(':focus-visible'))).toBe(true);
   expect(await status.evaluate((node) => getComputedStyle(node).outlineStyle)).not.toBe('none');
   await expect(page.getByRole('button', { name: 'Остановка выполняется' })).toBeDisabled();
+  await page.keyboard.press('Tab');
+  await expect(page.locator('.chart-data summary')).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(
     page.getByRole('combobox', { name: 'Выбрать подготовленное состояние' }),
@@ -158,6 +160,8 @@ for (const viewport of [
         ).toBeLessThanOrEqual(documentWidth.available);
 
         const stop = page.getByRole('button', { name: 'Остановить испытание' });
+        await stop.focus();
+        await expect(stop).toBeFocused();
         await expect(stop).toBeVisible();
         const geometry = await page.evaluate(() => {
           const button = document.querySelector('.stop-button');

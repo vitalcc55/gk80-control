@@ -106,8 +106,10 @@ export function RecordDetails({
 }) {
   const [informationOpen, setInformationOpen] = useState(false);
   const [measurementRetryVisible, setMeasurementRetryVisible] = useState(false);
+  const [auditRetryVisible, setAuditRetryVisible] = useState(false);
   const measurementTable = useRef<HTMLDivElement>(null);
   const measurementRetryButton = useRef<HTMLButtonElement>(null);
+  const auditRetryButton = useRef<HTMLButtonElement>(null);
   const version = resultReadVersion(record);
   const measurement = useRecordPage<MeasurementPage>({
     id: record.testId,
@@ -157,6 +159,15 @@ export function RecordDetails({
     )
       setMeasurementRetryVisible(false);
   }, [measurementRetry, measurementRetryVisible, measurementLoading]);
+  useEffect(() => {
+    if (journal.retry) setAuditRetryVisible(true);
+    else if (
+      auditRetryVisible &&
+      !auditLoading &&
+      document.activeElement !== auditRetryButton.current
+    )
+      setAuditRetryVisible(false);
+  }, [journal.retry, auditRetryVisible, auditLoading]);
   if (!visible) return null;
   return (
     <div className="record-disclosures">
@@ -294,6 +305,21 @@ export function RecordDetails({
           <>
             <p>Страница до 100 событий.</p>
             {auditError && <p role="alert">{auditError}</p>}
+            {auditRetryVisible && (
+              <button
+                type="button"
+                ref={auditRetryButton}
+                aria-disabled={auditLoading || journal.retry === null}
+                onBlur={() => {
+                  if (!journal.retry && !auditLoading) setAuditRetryVisible(false);
+                }}
+                onClick={() => {
+                  if (journal.retry) journal.retryRead();
+                }}
+              >
+                Повторить чтение журнала
+              </button>
+            )}
             {auditLoading && <p role="status">Чтение журнала…</p>}
             {auditStale && audit && <p>Показана предыдущая страница журнала.</p>}
             <ul>

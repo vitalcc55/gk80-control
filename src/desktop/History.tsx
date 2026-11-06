@@ -94,7 +94,7 @@ export function History({
   const [listError, setListError] = useState('');
   const [recordFailure, setRecordFailure] = useState<RecordReadFailure | null>(null);
   const [loading, setLoading] = useState(false);
-  const [opening, setOpening] = useState(false);
+  const [opening, setOpening] = useState<string | null>(null);
   const [discarding, setDiscarding] = useState(false);
   const listGeneration = useRef(0);
   const selectedGeneration = useRef(0);
@@ -123,7 +123,7 @@ export function History({
   const cancelSelected = useCallback((clear: boolean) => {
     selectedGeneration.current++;
     selectedRefresh.current = '';
-    setOpening(false);
+    setOpening(null);
     setRecordFailure(null);
     if (clear) setSelected(null);
   }, []);
@@ -131,14 +131,14 @@ export function History({
     if (
       visible &&
       readTriggers.current.resetVersion === resetVersion &&
-      selectedId &&
-      selectedId === activeTestId &&
+      activeTestId &&
+      (selectedId === activeTestId || opening === activeTestId) &&
       currentActive.current.onCurrent
     ) {
       cancelSelected(true);
       currentActive.current.onCurrent();
     }
-  }, [visible, selectedId, activeTestId, resetVersion, cancelSelected]);
+  }, [visible, selectedId, opening, activeTestId, resetVersion, cancelSelected]);
   useEffect(
     () => () => {
       listGeneration.current++;
@@ -193,6 +193,12 @@ export function History({
     const reset = previous.resetVersion !== resetVersion;
     if (previous.available && !available) {
       listGeneration.current++;
+      cancelSelected(false);
+      if (opening && opening !== activeTestId)
+        setRecordFailure({
+          testId: opening,
+          text: 'Связь потеряна. Повторите открытие записи после восстановления.',
+        });
       if (loading) needsRead.current = true;
       setLoading(false);
     }
@@ -213,7 +219,17 @@ export function History({
       cancelSelected(reset);
     }
     if (visible && available && needsRead.current) void load(cursor.current);
-  }, [visible, available, resetVersion, completedKey, activeTestId, load, cancelSelected, loading]);
+  }, [
+    visible,
+    available,
+    resetVersion,
+    completedKey,
+    activeTestId,
+    load,
+    cancelSelected,
+    loading,
+    opening,
+  ]);
   useEffect(() => {
     if (
       !visible ||
@@ -242,9 +258,16 @@ export function History({
     );
   }, [visible, available, selectedId, selectedKey, completedId, completedKey]);
   async function open(testId: string) {
+    if (!available) {
+      setRecordFailure({
+        testId,
+        text: 'Связь не подтверждена. Повторите открытие записи после восстановления.',
+      });
+      return;
+    }
     const generation = ++selectedGeneration.current;
     setRecordFailure(null);
-    setOpening(true);
+    setOpening(testId);
     try {
       const record = await currentService.current.test(testId);
       if (generation === selectedGeneration.current) {
@@ -262,7 +285,7 @@ export function History({
         else setRecordFailure({ testId, text: 'Не удалось открыть запись из ядра.' });
       }
     } finally {
-      if (generation === selectedGeneration.current) setOpening(false);
+      if (generation === selectedGeneration.current) setOpening(null);
     }
   }
   function search(value: HistoryFilters) {
@@ -270,7 +293,7 @@ export function History({
     cancelSelected(false);
     cursor.current = null;
     requestedPage.current = 1;
-    setOpening(false);
+    setOpening(null);
     setLoading(false);
     setList(null);
     applied.current = null;
@@ -285,15 +308,17 @@ export function History({
       setValidationError(reason instanceof Error ? reason.message : 'Проверьте даты.');
     }
   }
-  const retry = recordFailure
-    ? () => {
-        if (available) void open(recordFailure.testId);
-      }
-    : listError
+  const retry = !available
+    ? undefined
+    : recordFailure
       ? () => {
-          if (available) void load(cursor.current);
+          if (available) void open(recordFailure.testId);
         }
-      : undefined;
+      : listError
+        ? () => {
+            if (available) void load(cursor.current);
+          }
+        : undefined;
   const retryLabel = recordFailure ? 'Повторить открытие записи' : 'Повторить чтение списка';
   if (selected)
     return (
@@ -401,7 +426,7 @@ export function History({
       onNew={onNew}
       disabled={disabled}
       draftAvailable={draftAvailable}
-      loading={loading || opening}
+      loading={loading || !!opening}
       error={
         validationError ||
         recordFailure?.text ||
