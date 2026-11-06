@@ -445,9 +445,16 @@ h2 {
   flex-direction: column;
   gap: 14px;
 }
+.chart-panel {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
 .measurement-top,
 .chart-panel {
   padding: 18px 20px;
+}
+.run-content > .measurement-top {
+  flex: 1;
 }
 .measurements {
   display: grid;
@@ -779,12 +786,6 @@ h2 {
   .run-content {
     gap: 9px;
   }
-  .action-panel {
-    align-self: start;
-    position: sticky;
-    top: 72px;
-    min-height: 440px;
-  }
 }
 @media (max-width: 1350px) {
   .sidebar {
@@ -911,7 +912,6 @@ h2 {
 }
 @media (max-width: 1000px) and (max-height: 740px) {
   .action-panel {
-    min-height: min(440px, calc(100vh - 160px));
     gap: 10px;
     padding: 10px;
   }

@@ -118,15 +118,6 @@ export function RunScreen({
             </div>
             {details}
           </div>
-          <div className="chart-panel">
-            <div className="section-heading">
-              <div>
-                <h2>Изменение показаний</h2>
-                {chartNote && <p>{chartNote}</p>}
-              </div>
-            </div>
-            <MeasurementChart {...chart} />
-          </div>
         </section>
         <aside className="action-panel" aria-label={actionLabel ?? 'Текущее действие'}>
           <div>
@@ -139,6 +130,15 @@ export function RunScreen({
           </div>
           {stop && <div className="stop-area">{stop}</div>}
         </aside>
+        <div className="chart-panel">
+          <div className="section-heading">
+            <div>
+              <h2>Изменение показаний</h2>
+              {chartNote && <p>{chartNote}</p>}
+            </div>
+          </div>
+          <MeasurementChart {...chart} />
+        </div>
       </div>
     </section>
   );
