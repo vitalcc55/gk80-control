@@ -1485,6 +1485,31 @@ it('сохраняет выбранную страницу журнала при
   expect(await screen.findByText('Завершение испытания — Принято')).toBeTruthy();
 });
 
+it('не принимает поздний ответ журнала при потере связи и продолжает запрошенную страницу', async () => {
+  const first = { sequence: 100, testId: record.testId, revision: 1, occurredAt: record.createdAt,
+    action: 'start', outcome: 'accepted', operatorId: 'demo-operator' };
+  let finish: (page: { items: typeof first[]; nextAfter: null }) => void = () => {};
+  const delayed = new Promise<{ items: typeof first[]; nextAfter: null }>((resolve) => { finish = resolve; });
+  const next = { ...first, sequence: 101, action: 'complete' };
+  const audit = vi.fn()
+    .mockResolvedValueOnce({ items: [first], nextAfter: 100 })
+    .mockReturnValueOnce(delayed)
+    .mockResolvedValueOnce({ items: [next], nextAfter: null });
+  const service = { ...desktopDemoService, audit };
+  const view = render(<RecordDetails record={record} service={service} available />);
+  const user = userEvent.setup();
+  await user.click(screen.getByText('Журнал событий', { selector: 'summary' }));
+  await user.click(await screen.findByRole('button', { name: 'Следующая страница журнала' }));
+  view.rerender(<RecordDetails record={record} service={service} available={false} />);
+  await act(async () => { finish({ items: [next], nextAfter: null }); await delayed; });
+  expect(screen.getByText('Запуск испытания — Принято')).toBeTruthy();
+  expect(screen.queryByText('Завершение испытания — Принято')).toBeNull();
+  view.rerender(<RecordDetails record={record} service={service} available />);
+  await waitFor(() => expect(audit).toHaveBeenCalledTimes(3));
+  expect(audit).toHaveBeenLastCalledWith(record.testId, 100, 100);
+  expect(await screen.findByText('Завершение испытания — Принято')).toBeTruthy();
+});
+
 it('повторно читает устаревшую страницу журнала после ошибки и открытия', async () => {
   const audit = vi.fn()
     .mockResolvedValueOnce({ items: [], nextAfter: null })

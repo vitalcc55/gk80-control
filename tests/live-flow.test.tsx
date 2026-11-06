@@ -109,6 +109,18 @@ const pendingKey = `gk80.demo.pending-command.v1:${database}`;
 const testId = '33333333-3333-4333-8333-333333333333';
 const actionId = '44444444-4444-4444-8444-444444444444';
 const stopId = '55555555-5555-4555-8555-555555555555';
+
+function pendingList(): HTMLElement {
+  const list = screen.getByRole('region', { name: 'Сообщения команд' }).querySelector('.demo-message-list');
+  if (!(list instanceof HTMLElement)) throw new Error('Pending command list missing');
+  return list;
+}
+
+function pendingRow(id: string): HTMLElement {
+  const row = within(pendingList()).getByText(id).closest('details')?.parentElement;
+  if (!(row instanceof HTMLElement)) throw new Error('Pending command observation missing');
+  return row;
+}
 function savedAttempt(
   id: string,
   kind: 'create' | 'start' | 'confirm' | 'stop',
@@ -465,10 +477,11 @@ it('does not attribute an unbound legacy command to the confirmed database', asy
   expect(api.command).not.toHaveBeenCalledWith('legacy');
   expect(api.create).not.toHaveBeenCalled();
   expect(sessionStorage.getItem('gk80.demo.pending-command')).toBe(legacy);
-  expect(screen.getByText(/Прежняя команда: создание испытания, ID legacy/)).toBeTruthy();
-  expect(
-    screen.getByText(/Прежняя команда: остановка испытания, ID legacy-stop/).textContent,
-  ).toContain('Безопасное давление не подтверждено');
+  expect(screen.getByText('legacy').closest('details')?.open).toBe(false);
+  expect(screen.getByText('legacy-stop').closest('details')?.open).toBe(false);
+  expect(screen.getByText(/Прежняя команда: создание испытания/)).toBeTruthy();
+  expect(screen.getByText(/Прежняя команда: остановка испытания/).textContent)
+    .toContain('Безопасное давление не подтверждено');
   await userEvent.setup().click(screen.getByRole('button', { name: 'Я проверил прежние команды' }));
   await waitFor(() =>
     expect(screen.getByRole('button', { name: 'Новое испытание' }).hasAttribute('disabled')).toBe(
@@ -520,7 +533,8 @@ it.each([false, true])(
       status: CommandStatusStatus.CommandStatusStatusCompleted,
     });
     render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
-    await screen.findByText(new RegExp(`исход неизвестен.*${id}`));
+    await screen.findByText(id);
+    expect(pendingRow(id).textContent).toContain('исход неизвестен');
     await userEvent.setup().click(screen.getByRole('button', { name: 'Проверить состояние' }));
     expect(api.command).not.toHaveBeenCalledWith(id);
     expect(screen.getByRole('button', { name: 'Новое испытание' }).hasAttribute('disabled')).toBe(
@@ -532,7 +546,7 @@ it.each([false, true])(
         false,
       ),
     );
-    expect(screen.getByText(new RegExp(`исход неизвестен.*${id}`))).toBeTruthy();
+    expect(pendingRow(id).textContent).toContain('исход неизвестен');
   },
 );
 
@@ -1502,7 +1516,7 @@ it('preserves the unsaved form when the service wrapper changes', async () => {
   expect((input as HTMLInputElement).value).toBe('Клапан');
 });
 
-it('uses core confirmation and measurements for the operator path', async () => {
+it.each(['lookup', 'receipt'] as const)('uses core confirmation and measurements for the operator path (%s)', async (source) => {
   let snapshot: Snapshot = {
     apiVersion: 'v1',
     backendRunId: backend,
@@ -1522,6 +1536,8 @@ it('uses core confirmation and measurements for the operator path', async () => 
   const commands = new Map<string, typeof lastCommand>();
   let activeRecord = record;
   let startId = '';
+  let finishStart: (value: CommandDispatch) => void = () => {};
+  const startResponse = new Promise<CommandDispatch>((resolve) => { finishStart = resolve; });
   let hostRevision = 0;
   const bridge: SessionBridge = {
     beginSessionCheck: async () => 'ticket',
@@ -1602,9 +1618,11 @@ it('uses core confirmation and measurements for the operator path', async () => 
       activeTest: { ...activeRecord, stage: TestRecordStage.Running },
       revision: 2,
       lastEventSequence: 2,
-      pendingAction: { testId, actionId, instruction: 'Подтвердите измерение' },
+      pendingAction: source === 'receipt' ? null : { testId, actionId, instruction: 'Подтвердите измерение' },
     };
-    return new Promise(() => {});
+    return source === 'lookup'
+      ? startResponse
+      : { delivery: CommandDispatchDelivery.CommandDispatchDeliveryResponse, command: lastCommand };
   });
   api.confirm.mockImplementation(
     async (_id: string, _action: string, input: { commandId: string }) => {
@@ -1649,6 +1667,7 @@ it('uses core confirmation and measurements for the operator path', async () => 
       return { delivery: 'response', command: lastCommand };
     },
   );
+  if (source === 'receipt') api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
   render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   const user = userEvent.setup();
   const newTest = await screen.findByRole('button', { name: 'Новое испытание' });
@@ -1674,12 +1693,54 @@ it('uses core confirmation and measurements for the operator path', async () => 
   await user.click(screen.getByLabelText(/Подключение соответствует направлению/));
   await user.click(screen.getByRole('button', { name: /Перейти к проведению/ }));
   expect(api.start).toHaveBeenCalledTimes(1);
+  let noticeSummary: HTMLElement | null = null;
+  if (source === 'receipt') {
+    const notice = await screen.findByText('Команда принята или её исход ещё не подтверждён.');
+    const container = notice.closest('[role="status"]');
+    if (!(container instanceof HTMLElement)) throw new Error('Command notice missing');
+    noticeSummary = within(container).getByText('Сведения о команде');
+    noticeSummary.focus();
+    snapshot = {
+      ...snapshot,
+      revision: 3,
+      lastEventSequence: 3,
+      pendingAction: { testId, actionId, instruction: 'Подтвердите измерение' },
+    };
+  }
   const confirm = await screen.findByRole(
     'button',
     { name: 'Подтвердить действие' },
     { timeout: 8000 },
   );
+  if (noticeSummary) {
+    expect(noticeSummary.isConnected).toBe(true);
+    expect(document.activeElement).toBe(noticeSummary);
+    confirm.focus();
+  }
   await screen.findByText(/Команда: принята; завершение команды не подтверждено/);
+  expect(screen.queryByText('Команда принята или её исход ещё не подтверждён.')).toBeNull();
+  expect(screen.getByRole('button', { name: 'Проверить состояние' })).toBeTruthy();
+  const identity = screen.getByText(startId).closest('details');
+  if (!identity) throw new Error('Command details missing');
+  expect(identity.open).toBe(false);
+  expect(identity.querySelector('summary')?.textContent).toBe('Сведения о команде');
+  await user.click(within(identity).getByText('Сведения о команде'));
+  expect(identity.open).toBe(true);
+  if (source === 'lookup') {
+    await act(async () => {
+      finishStart({ delivery: CommandDispatchDelivery.CommandDispatchDeliveryNotSent, command: null });
+      await startResponse;
+    });
+    expect(screen.getByText('Ранее найденное состояние команды требует проверки; новый запрос не отправлен.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Проверить состояние' })).toBeTruthy();
+    expect(api.start).toHaveBeenCalledTimes(1);
+    api.exact.mockClear();
+    await user.click(screen.getByRole('button', { name: 'Проверить состояние' }));
+    const sentStart = api.start.mock.calls[0]?.[1];
+    if (!sentStart) throw new Error('Start payload missing');
+    await waitFor(() => expect(api.exact).toHaveBeenCalledWith(database, 'start', testId, '', startId, JSON.stringify(sentStart)));
+    expect(screen.getByText('Ранее найденное состояние команды требует проверки; новый запрос не отправлен.')).toBeTruthy();
+  }
   await waitFor(() => expect(confirm.hasAttribute('disabled')).toBe(false));
   await user.click(confirm);
   expect(api.confirm).toHaveBeenCalledTimes(1);
@@ -1697,10 +1758,41 @@ it('uses core confirmation and measurements for the operator path', async () => 
   expect(screen.queryByRole('heading', { name: 'Параметры испытания' })).toBeNull();
 }, 18000);
 
-it('does not infer a legacy Stop without its original contents', async () => {
+it.each([null, '77777777-7777-4777-8777-777777777777'])(
+  'keeps accepted Start notice when the pending action does not match (%s)',
+  async (actionTestId) => {
+    const startId = '66666666-6666-4666-8666-666666666666';
+    sessionStorage.setItem(pendingKey, JSON.stringify([savedAttempt(startId, 'start', testId, false)]));
+    const bridge: SessionBridge = {
+      beginSessionCheck: async () => 'ticket',
+      keepAlive: async () => {},
+      sessionView: async () => ({
+        connection: {
+          hostRunId: host, revision: 1, status: ConnectionStateStatus.Live,
+          linkValid: true, leaseAcquireUnknown: false, streamGeneration: 0,
+        },
+        snapshot: {
+          apiVersion: 'v1', backendRunId: backend, revision: 2, lastEventSequence: 2,
+          measurementBatch: null, activeTest: { ...record, stage: TestRecordStage.Running },
+          pendingAction: actionTestId ? { testId: actionTestId, actionId, instruction: 'Подтвердите' } : null,
+          measurementTiming: null, measurements: [],
+        },
+        validForMs: 6000, linkValidForMs: 6000,
+      }),
+    };
+    api.list.mockResolvedValue({ items: [], nextAfter: null });
+    api.command.mockResolvedValue({ commandId: startId, testId, status: 'accepted' });
+    render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+    expect(await screen.findByText('Команда принята или её исход ещё не подтверждён.')).toBeTruthy();
+    expect(pendingRow(startId).textContent).toContain('принята');
+    expect(api.start).not.toHaveBeenCalled();
+  },
+);
+
+it.each([testId, null])('does not infer a legacy Stop without its original contents (%s)', async (stopTestId) => {
   sessionStorage.setItem(
     pendingKey,
-    JSON.stringify([{ id: stopId, kind: 'stop', testId, retired: false }]),
+    JSON.stringify([{ id: stopId, kind: 'stop', testId: stopTestId, retired: false }]),
   );
   const bridge: SessionBridge = {
     beginSessionCheck: async () => 'ticket',
@@ -1731,6 +1823,7 @@ it('does not infer a legacy Stop without its original contents', async () => {
   };
   render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   expect(await screen.findByText(/Исходное содержимое команды не сохранилось/)).toBeTruthy();
+  if (stopTestId === null) expect(pendingRow(stopId).textContent).toContain('Испытание для остановки неизвестно');
   await userEvent.setup().click(screen.getByRole('button', { name: 'Проверить состояние' }));
   expect(api.exact).not.toHaveBeenCalled();
   expect(api.command).not.toHaveBeenCalled();
@@ -1829,7 +1922,8 @@ it('distinguishes a Stop lookup conflict from rejecting the actual request', asy
     .click(await screen.findByRole('button', { name: 'Остановить испытание' }));
   expect(await screen.findByText(/Сохранённая запись принадлежит другой команде/)).toBeTruthy();
   expect(screen.queryByText(/Запрос остановки отклонён/)).toBeNull();
-  expect(screen.getByText(new RegExp(`Остановка испытания ${testId}`))).toBeTruthy();
+  expect(within(pendingRow(stopId)).getByText(testId).closest('details')?.open).toBe(false);
+  expect(screen.getByText(/Остановка испытания\./)).toBeTruthy();
   expect(api.stop).toHaveBeenCalledOnce();
 });
 
@@ -2038,10 +2132,10 @@ it('does not repeatedly write a confirmed observation while storage remains unav
     await screen.findByRole('button', { name: 'Повторить чтение команд' });
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(failure).toHaveBeenCalledTimes(1);
-    expect(screen.getByText(new RegExp(`ID ${attempt.id}`))).toBeTruthy();
+    expect(within(pendingList()).getByText(attempt.id)).toBeTruthy();
     failure.mockRestore();
     await userEvent.setup().click(screen.getByRole('button', { name: 'Повторить чтение команд' }));
-    await waitFor(() => expect(screen.queryByText(new RegExp(`ID ${attempt.id}`))).toBeNull());
+    await waitFor(() => expect(within(pendingList()).queryByText(attempt.id)).toBeNull());
     expect(api.create).not.toHaveBeenCalled();
   } finally {
     failure.mockRestore();
@@ -3002,7 +3096,38 @@ it('can confirm Stop while an exact lookup with the same ID is waiting', async (
   });
 });
 
-it('keeps the first unresolved Stop when a later Stop attempt is rejected', async () => {
+it('keeps keyboard focus in the application when a completed command observation disappears', async () => {
+  const attempt = savedAttempt(stopId, 'start', testId, false);
+  sessionStorage.setItem(pendingKey, JSON.stringify([attempt]));
+  const bridge: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: { hostRunId: host, revision: 1, status: ConnectionStateStatus.Live,
+        linkValid: true, leaseAcquireUnknown: false, streamGeneration: 0 },
+      snapshot: { apiVersion: 'v1', backendRunId: backend, revision: 2, lastEventSequence: 2,
+        measurementBatch: null, activeTest: { ...record, stage: TestRecordStage.Running },
+        pendingAction: null, measurementTiming: null, measurements: [] },
+      validForMs: 6000, linkValidForMs: 6000,
+    }),
+  };
+  let finish: (value: { outcome: string; command: { commandId: string; testId: string; status: string } }) => void = () => {};
+  const held = new Promise<{ outcome: string; command: { commandId: string; testId: string; status: string } }>((resolve) => { finish = resolve; });
+  api.exact.mockReturnValue(held);
+  render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+  await waitFor(() => expect(api.exact).toHaveBeenCalled());
+  const summary = within(pendingRow(stopId)).getByText('Сведения о команде');
+  summary.focus();
+  expect(document.activeElement).toBe(summary);
+  await act(async () => {
+    finish({ outcome: 'match', command: { commandId: stopId, testId, status: 'completed' } });
+    await held;
+  });
+  await waitFor(() => expect(summary.isConnected).toBe(false));
+  expect(document.activeElement).toBe(screen.getByRole('main'));
+});
+
+it.each([false, true])('keeps the first unresolved Stop when a later Stop attempt is rejected (storage failure: %s)', async (storageFailure) => {
   const bridge: SessionBridge = {
     beginSessionCheck: async () => 'ticket',
     keepAlive: async () => {},
@@ -3050,8 +3175,16 @@ it('keeps the first unresolved Stop when a later Stop attempt is rejected', asyn
     }),
   );
   expect(api.stop).toHaveBeenCalledTimes(2);
+  const failure = storageFailure
+    ? vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('unavailable'); })
+    : null;
   await user.click(screen.getByRole('button', { name: 'Прекратить наблюдение' }));
-  expect(screen.queryByText(/Запрос остановки отклонён/)).toBeNull();
+  if (failure) {
+    expect(screen.queryByText(/Запрос остановки отклонён/)).not.toBeNull();
+    failure.mockRestore();
+    await user.click(await screen.findByRole('button', { name: 'Повторить чтение команд' }));
+  }
+  await waitFor(() => expect(screen.queryByText(/Запрос остановки отклонён/)).toBeNull());
 });
 
 it('shows the restored terminal Stop status when the operator requests it again', async () => {
@@ -3376,7 +3509,7 @@ it('allows an explicitly reviewed legacy observation to be removed from a full l
     throw new Error('unavailable');
   });
   await userEvent.setup().click(remove);
-  expect(screen.getByText(/ID old-0\./)).toBeTruthy();
+  expect(screen.getByText('old-0')).toBeTruthy();
   expect(JSON.parse(sessionStorage.getItem(pendingKey) ?? '[]')).toHaveLength(64);
   failedWrite.mockRestore();
   await userEvent.setup().click(remove);
@@ -3386,7 +3519,7 @@ it('allows an explicitly reviewed legacy observation to be removed from a full l
     ),
   );
   expect(JSON.parse(sessionStorage.getItem(pendingKey) ?? '[]')).toHaveLength(63);
-  expect(screen.queryByText(/ID old-0\./)).toBeNull();
+  expect(screen.queryByText('old-0')).toBeNull();
   expect(api.command).not.toHaveBeenCalled();
 });
 
@@ -3454,7 +3587,7 @@ it.each(['start', 'confirm'] as const)(
       ),
     );
     if (kind === 'start') {
-      await waitFor(() => expect(screen.queryByText(new RegExp(`Команда:.*${id}`))).toBeNull());
+      await waitFor(() => expect(within(pendingList()).queryByText(id)).toBeNull());
       await waitFor(() =>
         expect(
           screen.getByRole('button', { name: 'Подтвердить действие' }).hasAttribute('disabled'),
@@ -3732,13 +3865,13 @@ it('keeps an unknown stop message when a different command is confirmed', async 
   await userEvent.setup().click(createCheck);
   await screen.findByText(/Команда: выполнена/);
   expect(screen.getByText(/Исход команды пока неизвестен/)).toBeTruthy();
-  expect(screen.getByText(new RegExp(`Остановка испытания ${testId}`))).toBeTruthy();
+  expect(within(pendingRow(stopId)).getByText(testId).closest('details')?.open).toBe(false);
   snapshot = { ...snapshot, revision: 1, lastEventSequence: 1, activeTest: record };
   await waitFor(() => expect(screen.queryByText(/Команда: выполнена/)).toBeNull(), {
     timeout: 8000,
   });
   expect(screen.getByText(/Исход команды пока неизвестен/)).toBeTruthy();
-  expect(screen.getByText(new RegExp(`Остановка испытания ${testId}`))).toBeTruthy();
+  expect(within(pendingRow(stopId)).getByText(testId).closest('details')?.open).toBe(false);
   expect(api.create).not.toHaveBeenCalled();
 }, 15000);
 
@@ -3808,7 +3941,7 @@ it('keeps another command unknown when an earlier command fails', async () => {
     await stop;
   });
   expect(
-    await screen.findByText(new RegExp(`Испытание ${testId}: Остановка не выполнена`)),
+    await screen.findByText(/Другое испытание: Остановка не выполнена/),
   ).toBeTruthy();
   expect(screen.getByText(/Исход команды пока неизвестен/)).toBeTruthy();
   expect(api.create).not.toHaveBeenCalled();
@@ -3860,25 +3993,33 @@ it('keeps separate failed stop results visible until the operator hides them', a
   const view = render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   const user = userEvent.setup();
   for (const item of stops) {
-    const row = await screen.findByText(new RegExp(`ID ${item.id}`));
+    const identity = await screen.findByText(item.id);
+    const row = identity.closest('div');
+    if (!row) throw new Error('Stop observation missing');
     await user.click(within(row).getByRole('button', { name: 'Проверить состояние' }));
     await waitFor(() => expect(row.textContent).toContain('завершилась с ошибкой'));
   }
   for (const item of stops) {
-    const row = screen.getByText(new RegExp(`ID ${item.id}`));
-    expect(row.textContent).toContain(`Остановка испытания ${item.testId}`);
+    const row = screen.getByText(item.id).closest('div');
+    if (!row) throw new Error('Stop observation missing');
+    expect(row.textContent).toContain('Остановка испытания');
+    expect(row.textContent).toContain(item.testId);
     expect(row.textContent).toContain('Безопасное давление не подтверждено');
   }
-  const first = screen.getByText(new RegExp(`ID ${stops[0]?.id}`));
+  const firstId = stops[0]?.id;
+  if (!firstId) throw new Error('First stop missing');
+  const first = screen.getByText(firstId).closest('div');
+  if (!first) throw new Error('First stop observation missing');
   await user.click(within(first).getByRole('button', { name: 'Скрыть наблюдение команды' }));
-  expect(screen.queryByText(new RegExp(`ID ${stops[0]?.id}`))).toBeNull();
+  expect(screen.queryByText(firstId)).toBeNull();
   for (const item of stops.slice(1))
-    expect(screen.getByText(new RegExp(`ID ${item.id}`))).toBeTruthy();
+    expect(screen.getByText(item.id)).toBeTruthy();
   view.unmount();
   api.command.mockRejectedValue(new Error('core unavailable'));
   render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   for (const item of stops.slice(1)) {
-    const row = await screen.findByText(new RegExp(`ID ${item.id}`));
+    const row = (await screen.findByText(item.id)).closest('div');
+    if (!row) throw new Error('Stop observation missing');
     expect(row.textContent).toContain('Безопасное давление не подтверждено');
     expect(row.textContent).toContain('завершилась с ошибкой');
   }
@@ -4058,8 +4199,11 @@ it('keeps an earlier test command failure when creating an unrelated test', asyn
     { timeout: 8000 },
   );
   const oldNotice = screen.getByText(/Команда отклонена или не выполнена/);
-  expect(oldNotice.textContent).toContain(oldStartId);
-  expect(oldNotice.textContent).toContain(oldTestId);
+  const oldStatus = oldNotice.closest('[role="status"]');
+  if (!(oldStatus instanceof HTMLElement)) throw new Error('Failure details missing');
+  const oldDetails = within(oldStatus).getByText(oldStartId).closest('details');
+  expect(oldDetails?.open).toBe(false);
+  expect(within(oldStatus).getByText(oldTestId)).toBeTruthy();
   expect(newNotice.compareDocumentPosition(oldNotice) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(
     0,
   );
@@ -4501,7 +4645,7 @@ it('clears an unknown stop when the separate stop check confirms it', async () =
   });
   expect(await screen.findByText('Остановка подтверждена ядром.')).toBeTruthy();
   expect(screen.queryByText(/Исход команды пока неизвестен/)).toBeNull();
-  expect(screen.getByText(new RegExp(`Команда: выполнена.*${stopId}`))).toBeTruthy();
+  expect(pendingRow(stopId).textContent).toContain('Команда: выполнена');
   view.unmount();
   await act(async () => {
     finishOld({ commandId: oldId, status: CommandStatusStatus.CommandStatusStatusUnknown });
@@ -5049,7 +5193,7 @@ it('keeps an unpersisted Stop observable across remount when session storage fai
   expect(screen.getByText(/отслеживается только в памяти/)).toBeTruthy();
   mounted.unmount();
   render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
-  expect(await screen.findByText(new RegExp(stopId))).toBeTruthy();
+  await waitFor(() => expect(within(pendingList()).getByText(stopId)).toBeTruthy());
   setItem.mockRestore();
   api.command.mockImplementation(async (id: string) => ({
     commandId: id,
@@ -5156,7 +5300,7 @@ it('preserves a newer shared attempt when restoring an unpersisted Stop', async 
       ),
     );
     await userEvent.setup().click(
-      within(screen.getByText(new RegExp(`ID ${stopId}`))).getByRole('button', {
+      within(pendingRow(stopId)).getByRole('button', {
         name: 'Проверить состояние',
       }),
     );
@@ -5266,7 +5410,7 @@ it.each([
     await userEvent
       .setup()
       .click(await screen.findByRole('button', { name: 'Прекратить наблюдение' }));
-    expect(screen.getByText(new RegExp(`ID ${stopId}`))).toBeTruthy();
+    expect(within(pendingList()).getByText(stopId)).toBeTruthy();
     if (source !== 'local-fails' && source !== 'superseded' && source !== 'superseded-no-version')
       failure.mockRestore();
     if (
@@ -5330,7 +5474,7 @@ it.each([
     const saved: { id: string; retired: boolean }[] = JSON.parse(localStorage.getItem(key) ?? '[]');
     if (source === 'superseded' || source === 'superseded-no-version') {
       expect(saved).toEqual([]);
-      expect(screen.queryByText(new RegExp(`ID ${stopId}`))).toBeNull();
+      expect(within(pendingList()).queryByText(stopId)).toBeNull();
       return;
     }
     expect(saved).toEqual(
@@ -5341,7 +5485,7 @@ it.each([
         }),
       ]),
     );
-    expect(screen.getByText(new RegExp(`ID ${stopId}`))).toBeTruthy();
+    expect(within(pendingList()).getByText(stopId)).toBeTruthy();
   } finally {
     failure.mockRestore();
     random?.mockRestore();
@@ -5482,7 +5626,7 @@ it('still sends Stop when the observation version cannot be generated', async ()
     await userEvent.setup().click(stop);
     expect(api.stop).toHaveBeenCalledTimes(2);
     expect(screen.getByRole('button', { name: 'Повторить чтение команд' })).toBeTruthy();
-    expect(screen.getByText(new RegExp(`ID ${stopId}`))).toBeTruthy();
+    expect(within(pendingList()).getByText(stopId)).toBeTruthy();
     expect(localStorage.getItem(key)).not.toContain(stopId);
     random.mockRestore();
     const failedWrite = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
@@ -5582,23 +5726,23 @@ it('retains overflow until multiple requested removals can be saved, while Stop 
     }));
     localStorage.setItem(key, JSON.stringify(old));
     render(<LiveApp {...props} />);
-    await screen.findByText(/ID overflow-0\./);
-    expect(screen.getByText(new RegExp(`ID ${stopId}`))).toBeTruthy();
-    expect(screen.getByText(new RegExp(`ID ${secondStop}`))).toBeTruthy();
+    await screen.findByText('overflow-0');
+    expect(within(pendingList()).getByText(stopId)).toBeTruthy();
+    expect(within(pendingList()).getByText(secondStop)).toBeTruthy();
     await userEvent.setup().click(
-      within(screen.getByText(/ID overflow-0\./)).getByRole('button', {
+      within(pendingRow('overflow-0')).getByRole('button', {
         name: 'Удалить запись наблюдения',
       }),
     );
-    expect(screen.getByText(/ID overflow-0\./)).toBeTruthy();
+    expect(screen.getByText('overflow-0')).toBeTruthy();
     expect(JSON.parse(localStorage.getItem(key) ?? '[]')).toHaveLength(65);
     await userEvent.setup().click(
-      within(screen.getByText(/ID overflow-1\./)).getByRole('button', {
+      within(pendingRow('overflow-1')).getByRole('button', {
         name: 'Удалить запись наблюдения',
       }),
     );
-    expect(screen.queryByText(/ID overflow-0\./)).toBeNull();
-    expect(screen.queryByText(/ID overflow-1\./)).toBeNull();
+    expect(screen.queryByText('overflow-0')).toBeNull();
+    expect(screen.queryByText('overflow-1')).toBeNull();
     const saved: { id: string }[] = JSON.parse(localStorage.getItem(key) ?? '[]');
     expect(saved).toHaveLength(65);
     expect(saved.map((item) => item.id)).toEqual(expect.arrayContaining([stopId, secondStop]));

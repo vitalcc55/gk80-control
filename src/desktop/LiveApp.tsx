@@ -26,7 +26,7 @@ import type {
 } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
 import type { TestParameters as FormParameters, Screen } from '../model';
 import type { SessionBridge } from './bridge';
-import { type Pending, pendingKey, terminalStatus } from './command-attempt-state';
+import { type Pending, ordinaryNoticeKey, pendingKey, terminalStatus } from './command-attempt-state';
 import {
   type CommandCoordinator,
   commandObservation,
@@ -79,6 +79,49 @@ function commandStatusLabel(status: CommandStatus['status'] | undefined): string
     default:
       return 'исход неизвестен';
   }
+}
+
+function CommandDetails({ id, testId, originalJSON }: { id?: string | undefined; testId?: string | null | undefined; originalJSON?: string | null | undefined }) {
+  return (
+    <details>
+      <summary>Сведения о команде</summary>
+      {id && <p>Идентификатор команды: <span>{id}</span></p>}
+      {testId && <p>Идентификатор испытания: <span>{testId}</span></p>}
+      {originalJSON && <p>Исходный запрос: <span>{originalJSON}</span></p>}
+    </details>
+  );
+}
+
+function CommandNotice({ id, testId, originalJSON, text, prefix, suppressed, onDismiss, focusTarget }: {
+  id: string;
+  testId?: string | null | undefined;
+  originalJSON?: string | null | undefined;
+  text: string;
+  prefix: string;
+  suppressed: boolean;
+  onDismiss?: () => void;
+  focusTarget: RefObject<HTMLElement | null>;
+}) {
+  const [focused, setFocused] = useState(false);
+  const container = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => () => {
+    if (container.current?.contains(document.activeElement)) focusTarget.current?.focus();
+  }, [focusTarget]);
+  if (suppressed && !focused) return null;
+  return (
+    <div
+      role="status"
+      ref={container}
+      onFocus={() => setFocused(true)}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false);
+      }}
+    >
+      <p>{prefix}{text}</p>
+      <CommandDetails id={id} testId={testId} originalJSON={originalJSON} />
+      {onDismiss && <button type="button" onClick={onDismiss}>Скрыть сообщение</button>}
+    </div>
+  );
 }
 
 type LiveAppProps = {
@@ -288,6 +331,16 @@ function ActiveLiveApp({
   useMeasurementObservation(measurementContext, measurementKey, snapshot, fresh, gapVersion);
   const activeId = record?.testId;
   const stage = record?.stage;
+  const expectedStarts = new Set(
+    fresh && record?.stage === 'running' && snapshot?.pendingAction?.testId === record.testId
+      ? pending
+          .filter((item) => !item.retired && item.kind === 'start' && item.testId === record.testId && item.status?.status === 'accepted')
+          .map(ordinaryNoticeKey)
+      : [],
+  );
+  const visibleCommandMessages = [...commandMessages].filter(
+    ([key, notice]) => notice.category !== 'accepted' || !expectedStarts.has(key),
+  );
   const revision = snapshot?.revision;
   const commandMessageRegion = useRef<HTMLDivElement>(null);
   const stopMessageRegion = useRef<HTMLDivElement>(null);
@@ -433,33 +486,41 @@ function ActiveLiveApp({
             tabIndex={stopMessage ? 0 : -1}
           >
             {stopMessage && (
-              <p role="status">
-                {stopRequestedFor && stopRequestedFor !== activeId
-                  ? `Испытание ${stopRequestedFor}: `
-                  : ''}
-                {stopMessage}
-              </p>
+              <div role="status">
+                <p>{stopRequestedFor && stopRequestedFor !== activeId ? 'Другое испытание: ' : ''}{stopMessage}</p>
+                {stopRequestedFor && <CommandDetails testId={stopRequestedFor} />}
+              </div>
             )}
           </div>
           <div
             className="demo-command-message"
             ref={commandMessageRegion}
-            tabIndex={message || commandFailure || storageMessage || commandMessages.size ? 0 : -1}
+            tabIndex={message || commandFailure || storageMessage || visibleCommandMessages.length ? 0 : -1}
           >
             {storageMessage && <p role="alert">{storageMessage}</p>}
             {message && latestNotice === 'message' && <p role="status">{message}</p>}
             {commandFailure && (
-              <p role="status">
-                {commandFailure.text} (команда {commandFailure.id}
-                {commandFailure.testId && `; испытание ${commandFailure.testId}`})
-              </p>
+              <div role="status">
+                <p>{commandFailure.text}</p>
+                <CommandDetails id={commandFailure.id} testId={commandFailure.testId} />
+              </div>
             )}
             {message && latestNotice !== 'message' && <p role="status">{message}</p>}
-            {[...commandMessages].map(([key, { id, text }]) => (
-              <p role="status" key={key}>
-                {commandMessages.size > 1 ? `${key === id ? 'Команда' : 'Остановка'} ${id}: ` : ''}
-                {text}
-              </p>
+            {[...commandMessages].map(([key, { id, testId, originalJSON, text, category, source }]) => (
+              <CommandNotice
+                key={key}
+                id={id}
+                testId={testId}
+                originalJSON={originalJSON}
+                focusTarget={mainRef}
+                text={text}
+                prefix={visibleCommandMessages.length > 1 ? `${source === 'ordinary' ? 'Команда' : 'Остановка'}: ` : ''}
+                suppressed={category === 'accepted' && expectedStarts.has(key)}
+                {...(category === 'manual' || category === 'direct' ? { onDismiss: () => {
+                  mainRef.current?.focus();
+                  coordinator.dismissCommandMessage(key);
+                } } : {})}
+              />
             ))}
           </div>
         </div>
@@ -497,11 +558,12 @@ function ActiveLiveApp({
             </button>
           )}
           {legacy.items.map((item) => (
-            <p key={item.id}>
-              Прежняя команда: {legacyCommandLabels[item.kind]}, ID {item.id}
-              {item.testId && `; испытание ${item.testId}`}.
-              {item.kind === 'stop' && ' Безопасное давление не подтверждено.'}
-            </p>
+            <div key={item.id}>
+              <p>Прежняя команда: {legacyCommandLabels[item.kind]}.
+                {item.kind === 'stop' && ' Безопасное давление не подтверждено.'}
+              </p>
+              <CommandDetails id={item.id} testId={item.testId} />
+            </div>
           ))}
           {!legacy.unreadable && legacyBlocks && (
             <p>
@@ -543,9 +605,12 @@ function ActiveLiveApp({
             </p>
           )}
           {pending.map((item) => (
-            <p key={pendingKey(item)}>
-              Команда: {commandStatusLabel(item.status?.status)}. ID {item.id}.{' '}
-              {item.kind === 'stop' && `Остановка испытания ${item.testId ?? 'неизвестно'}. `}
+            <div key={pendingKey(item)}>
+              <p>
+              Команда: {commandStatusLabel(item.status?.status)}.{' '}
+              {item.kind === 'stop'
+                ? item.testId ? 'Остановка испытания. ' : 'Испытание для остановки неизвестно. '
+                : `${legacyCommandLabels[item.kind]}. `}
               {item.kind === 'stop' && 'Безопасное давление не подтверждено. '}
               {item.legacyUnverifiable &&
                 'Исходное содержимое команды не сохранилось; её исход нельзя установить по идентификатору. Подтверждение проверки не устанавливает исход. '}
@@ -584,7 +649,9 @@ function ActiveLiveApp({
                 item.kind === 'stop' &&
                 !terminalStatus(item.status) &&
                 ' После удаления автоматическая сверка этой попытки невозможна.'}
-            </p>
+              </p>
+              <CommandDetails id={item.id} testId={item.testId} />
+            </div>
           ))}
           {stopCount >= 2 && (
             <p role="alert">
