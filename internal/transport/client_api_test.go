@@ -292,6 +292,23 @@ func TestNativeClientRunsAndReopensDemo(t *testing.T) {
 	if err != nil || len(secondPage.Items) != 1 || secondPage.NextAfter != nil || firstPage.Items[0].TestId == secondPage.Items[0].TestId {
 		t.Fatalf("second page: %+v %v", secondPage, err)
 	}
+	secondRecord, err := client.Test(ctx, lease.LeaseId, *second.TestId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := "v2"
+	from, before := secondRecord.CreatedAt.Format(time.RFC3339Nano), secondRecord.CreatedAt.Add(time.Hour).Format(time.RFC3339Nano)
+	outcome := contract.TestRecordOutcome("pending")
+	filters := contract.ListTestsParams{Q: &query, CreatedFrom: &from, CreatedBefore: &before, Outcome: &outcome, Limit: &limit}
+	filtered, err := client.ListTests(ctx, lease.LeaseId, filters)
+	if err != nil || len(filtered.Items) != 1 || filtered.Items[0].TestId != *second.TestId || filtered.NextAfter != nil {
+		t.Fatalf("filtered native history: %+v %v", filtered, err)
+	}
+	outcome = "completed"
+	filtered, err = client.ListTests(ctx, lease.LeaseId, filters)
+	if err != nil || len(filtered.Items) != 0 {
+		t.Fatalf("combined outcome filter: %+v %v", filtered, err)
+	}
 	if firstPage.Items[0].TestId != id && firstPage.Items[0].TestId != *second.TestId || secondPage.Items[0].TestId != id && secondPage.Items[0].TestId != *second.TestId {
 		t.Fatal("unexpected history IDs")
 	}
@@ -358,6 +375,7 @@ func TestNativeClientBoundsAndValidatesPages(t *testing.T) {
 func TestNativeClientRejectsMismatchedCommandAndCursors(t *testing.T) {
 	testID, commandID, leaseID := uuid.New(), uuid.New(), uuid.New()
 	next := int64(100)
+	one := int64(1)
 	other := uuid.New()
 	record := contract.TestRecord{TestId: testID, StopCommandId: uuid.New(), Demo: true, OperatorId: "demo", Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1, MeasurementSeconds: 1, Direction: "pressure"}, Stage: "preparing", Outcome: "pending", DataQuality: "pending", SaveStatus: "saved", CreatedAt: time.Now().UTC()}
 	for _, tc := range []struct {
@@ -375,6 +393,14 @@ func TestNativeClientRejectsMismatchedCommandAndCursors(t *testing.T) {
 		}},
 		{"audit owner", contract.AuditPage{Items: []contract.AuditEvent{{Sequence: 1, TestId: other, OccurredAt: time.Now().UTC(), OperatorId: "demo", Action: "stop", Outcome: "completed"}}}, func(c *Client) error { _, err := c.Audit(context.Background(), leaseID, testID, 0, 1); return err }},
 		{"list cursor", contract.TestList{Items: []contract.TestRecord{record}, NextAfter: &other}, func(c *Client) error {
+			_, err := c.ListTests(context.Background(), leaseID, contract.ListTestsParams{})
+			return err
+		}},
+		{"list total", contract.TestList{Items: []contract.TestRecord{record}, Total: new(int64)}, func(c *Client) error {
+			_, err := c.ListTests(context.Background(), leaseID, contract.ListTestsParams{})
+			return err
+		}},
+		{"list total with next", contract.TestList{Items: []contract.TestRecord{record}, NextAfter: &testID, Total: &one}, func(c *Client) error {
 			_, err := c.ListTests(context.Background(), leaseID, contract.ListTestsParams{})
 			return err
 		}},

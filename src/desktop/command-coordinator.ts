@@ -95,7 +95,10 @@ export function createCommandCoordinator({
   let commandFailure: CommandFailure | null = null;
   let latestNotice: 'message' | 'commandFailure' = 'message';
   let storageMessage = '';
-  let commandMessages = new Map<string, { id: string; text: string }>();
+  let commandMessages = new Map<
+    string,
+    { id: string; text: string; startAcceptedFor?: string; attention?: true }
+  >();
   let stopMessage = '';
   let volatileStopTracking = false;
   let stopRequestedFor: string | null = null;
@@ -205,10 +208,29 @@ export function createCommandCoordinator({
     latestNotice = 'commandFailure';
     changed();
   }
-  function setCommandMessage(id: string, text: string, key = id) {
-    if ((commandMessages.get(key)?.text ?? '') === text) return;
+  function setCommandMessage(
+    id: string,
+    text: string,
+    key = id,
+    startAcceptedFor?: string,
+    attention = false,
+  ) {
+    const previous = commandMessages.get(key);
+    if (startAcceptedFor && previous?.attention) return;
+    if (
+      (previous?.text ?? '') === text &&
+      previous?.startAcceptedFor === startAcceptedFor &&
+      !!previous?.attention === attention
+    )
+      return;
     commandMessages = new Map(commandMessages);
-    if (text) commandMessages.set(key, { id, text });
+    if (text)
+      commandMessages.set(key, {
+        id,
+        text,
+        ...(startAcceptedFor ? { startAcceptedFor } : {}),
+        ...(attention ? { attention: true as const } : {}),
+      });
     else commandMessages.delete(key);
     changed();
   }
@@ -222,6 +244,7 @@ export function createCommandCoordinator({
   const savePending = (values: Pending[], allowVolatile = false, remove?: Pending): boolean => {
     if (!active) return false;
     let recovered = values;
+    const requestedRemovals = [...memory.removals];
     try {
       for (const item of memory.retained) {
         if (item.observationVersion) continue;
@@ -275,6 +298,15 @@ export function createCommandCoordinator({
       );
       pending = values;
       setPending(values);
+      for (const removed of [...requestedRemovals, ...memory.removals]) {
+        if (removed.kind === 'stop' && !values.some((item) => samePending(item, removed))) {
+          setCommandMessage(
+            removed.id,
+            '',
+            stopAttemptNoticeKey(removed.id, removed.testId, removed.originalJSON),
+          );
+        }
+      }
       memory.volatile = null;
       memory.baseline = values;
       memory.removals = [];
@@ -457,7 +489,12 @@ export function createCommandCoordinator({
       if (item.kind !== 'stop' && merged.status === 'completed')
         setCommandMessage(item.id, 'Действие подтверждено ядром; ожидаем состояние.');
       else if (item.kind !== 'stop' && merged.status === 'accepted')
-        setCommandMessage(item.id, 'Команда принята или её исход ещё не подтверждён.');
+        setCommandMessage(
+          item.id,
+          'Команда принята или её исход ещё не подтверждён.',
+          item.id,
+          item.kind === 'start' ? (item.testId ?? undefined) : undefined,
+        );
       if (merged.status === 'rejected' || merged.status === 'failed') {
         if (item.kind === 'stop') {
           const failure =
@@ -642,7 +679,6 @@ export function createCommandCoordinator({
     setCommandFailure((previous) =>
       previous?.kind === kind && previous.testId === testId ? null : previous,
     );
-    setCommandMessage(item.id, 'Команда отправлена. Ожидаем подтверждения ядра.');
     try {
       const dispatch = await attempt.send();
       if (
@@ -663,6 +699,9 @@ export function createCommandCoordinator({
           setCommandMessage(
             item.id,
             'Ранее найденное состояние команды требует проверки; новый запрос не отправлен.',
+            item.id,
+            undefined,
+            true,
           );
           return;
         }
@@ -718,6 +757,10 @@ export function createCommandCoordinator({
           merged.status === 'completed'
             ? 'Действие подтверждено ядром; ожидаем состояние.'
             : 'Команда принята или её исход ещё не подтверждён.',
+          item.id,
+          merged.status === 'accepted' && item.kind === 'start'
+            ? (item.testId ?? undefined)
+            : undefined,
         );
     } catch (error) {
       const current = pending.find((pendingItem) => samePending(pendingItem, item));

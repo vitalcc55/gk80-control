@@ -24,6 +24,54 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test('показывает отдельные измерения и не соединяет их через разрывы', async ({ page }) => {
+  await page.goto('/tests/e2e/chart.html');
+  await page.getByRole('button', { name: 'Изолированные', exact: true }).click();
+  const canvas = page.locator('.chart-container canvas').first();
+  await expect
+    .poll(async () =>
+      canvas.evaluate((element) => {
+        if (!(element instanceof HTMLCanvasElement)) throw new Error('Not a canvas');
+        const plot = element.closest('.uplot')?.querySelector('.u-over')?.getBoundingClientRect();
+        if (!plot) throw new Error('Missing plot');
+        const bounds = element.getBoundingClientRect();
+        const ratio = element.width / bounds.width;
+        const image = element.getContext('2d')?.getImageData(0, 0, element.width, element.height);
+        if (!image) throw new Error('Missing image');
+        const count = (fraction: number, color: readonly number[]) => {
+          let n = 0;
+          const center = (plot.left - bounds.left + plot.width * fraction) * ratio;
+          for (
+            let y = Math.ceil((plot.top - bounds.top) * ratio) + 2;
+            y < (plot.bottom - bounds.top) * ratio - 2;
+            y++
+          ) {
+            for (let x = Math.floor(center - 5 * ratio); x <= center + 5 * ratio; x++) {
+              const offset = (y * element.width + x) * 4;
+              if (
+                color.every((value, i) => Math.abs((image.data[offset + i] ?? 0) - value) < 8) &&
+                (image.data[offset + 3] ?? 0) > 200
+              )
+                n++;
+            }
+          }
+          return n;
+        };
+        return [1 / 6, 1 / 2, 5 / 6, 1 / 3, 2 / 3].map((x) => [
+          count(x, [39, 109, 104]) > 0,
+          count(x, [152, 90, 38]) > 0,
+        ]);
+      }),
+    )
+    .toEqual([
+      [true, true],
+      [true, true],
+      [true, true],
+      [false, false],
+      [false, false],
+    ]);
+});
+
 test('заданный интервал переживает double-click, а курсор обновляется при разрыве без смены шкал', async ({
   page,
 }) => {
@@ -43,6 +91,10 @@ test('заданный интервал переживает double-click, а к
   await page.evaluate(() => new Promise(requestAnimationFrame));
   expect(await xLabels()).toContain('60');
 
+  await page.getByText('Таблица показаний', { exact: true }).click();
+  await expect(
+    page.getByRole('table', { name: 'Подготовленные показания по времени' }),
+  ).toBeVisible();
   await page.getByRole('button', { name: 'Разрыв', exact: true }).focus();
   const box = await overlay.boundingBox();
   if (!box) throw new Error('Plot overlay is missing');

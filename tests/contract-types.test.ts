@@ -25,6 +25,21 @@ test('generated types retain unavailable readings and typed core events', () => 
 
 const guards: Readonly<Record<string, (value: unknown) => boolean>> = responseGuards;
 
+test('history rejects a total smaller than its returned page', () => {
+  const example = examples.find((value) => value.name === 'nonempty history');
+  if (!example) throw new Error('Missing history example');
+  const page = parseBrowserJSON(example.json);
+  if (typeof page !== 'object' || page === null) throw new Error('Invalid history example');
+  expect(responseGuards.TestList({ ...page, total: 0 })).toBe(false);
+  expect(
+    responseGuards.TestList({
+      ...page,
+      total: 1,
+      nextAfter: '10000000-0000-4000-8000-000000000001',
+    }),
+  ).toBe(false);
+});
+
 for (const example of examples) {
   test(`${example.schema}: ${example.name}`, () => {
     const guard = guards[example.schema];

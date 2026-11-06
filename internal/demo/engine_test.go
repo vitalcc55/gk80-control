@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -42,6 +44,90 @@ func waitFor(t *testing.T, engine *Engine, predicate func(State) bool) State {
 		case <-timer.C:
 			t.Fatalf("state did not arrive: %+v", state)
 		}
+	}
+}
+
+func TestMeasurementTimingUsesAcceptedSamplesAndEndsWithMeasurement(t *testing.T) {
+	for _, stop := range []bool{false, true} {
+		t.Run(fmt.Sprint(stop), func(t *testing.T) {
+			ctx := context.Background()
+			store, err := storage.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = store.Close() }()
+			engine := newTestEngine(t, store, NewSimulator(), uuid.New())
+			duration := 1.1
+			var stopped State
+			if stop {
+				duration = 30
+			}
+			created, err := engine.Create(ctx, command(duration))
+			if err != nil || created.TestId == nil {
+				t.Fatalf("create: %+v %v", created, err)
+			}
+			id := *created.TestId
+			if engine.State().MeasurementTiming != nil || engine.State().MeasurementBatch != nil {
+				t.Fatal("preparation has no measurement clock")
+			}
+			if _, err := engine.Start(ctx, id, contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: 1, ValveClosed: true, ConnectionConfirmed: true}); err != nil {
+				t.Fatal(err)
+			}
+			pending := engine.State()
+			if pending.MeasurementTiming != nil || pending.PendingAction == nil {
+				t.Fatal("operator wait must have unknown timing")
+			}
+			if _, err := engine.Confirm(ctx, id, pending.PendingAction.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: 2}); err != nil {
+				t.Fatal(err)
+			}
+			observed := waitFor(t, engine, func(s State) bool {
+				return s.MeasurementTiming != nil && (!stop || s.MeasurementTiming.ElapsedSeconds > 0)
+			})
+			clock := *observed.MeasurementTiming
+			if observed.MeasurementBatch == nil || *observed.MeasurementBatch < 1 || len(observed.Measurements) == 0 {
+				t.Fatalf("accepted package has no batch and measurements: %+v", observed)
+			}
+			batch := *observed.MeasurementBatch
+			*observed.MeasurementBatch = -1
+			if next := engine.State(); next.MeasurementBatch == nil || *next.MeasurementBatch < batch {
+				t.Fatal("mutable or regressing batch escaped Engine")
+			}
+			if math.Abs(clock.RemainingSeconds-max(0, duration-clock.ElapsedSeconds)) > 1e-9 {
+				t.Fatalf("unrelated clock: %+v", clock)
+			}
+			observed.MeasurementTiming.ElapsedSeconds = 999
+			if next := engine.State(); next.MeasurementTiming != nil && next.MeasurementTiming.ElapsedSeconds == 999 {
+				t.Fatal("mutable timing escaped Engine")
+			}
+			if stop {
+				next := waitFor(t, engine, func(s State) bool {
+					return s.MeasurementBatch != nil && *s.MeasurementBatch > batch
+				})
+				if len(next.Measurements) != len(observed.Measurements) ||
+					next.Measurements[0].Sequence-observed.Measurements[0].Sequence != (*next.MeasurementBatch-batch)*int64(len(observed.Measurements)) {
+					t.Fatalf("batch did not advance with accepted measurements: before=%+v after=%+v", observed, next)
+				}
+				if _, err := engine.Stop(ctx, id, observed.Record.StopCommandId); err != nil {
+					t.Fatal(err)
+				}
+				stopped = engine.State()
+				if stopped.MeasurementTiming != nil {
+					t.Fatal("stop must not promise measurement remaining time")
+				}
+			}
+			finished := waitFor(t, engine, func(s State) bool {
+				return s.Record != nil && s.Record.Stage == "finished" && s.Record.SaveStatus == "saved"
+			})
+			if finished.MeasurementTiming != nil {
+				t.Fatal("finished test retained an active clock")
+			}
+			if finished.MeasurementBatch == nil || *finished.MeasurementBatch < batch || len(finished.Measurements) == 0 {
+				t.Fatalf("finished state lost last accepted package: %+v", finished)
+			}
+			if stop && (stopped.MeasurementBatch == nil || *stopped.MeasurementBatch != *finished.MeasurementBatch || !reflect.DeepEqual(stopped.Measurements, finished.Measurements)) {
+				t.Fatalf("finalization changed the accepted package: stopped=%+v finished=%+v", stopped, finished)
+			}
+		})
 	}
 }
 

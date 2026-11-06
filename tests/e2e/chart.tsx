@@ -36,6 +36,20 @@ const examples: readonly { label: string; props: ChartProps }[] = [
   { label: 'Авто', props: { points: normal.points, target: normal.target } },
   { label: 'Пустой', props: { points: [], target: normal.target } },
   {
+    label: 'Изолированные',
+    props: {
+      target: 10000,
+      rangeSeconds: 60,
+      points: [
+        { seconds: 10, pressure: 9700, differential: 90 },
+        { seconds: 20, pressure: null, differential: null },
+        { seconds: 30, pressure: 9900, differential: 70 },
+        { seconds: 40, pressure: null, differential: null },
+        { seconds: 50, pressure: 10100, differential: 80 },
+      ],
+    },
+  },
+  {
     label: 'Разрыв',
     props: {
       ...normal,

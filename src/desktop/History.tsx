@@ -1,12 +1,56 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { ResultScreen } from '../components/ResultScreen';
+import {
+  emptyHistoryFilters,
+  type HistoryFilters,
+  normalizeHistoryQuery,
+  TestsScreen,
+} from '../components/TestsScreen';
 import type {
-  AuditPage,
-  MeasurementPage,
+  ListTestsParams,
   TestList,
   TestRecord,
 } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
+import { TestRecordOutcome } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
 import type { DemoService } from './demo-service';
 import { outcomeLabel, qualityLabel, saveLabel } from './display';
+import { parametersForDisplay, resultReadVersion } from './presentation';
+import { RecordDetails } from './RecordDetails';
+
+type RecordReadFailure = { text: string; testId: string };
+
+function queryParameters(filters: HistoryFilters): ListTestsParams {
+  const params: ListTestsParams = {};
+  const query = normalizeHistoryQuery(filters.query);
+  if (query) params.q = query;
+  // Calendar boundaries are local midnights; advancing the date also handles DST.
+  if (filters.from) params.createdFrom = new Date(`${filters.from}T00:00:00`).toISOString();
+  if (filters.through) {
+    const end = new Date(`${filters.through}T00:00:00`);
+    end.setDate(end.getDate() + 1);
+    params.createdBefore = end.toISOString();
+  }
+  if (
+    params.createdFrom &&
+    params.createdBefore &&
+    Date.parse(params.createdFrom) >= Date.parse(params.createdBefore)
+  )
+    throw new Error('Начало диапазона должно быть не позже конца.');
+  switch (filters.outcome) {
+    case 'completed':
+      params.outcome = TestRecordOutcome.TestRecordOutcomeCompleted;
+      break;
+    case 'interrupted':
+      params.outcome = TestRecordOutcome.TestRecordOutcomeInterrupted;
+      break;
+    case 'pending':
+      params.outcome = TestRecordOutcome.TestRecordOutcomePending;
+      break;
+    case 'unknown':
+      params.outcome = TestRecordOutcome.TestRecordOutcomeUnknown;
+  }
+  return params;
+}
 
 export function History({
   onNew,
@@ -16,6 +60,12 @@ export function History({
   available,
   draftAvailable,
   service,
+  visible = true,
+  onViewChange,
+  resetVersion = 0,
+  activeTestId,
+  completedRecord = null,
+  onCurrent,
 }: {
   onNew: () => void;
   onCopy: (parameters: TestRecord['parameters']) => void;
@@ -24,117 +74,378 @@ export function History({
   available: boolean;
   draftAvailable: boolean;
   service: DemoService;
+  visible?: boolean;
+  onViewChange?: (result: boolean) => void;
+  resetVersion?: number;
+  activeTestId?: string | undefined;
+  completedRecord?: TestRecord | null;
+  onCurrent?: () => void;
 }) {
   const [list, setList] = useState<TestList | null>(null);
   const [selected, setSelected] = useState<TestRecord | null>(null);
-  const [measurements, setMeasurements] = useState<MeasurementPage | null>(null);
-  const [audit, setAudit] = useState<AuditPage | null>(null);
-  const [error, setError] = useState('');
+  const [filters, setFilters] = useState(emptyHistoryFilters);
+  const [pageSize, setPageSize] = useState(20);
+  const [pageNumber, setPageNumber] = useState(1);
+  const requestedPage = useRef(1);
+  const [totalChanged, setTotalChanged] = useState(false);
+  const firstPageTotal = useRef<number | null>(null);
+  const currentPageSize = useRef(20);
+  const [validationError, setValidationError] = useState('');
+  const [listError, setListError] = useState('');
+  const [recordFailure, setRecordFailure] = useState<RecordReadFailure | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [opening, setOpening] = useState<string | null>(null);
   const [discarding, setDiscarding] = useState(false);
-  const selectedGeneration = useRef(0);
   const listGeneration = useRef(0);
-  const measurementsGeneration = useRef(0);
-  const auditGeneration = useRef(0);
-  const listReady = useRef(false);
+  const selectedGeneration = useRef(0);
+  // Null is an explicitly rejected search, never a fallback to the previous query.
+  const applied = useRef<ListTestsParams | null>({});
+  const cursor = useRef<string | null>(null);
+  const needsRead = useRef(true);
+  const selectedRefresh = useRef('');
+  const completedKey = completedRecord ? resultReadVersion(completedRecord) : '';
+  const readTriggers = useRef({
+    visible: false,
+    available,
+    resetVersion,
+    completedKey: '',
+    activeTestId,
+  });
+  const completedId = completedRecord?.testId;
+  const selectedId = selected?.testId;
+  const selectedKey = selected ? resultReadVersion(selected) : '';
   const currentService = useRef(service);
+  const currentActive = useRef({ id: activeTestId, onCurrent });
   useLayoutEffect(() => {
     currentService.current = service;
-  }, [service]);
-
+    currentActive.current = { id: activeTestId, onCurrent };
+  }, [service, activeTestId, onCurrent]);
+  const cancelSelected = useCallback((clear: boolean) => {
+    selectedGeneration.current++;
+    selectedRefresh.current = '';
+    setOpening(null);
+    setRecordFailure(null);
+    if (clear) setSelected(null);
+  }, []);
+  useLayoutEffect(() => {
+    if (
+      visible &&
+      readTriggers.current.resetVersion === resetVersion &&
+      activeTestId &&
+      (selectedId === activeTestId || opening === activeTestId) &&
+      currentActive.current.onCurrent
+    ) {
+      cancelSelected(true);
+      currentActive.current.onCurrent();
+    }
+  }, [visible, selectedId, opening, activeTestId, resetVersion, cancelSelected]);
   useEffect(
     () => () => {
-      selectedGeneration.current += 1;
-      measurementsGeneration.current += 1;
-      auditGeneration.current += 1;
+      listGeneration.current++;
+      selectedGeneration.current++;
     },
     [],
   );
-
-  const load = useCallback(async (after?: string) => {
-    const generation = ++listGeneration.current;
-    try {
-      const page = await currentService.current.listTests({ limit: 100, after: after ?? null });
-      if (generation !== listGeneration.current) return;
-      listReady.current = true;
-      setList(page);
-      setError('');
-    } catch {
-      if (generation === listGeneration.current)
-        setError('Не удалось прочитать список испытаний из ядра.');
+  const load = useCallback(
+    async (after: string | null = null, pageNumber = requestedPage.current) => {
+      const params = applied.current;
+      if (params === null) return;
+      needsRead.current = false;
+      const generation = ++listGeneration.current;
+      cursor.current = after;
+      requestedPage.current = pageNumber;
+      setList(null);
+      setLoading(true);
+      setListError('');
+      try {
+        const page = await currentService.current.listTests({
+          ...params,
+          limit: currentPageSize.current,
+          after,
+        });
+        if (generation === listGeneration.current) {
+          if (requestedPage.current === 1) {
+            firstPageTotal.current = page.total;
+            setTotalChanged(false);
+          } else if (page.total === null || typeof page.total === 'number') {
+            setTotalChanged(
+              (previous) =>
+                previous ||
+                page.total === null ||
+                typeof firstPageTotal.current !== 'number' ||
+                page.total !== firstPageTotal.current,
+            );
+          }
+          setList(page);
+          setPageNumber(requestedPage.current);
+        }
+      } catch {
+        if (generation === listGeneration.current)
+          setListError('Не удалось прочитать список испытаний из ядра.');
+      } finally {
+        if (generation === listGeneration.current) setLoading(false);
+      }
+    },
+    [],
+  );
+  useLayoutEffect(() => {
+    const previous = readTriggers.current;
+    const reset = previous.resetVersion !== resetVersion;
+    if (previous.available && !available) {
+      listGeneration.current++;
+      cancelSelected(false);
+      if (opening && opening !== activeTestId)
+        setRecordFailure({
+          testId: opening,
+          text: 'Связь потеряна. Повторите открытие записи после восстановления.',
+        });
+      if (loading) needsRead.current = true;
+      setLoading(false);
     }
-  }, []);
+    if (previous.activeTestId !== activeTestId) {
+      listGeneration.current++;
+      setList(null);
+      setLoading(false);
+    }
+    if (
+      (visible && !previous.visible) ||
+      reset ||
+      previous.completedKey !== completedKey ||
+      previous.activeTestId !== activeTestId
+    )
+      needsRead.current = true;
+    readTriggers.current = { visible, available, resetVersion, completedKey, activeTestId };
+    if ((!visible && previous.visible) || reset) {
+      cancelSelected(reset);
+    }
+    if (visible && available && needsRead.current) void load(cursor.current);
+  }, [
+    visible,
+    available,
+    resetVersion,
+    completedKey,
+    activeTestId,
+    load,
+    cancelSelected,
+    loading,
+    opening,
+  ]);
   useEffect(() => {
-    if (available && !listReady.current) void load();
-    return () => {
-      listGeneration.current += 1;
-    };
-  }, [load, available]);
-  async function open(testId: string) {
+    if (
+      !visible ||
+      !available ||
+      !selectedId ||
+      selectedId !== completedId ||
+      selectedKey === completedKey
+    )
+      return;
+    const key = `${selectedId}:${completedKey}`;
+    if (selectedRefresh.current === key) return;
+    selectedRefresh.current = key;
     const generation = ++selectedGeneration.current;
-    measurementsGeneration.current += 1;
-    auditGeneration.current += 1;
-    setSelected(null);
-    setMeasurements(null);
-    setAudit(null);
-    setError('');
+    setRecordFailure(null);
+    void currentService.current.test(selectedId).then(
+      (value) => {
+        if (generation === selectedGeneration.current) setSelected(value);
+      },
+      () => {
+        if (generation === selectedGeneration.current)
+          setRecordFailure({
+            testId: selectedId,
+            text: 'Не удалось обновить запись после сохранения.',
+          });
+      },
+    );
+  }, [visible, available, selectedId, selectedKey, completedId, completedKey]);
+  async function open(testId: string) {
+    if (!available) {
+      setRecordFailure({
+        testId,
+        text: 'Связь не подтверждена. Повторите открытие записи после восстановления.',
+      });
+      return;
+    }
+    const generation = ++selectedGeneration.current;
+    setRecordFailure(null);
+    setOpening(testId);
     try {
       const record = await currentService.current.test(testId);
-      if (generation !== selectedGeneration.current) return;
-      const [measurementPage, auditPage] = await Promise.all([
-        currentService.current.measurements(testId, 0, 100),
-        currentService.current.audit(testId, 0, 100),
-      ]);
-      if (generation !== selectedGeneration.current) return;
-      setSelected(record);
-      setMeasurements(measurementPage);
-      setAudit(auditPage);
+      if (generation === selectedGeneration.current) {
+        if (currentActive.current.id === testId && currentActive.current.onCurrent) {
+          currentActive.current.onCurrent();
+        } else {
+          setSelected(record);
+          onViewChange?.(true);
+        }
+      }
     } catch {
-      if (generation === selectedGeneration.current)
-        setError('Не удалось открыть запись, измерения и аудит из ядра.');
+      if (generation === selectedGeneration.current) {
+        if (currentActive.current.id === testId && currentActive.current.onCurrent)
+          currentActive.current.onCurrent();
+        else setRecordFailure({ testId, text: 'Не удалось открыть запись из ядра.' });
+      }
+    } finally {
+      if (generation === selectedGeneration.current) setOpening(null);
     }
   }
-  async function moreMeasurements() {
-    if (!selected || !measurements?.nextAfter) return;
-    const generation = selectedGeneration.current;
-    const request = ++measurementsGeneration.current;
+  function search(value: HistoryFilters) {
+    listGeneration.current++;
+    cancelSelected(false);
+    cursor.current = null;
+    requestedPage.current = 1;
+    setOpening(null);
+    setLoading(false);
+    setList(null);
+    applied.current = null;
+    needsRead.current = true;
+    setValidationError('');
+    setListError('');
     try {
-      const page = await currentService.current.measurements(
-        selected.testId,
-        measurements.nextAfter,
-        100,
-      );
-      if (generation === selectedGeneration.current && request === measurementsGeneration.current)
-        setMeasurements(page);
-    } catch {
-      if (generation === selectedGeneration.current && request === measurementsGeneration.current)
-        setError('Не удалось прочитать следующую страницу измерений.');
+      applied.current = queryParameters(value);
+      if (available) void load();
+    } catch (reason) {
+      setLoading(false);
+      setValidationError(reason instanceof Error ? reason.message : 'Проверьте даты.');
     }
   }
-  async function moreAudit() {
-    if (!selected || !audit?.nextAfter) return;
-    const generation = selectedGeneration.current;
-    const request = ++auditGeneration.current;
-    try {
-      const page = await currentService.current.audit(selected.testId, audit.nextAfter, 100);
-      if (generation === selectedGeneration.current && request === auditGeneration.current)
-        setAudit(page);
-    } catch {
-      if (generation === selectedGeneration.current && request === auditGeneration.current)
-        setError('Не удалось прочитать следующую страницу аудита.');
-    }
-  }
-  return (
-    <section className="workpage">
-      <h1>Испытания</h1>
-      <button
-        className="work-button work-button-primary"
-        type="button"
-        disabled={disabled}
-        onClick={onNew}
+  const retry = !available
+    ? undefined
+    : recordFailure
+      ? () => {
+          if (available) void open(recordFailure.testId);
+        }
+      : listError
+        ? () => {
+            if (available) void load(cursor.current);
+          }
+        : undefined;
+  const retryLabel = recordFailure ? 'Повторить открытие записи' : 'Повторить чтение списка';
+  if (selected)
+    return (
+      <ResultScreen
+        parameters={parametersForDisplay(selected)}
+        record={selected}
+        hidden={!visible}
+        saveError={selected.saveStatus === 'failed'}
+        interrupted={selected.outcome === 'interrupted'}
+        active={disabled || draftAvailable}
+        draftAvailable={false}
+        onList={() => {
+          cancelSelected(true);
+          onViewChange?.(false);
+        }}
+        onNew={() => onCopy(selected.parameters)}
       >
-        {draftAvailable ? 'Продолжить подготовку' : 'Новое испытание'}
-      </button>
-      {error && <p role="alert">{error}</p>}
+        {completedRecord &&
+          selected.testId === completedRecord.testId &&
+          selectedKey !== completedKey && (
+            <p role="status">
+              В истории сохранена другая версия. По последнему снимку:{' '}
+              {outcomeLabel(completedRecord.outcome)}; данные:{' '}
+              {qualityLabel(completedRecord.dataQuality)}; сохранение:{' '}
+              {saveLabel(completedRecord.saveStatus)}.
+            </p>
+          )}
+        {visible && recordFailure && (
+          <div role="alert">
+            <p>{recordFailure.text}</p>
+            {retry && (
+              <button type="button" onClick={retry}>
+                {retryLabel}
+              </button>
+            )}
+          </div>
+        )}
+        {draftAvailable && <p>Продолжите текущий черновик перед созданием другого.</p>}
+        <RecordDetails
+          key={selected.testId}
+          record={selected}
+          service={service}
+          available={available}
+          visible={visible}
+        />
+      </ResultScreen>
+    );
+  if (!visible) return null;
+  return (
+    <TestsScreen
+      rows={(list?.items ?? []).map((item) => ({
+        id: item.testId,
+        valve: item.parameters.valve,
+        createdAt: item.createdAt,
+        direction: 'Нагнетание',
+        pressure: item.parameters.pmaxPa,
+        actuator: false,
+        outcome: outcomeLabel(item.outcome),
+        saving:
+          completedRecord &&
+          item.testId === completedRecord.testId &&
+          resultReadVersion(item) !== completedKey
+            ? `${saveLabel(item.saveStatus)}. По последнему снимку: ${outcomeLabel(completedRecord.outcome)}; данные: ${qualityLabel(completedRecord.dataQuality)}; сохранение: ${saveLabel(completedRecord.saveStatus)}.`
+            : saveLabel(item.saveStatus),
+        active: item.testId === activeTestId,
+      }))}
+      filters={filters}
+      pageSize={pageSize}
+      pageNumber={pageNumber}
+      total={list?.total}
+      pageChanged={
+        !!list &&
+        (totalChanged ||
+          (list.total !== null &&
+            list.total !== undefined &&
+            ((list.items?.length ?? 0) !==
+              Math.min(pageSize, Math.max(0, list.total - (pageNumber - 1) * pageSize)) ||
+              (!list.nextAfter && pageNumber < Math.ceil(list.total / pageSize)))))
+      }
+      onRefreshCount={available ? () => void load(cursor.current) : undefined}
+      onPageSize={(value) => {
+        currentPageSize.current = value;
+        setPageSize(value);
+        listGeneration.current++;
+        cancelSelected(false);
+        cursor.current = null;
+        requestedPage.current = 1;
+        needsRead.current = true;
+        setList(null);
+        setListError('');
+        setLoading(false);
+        if (available && applied.current !== null) void load();
+      }}
+      filtered={!!(applied.current && Object.keys(applied.current).length)}
+      onFilters={setFilters}
+      onSearch={() => search(filters)}
+      onReset={() => {
+        setFilters(emptyHistoryFilters);
+        search(emptyHistoryFilters);
+      }}
+      onOpen={(id) => {
+        if (id === activeTestId && onCurrent) onCurrent();
+        else void open(id);
+      }}
+      onNew={onNew}
+      disabled={disabled}
+      draftAvailable={draftAvailable}
+      loading={loading || !!opening}
+      error={
+        validationError ||
+        recordFailure?.text ||
+        listError ||
+        (!available && !list ? 'Ожидание связи для чтения истории…' : '')
+      }
+      onRetry={retry}
+      retryLabel={retryLabel}
+      onFirst={() => {
+        if (available) void load(null, 1);
+      }}
+      onNext={
+        list?.nextAfter
+          ? () => {
+              if (list.nextAfter && available) void load(list.nextAfter, pageNumber + 1);
+            }
+          : undefined
+      }
+    >
       {draftAvailable &&
         (discarding ? (
           <p>
@@ -149,142 +460,14 @@ export function History({
               Удалить черновик
             </button>{' '}
             <button type="button" onClick={() => setDiscarding(false)}>
-              Сохранить черновик
+              Оставить черновик
             </button>
           </p>
         ) : (
-          <button type="button" onClick={() => setDiscarding(true)}>
+          <button className="table-action" type="button" onClick={() => setDiscarding(true)}>
             Отказаться от черновика
           </button>
         ))}
-      {error && (
-        <button
-          type="button"
-          onClick={() => {
-            void load();
-          }}
-        >
-          Повторить чтение списка
-        </button>
-      )}
-      {!list && !error && (
-        <p>{available ? 'Чтение истории…' : 'Ожидание связи для чтения истории…'}</p>
-      )}
-      {list && (
-        <>
-          <h2>История</h2>
-          {list.items?.length ? (
-            <ul>
-              {list.items.map((item) => (
-                <li key={item.testId}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      void open(item.testId);
-                    }}
-                  >
-                    {item.parameters.valve} · {item.createdAt} · {outcomeLabel(item.outcome)}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p>Записей нет.</p>
-          )}
-          {list.nextAfter && (
-            <button
-              type="button"
-              onClick={() => {
-                if (list.nextAfter) void load(list.nextAfter);
-              }}
-            >
-              Следующая страница
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={() => {
-              void load();
-            }}
-          >
-            К началу списка
-          </button>
-        </>
-      )}
-      {selected && (
-        <section>
-          <h2>Сохранённая запись</h2>
-          <p>
-            {selected.parameters.valve} · {selected.testId}
-          </p>
-          <button
-            type="button"
-            disabled={disabled || draftAvailable}
-            onClick={() => onCopy(selected.parameters)}
-          >
-            Новое по этим параметрам
-          </button>
-          {draftAvailable && <p>Продолжите текущий черновик перед созданием другого.</p>}
-          <p>
-            Исход: {outcomeLabel(selected.outcome)} · Качество данных:{' '}
-            {qualityLabel(selected.dataQuality)} · Сохранение: {saveLabel(selected.saveStatus)}
-          </p>
-          <p>
-            Площадь: {selected.parameters.areaM2} м² · Pmax: {selected.parameters.pmaxPa} Па ·
-            Интервал: {selected.parameters.measurementSeconds} с
-          </p>
-          <h3>Измерения</h3>
-          <ul>
-            {measurements?.items?.map((item) => (
-              <li key={item.sequence}>
-                {item.channel}: {item.value ?? 'неизвестно'} {item.unit} · {item.quality} ·{' '}
-                {item.measuredAt ?? 'время неизвестно'} · {item.source}
-              </li>
-            ))}
-          </ul>
-          {measurements?.nextAfter && (
-            <button
-              type="button"
-              onClick={() => {
-                void moreMeasurements();
-              }}
-            >
-              Следующая страница измерений
-            </button>
-          )}
-          <h3>Аудит</h3>
-          <ul>
-            {audit?.items?.map((item) => (
-              <li key={item.sequence}>
-                {item.occurredAt} · {item.action} · {item.outcome} · {item.operatorId}
-                {item.commandId ? ` · команда ${item.commandId}` : ''}
-                {item.actionId ? ` · действие ${item.actionId}` : ''}
-                {item.reason
-                  ? ` · причина ${item.reason === 'canceled_by_stop' ? 'запуск отменён при остановке до подтверждения оператора' : item.reason}`
-                  : ''}
-              </li>
-            ))}
-          </ul>
-          {audit?.nextAfter && (
-            <button
-              type="button"
-              onClick={() => {
-                void moreAudit();
-              }}
-            >
-              Следующая страница аудита
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={() => {
-              void open(selected.testId);
-            }}
-          >
-            К началу измерений и аудита
-          </button>
-        </section>
-      )}
-    </section>
+    </TestsScreen>
   );
 }

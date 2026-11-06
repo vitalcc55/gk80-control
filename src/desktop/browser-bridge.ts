@@ -212,8 +212,14 @@ export function createBrowserBridge(
           ...(actionId ? { 'X-GK80-Action': actionId } : {}),
         },
       }),
-    listTests: (params) =>
-      request(`/api/tests${page(params.after, params.limit)}`, responses.TestList),
+    listTests: (params) => {
+      const query = new URLSearchParams();
+      for (const [name, value] of Object.entries(params)) {
+        if (value !== null && value !== undefined && (name !== 'q' || value !== ''))
+          query.set(name, String(value));
+      }
+      return request(`/api/tests?${query}`, responses.TestList);
+    },
     test: (testId) => request(`/api/tests/${segment(testId)}`, responses.TestRecord),
     measurements: (testId, after, limit) =>
       request(

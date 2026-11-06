@@ -1,6 +1,6 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { type ComponentProps, StrictMode } from 'react';
+import { type ComponentProps, Profiler, StrictMode } from 'react';
 import { beforeEach, expect, it, vi } from 'vitest';
 import type { DesktopBridge, SessionBridge } from '../src/desktop/bridge';
 import { createBrowserBridge } from '../src/desktop/browser-bridge';
@@ -8,6 +8,8 @@ import { DesktopApp as RealDesktopApp } from '../src/desktop/DesktopApp';
 import { CommandConflictError } from '../src/desktop/demo-service';
 import { History } from '../src/desktop/History';
 import { LiveApp as RealLiveApp } from '../src/desktop/LiveApp';
+import { MeasurementSeriesContext } from '../src/desktop/measurement-series';
+import { sessionObservation } from '../src/desktop/session-observation';
 import { desktopDemoService } from '../src/desktop/wails-bridge';
 import {
   type CommandDispatch,
@@ -34,6 +36,7 @@ import {
   TestRecordStage,
 } from '../src/generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
 import type { CreateCommandInput } from '../src/generated/wails/github.com/vitalcc55/gk80-control/internal/desktop/models';
+import type { GraphPoint } from '../src/model';
 
 const api = vi.hoisted(() => ({
   create: vi.fn(),
@@ -67,7 +70,9 @@ function LiveApp(
   );
 }
 vi.mock('../src/components/MeasurementChart', () => ({
-  MeasurementChart: () => <div role="img" aria-label="График показаний симулятора" />,
+  MeasurementChart: ({ points }: { points: readonly GraphPoint[] }) => (
+    <div role="img" aria-label="График показаний симулятора" data-points={JSON.stringify(points)} />
+  ),
 }));
 vi.mock(
   '../src/generated/wails/github.com/vitalcc55/gk80-control/internal/desktop/service',
@@ -104,6 +109,20 @@ const pendingKey = `gk80.demo.pending-command.v1:${database}`;
 const testId = '33333333-3333-4333-8333-333333333333';
 const actionId = '44444444-4444-4444-8444-444444444444';
 const stopId = '55555555-5555-4555-8555-555555555555';
+
+function pendingList(): HTMLElement {
+  const list = screen
+    .getByRole('region', { name: 'Сообщения команд' })
+    .querySelector('.demo-message-list');
+  if (!(list instanceof HTMLElement)) throw new Error('Pending command list missing');
+  return list;
+}
+
+function pendingRow(id: string): HTMLElement {
+  const row = within(pendingList()).getByText(id).closest('details')?.parentElement;
+  if (!(row instanceof HTMLElement)) throw new Error('Pending command observation missing');
+  return row;
+}
 function savedAttempt(
   id: string,
   kind: 'create' | 'start' | 'confirm' | 'stop',
@@ -160,6 +179,246 @@ const record = {
   },
 };
 
+it('isolates a series-only update from hidden screens and keeps the completed result reachable', async () => {
+  const measurementContext = new MeasurementSeriesContext();
+  let snapshot: Snapshot = {
+    apiVersion: 'v1',
+    backendRunId: backend,
+    revision: 1,
+    lastEventSequence: 1,
+    measurementBatch: 1,
+    activeTest: { ...record, stage: TestRecordStage.Running },
+    pendingAction: null,
+    measurementTiming: null,
+    measurements: [
+      {
+        channel: MeasurementChannel.Dd1,
+        measuredAt: '2026-10-30T00:00:01Z',
+        observedAt: '2026-10-30T00:00:01Z',
+        quality: MeasurementQuality.MeasurementQualityValid,
+        quantity: MeasurementQuantity.MeasurementQuantityPressure,
+        sequence: 1,
+        source: MeasurementSource.MeasurementSourceSimulator,
+        unit: MeasurementUnit.Pa,
+        value: 1000,
+      },
+    ],
+  };
+  const session: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: snapshot.revision,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot,
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.list.mockResolvedValue({ items: [], nextAfter: null });
+  const commits = vi.fn();
+  render(
+    <Profiler id="operator-view" onRender={commits}>
+      <LiveApp
+        session={session}
+        hostRunId={host}
+        backendRunId={backend}
+        measurementContext={measurementContext}
+      />
+    </Profiler>,
+  );
+  await screen.findByRole('heading', { name: 'Проведение испытания' });
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Испытания' }));
+  await screen.findByText('История пуста');
+  commits.mockClear();
+  const key = `${host}:${backend}:${database}:${testId}`;
+  const next = {
+    ...snapshot,
+    measurementBatch: 2,
+    measurements:
+      snapshot.measurements?.map((item) => ({
+        ...item,
+        sequence: 2,
+        measuredAt: '2026-10-30T00:00:02Z',
+        value: 1001,
+      })) ?? [],
+  };
+  act(() => measurementContext.accept(key, next, true, 0));
+  expect(measurementContext.read(key).points.at(-1)?.pressure).toBe(1001);
+  expect(commits).not.toHaveBeenCalled();
+  snapshot = {
+    ...snapshot,
+    revision: 2,
+    lastEventSequence: 2,
+    activeTest: {
+      ...record,
+      stage: TestRecordStage.Finished,
+      outcome: TestRecordOutcome.TestRecordOutcomeCompleted,
+    },
+  };
+  await userEvent
+    .setup()
+    .click(await screen.findByRole('button', { name: 'Результат прохода' }, { timeout: 8000 }));
+  expect(screen.getByRole('heading', { name: 'Результат испытания' })).toBeTruthy();
+  expect(screen.getByText('Завершено')).toBeTruthy();
+  expect(api.stop).not.toHaveBeenCalled();
+}, 12000);
+
+it.each(['history', 'bridge'] as const)(
+  'retains chart points and time origin through %s without sending commands',
+  async (route) => {
+    const sample = (index: number): Snapshot => ({
+      apiVersion: 'v1',
+      backendRunId: backend,
+      revision: index,
+      lastEventSequence: index,
+      measurementBatch: index,
+      activeTest: { ...record, stage: TestRecordStage.Running },
+      pendingAction: null,
+      measurementTiming: null,
+      measurements: [
+        {
+          channel: MeasurementChannel.Dd1,
+          measuredAt: `2026-10-30T00:00:0${index}Z`,
+          observedAt: `2026-10-30T00:00:0${index}Z`,
+          quality: MeasurementQuality.MeasurementQualityValid,
+          quantity: MeasurementQuantity.MeasurementQuantityPressure,
+          sequence: index,
+          source: MeasurementSource.MeasurementSourceSimulator,
+          unit: MeasurementUnit.Pa,
+          value: 999 + index,
+        },
+      ],
+    });
+    let snapshot = sample(1);
+    let revision = 0;
+    const session: SessionBridge = {
+      beginSessionCheck: async () => 'ticket',
+      keepAlive: async () => {},
+      sessionView: async () => ({
+        connection: {
+          hostRunId: host,
+          revision: ++revision,
+          status: ConnectionStateStatus.Live,
+          linkValid: true,
+          leaseAcquireUnknown: false,
+          streamGeneration: 0,
+        },
+        snapshot,
+        validForMs: 6000,
+        linkValidForMs: 6000,
+      }),
+    };
+    api.list.mockResolvedValue({ items: [], nextAfter: null });
+    const desktop: DesktopBridge = {
+      status: async () => ({
+        hostRunId: host,
+        revision: 1,
+        connectionRevision: 1,
+        status: DesktopStatusStatus.DesktopStatusStatusReady,
+        diagnosticsDegraded: false,
+        handshake: { apiVersion: 'v1', backendRunId: backend, databaseId: database, demo: true },
+      }),
+      verify: async () => desktop.status(),
+      subscribe: () => () => {},
+    };
+    const measurementContext = new MeasurementSeriesContext();
+    const view = render(
+      <DesktopApp bridge={desktop} session={session} measurementContext={measurementContext} />,
+    );
+    const points = () =>
+      screen.getByRole('img', { name: 'График показаний симулятора' }).getAttribute('data-points');
+    await waitFor(() => expect(points()).toContain('1000'));
+    const currentNavigation = screen.getByRole('button', { name: 'Текущее испытание' });
+    expect(currentNavigation.getAttribute('aria-current')).toBe('page');
+    currentNavigation.focus();
+    snapshot = sample(2);
+    await waitFor(() => expect(points()).toContain('1001'), { timeout: 8000 });
+    expect(document.activeElement).toBe(currentNavigation);
+    const user = userEvent.setup();
+    if (route === 'history') {
+      await user.click(screen.getByRole('button', { name: 'Испытания' }));
+      expect(document.activeElement).toBe(screen.getByRole('main', { name: 'Испытания' }));
+      expect(screen.getByRole('button', { name: 'Испытания' }).getAttribute('aria-current')).toBe(
+        'page',
+      );
+      expect(screen.getByRole('button', { name: 'Остановить испытание' })).toBeTruthy();
+    } else {
+      view.rerender(
+        <DesktopApp
+          bridge={{
+            ...desktop,
+            status: async () => {
+              throw new Error('unavailable');
+            },
+          }}
+          session={session}
+          measurementContext={measurementContext}
+        />,
+      );
+      await screen.findByRole('button', { name: 'Повторить связь' });
+    }
+    expect(screen.queryByRole('img', { name: 'График показаний симулятора' })).toBeNull();
+    snapshot = sample(route === 'history' ? 4 : 3);
+    if (route === 'history') {
+      await waitFor(
+        () =>
+          expect(
+            measurementContext
+              .read(`${host}:${backend}:${database}:${testId}`)
+              .points.map((point) => point.pressure),
+          ).toEqual([1000, 1001, null, 1003]),
+        { timeout: 8000 },
+      );
+      expect(screen.queryByRole('img', { name: 'График показаний симулятора' })).toBeNull();
+      snapshot = sample(5);
+      await waitFor(
+        () =>
+          expect(
+            measurementContext
+              .read(`${host}:${backend}:${database}:${testId}`)
+              .points.map((point) => point.pressure),
+          ).toEqual([1000, 1001, null, 1003, 1004]),
+        { timeout: 8000 },
+      );
+      expect(screen.queryByRole('img', { name: 'График показаний симулятора' })).toBeNull();
+      await user.click(screen.getByRole('button', { name: 'Текущее испытание' }));
+    } else
+      view.rerender(
+        <DesktopApp bridge={desktop} session={session} measurementContext={measurementContext} />,
+      );
+    await waitFor(
+      () =>
+        expect(points()).toBe(
+          JSON.stringify([
+            { seconds: 0, pressure: 1000, differential: null },
+            { seconds: 1, pressure: 1001, differential: null },
+            ...(route === 'bridge'
+              ? [
+                  { seconds: 1.5, pressure: null, differential: null },
+                  { seconds: 2, pressure: 1002, differential: null },
+                ]
+              : [
+                  { seconds: 2, pressure: null, differential: null },
+                  { seconds: 3, pressure: 1003, differential: null },
+                  { seconds: 4, pressure: 1004, differential: null },
+                ]),
+          ]),
+        ),
+      { timeout: 8000 },
+    );
+    for (const command of [api.create, api.start, api.confirm, api.stop])
+      expect(command).not.toHaveBeenCalled();
+  },
+  30000,
+);
+
 beforeEach(() => {
   sessionStorage.clear();
   vi.resetAllMocks();
@@ -199,8 +458,10 @@ it('does not attribute an unbound legacy command to the confirmed database', asy
         backendRunId: backend,
         revision: 0,
         lastEventSequence: 0,
+        measurementBatch: null,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -218,10 +479,12 @@ it('does not attribute an unbound legacy command to the confirmed database', asy
   expect(api.command).not.toHaveBeenCalledWith('legacy');
   expect(api.create).not.toHaveBeenCalled();
   expect(sessionStorage.getItem('gk80.demo.pending-command')).toBe(legacy);
-  expect(screen.getByText(/Прежняя команда: создание испытания, ID legacy/)).toBeTruthy();
-  expect(
-    screen.getByText(/Прежняя команда: остановка испытания, ID legacy-stop/).textContent,
-  ).toContain('Безопасное давление не подтверждено');
+  expect(screen.getByText('legacy').closest('details')?.open).toBe(false);
+  expect(screen.getByText('legacy-stop').closest('details')?.open).toBe(false);
+  expect(screen.getByText(/Прежняя команда: создание испытания/)).toBeTruthy();
+  expect(screen.getByText(/Прежняя команда: остановка испытания/).textContent).toContain(
+    'Безопасное давление не подтверждено',
+  );
   await userEvent.setup().click(screen.getByRole('button', { name: 'Я проверил прежние команды' }));
   await waitFor(() =>
     expect(screen.getByRole('button', { name: 'Новое испытание' }).hasAttribute('disabled')).toBe(
@@ -257,8 +520,10 @@ it.each([false, true])(
           backendRunId: backend,
           revision: 0,
           lastEventSequence: 0,
+          measurementBatch: null,
           activeTest: null,
           pendingAction: null,
+          measurementTiming: null,
           measurements: [],
         },
         validForMs: 6000,
@@ -271,7 +536,8 @@ it.each([false, true])(
       status: CommandStatusStatus.CommandStatusStatusCompleted,
     });
     render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
-    await screen.findByText(new RegExp(`исход неизвестен.*${id}`));
+    await screen.findByText(id);
+    expect(pendingRow(id).textContent).toContain('исход неизвестен');
     await userEvent.setup().click(screen.getByRole('button', { name: 'Проверить состояние' }));
     expect(api.command).not.toHaveBeenCalledWith(id);
     expect(screen.getByRole('button', { name: 'Новое испытание' }).hasAttribute('disabled')).toBe(
@@ -283,7 +549,7 @@ it.each([false, true])(
         false,
       ),
     );
-    expect(screen.getByText(new RegExp(`исход неизвестен.*${id}`))).toBeTruthy();
+    expect(pendingRow(id).textContent).toContain('исход неизвестен');
   },
 );
 
@@ -310,8 +576,10 @@ it('restores the browser profile pending attempt from shared storage without rep
         backendRunId: backend,
         revision: 0,
         lastEventSequence: 0,
+        measurementBatch: null,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -395,8 +663,10 @@ it('keeps Stop available when the legacy command list cannot be read', async () 
         backendRunId: backend,
         revision: 2,
         lastEventSequence: 2,
+        measurementBatch: null,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -452,8 +722,10 @@ it('isolates pending commands and late lookups across databases', async () => {
         backendRunId: backend,
         revision: 0,
         lastEventSequence: 0,
+        measurementBatch: null,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -503,8 +775,10 @@ it('tracks Stop separately from a restored ordinary command with the same identi
     backendRunId: backend,
     revision: 2,
     lastEventSequence: 2,
+    measurementBatch: null,
     activeTest: { ...record, stage: TestRecordStage.Running },
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -573,6 +847,7 @@ it('tracks Stop separately from a restored ordinary command with the same identi
     ...snapshot,
     revision: 3,
     lastEventSequence: 3,
+    measurementBatch: null,
     activeTest: {
       ...record,
       testId: '88888888-8888-4888-8888-888888888888',
@@ -649,8 +924,10 @@ it('shows diagnostics already degraded when the live session opens', async () =>
         backendRunId: backend,
         revision: 0,
         lastEventSequence: 0,
+        measurementBatch: null,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -703,8 +980,10 @@ it('preserves the live form when diagnostics degrade', async () => {
         backendRunId: backend,
         revision: 0,
         lastEventSequence: 0,
+        measurementBatch: null,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -757,8 +1036,10 @@ it('retains the browser form when a replacement bridge cannot confirm status', a
         backendRunId: backend,
         revision: 0,
         lastEventSequence: 0,
+        measurementBatch: null,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -849,8 +1130,10 @@ it('accepts a verified browser bridge when the initial status read fails', async
         backendRunId: backend,
         revision: 0,
         lastEventSequence: 0,
+        measurementBatch: null,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -903,8 +1186,10 @@ it('keeps stop available when diagnostics degrade during a live test', async () 
         backendRunId: backend,
         revision: 2,
         lastEventSequence: 2,
+        measurementBatch: null,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -956,8 +1241,10 @@ it('finishes a pending history list and uses the replacement for later reads', a
         backendRunId: backend,
         revision: 0,
         lastEventSequence: 0,
+        measurementBatch: null,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -972,7 +1259,7 @@ it('finishes a pending history list and uses the replacement for later reads', a
     <LiveApp session={session} service={nextService} hostRunId={host} backendRunId={backend} />,
   );
   await act(async () => {
-    finish({ items: [record], nextAfter: null });
+    finish({ items: [record], total: null, nextAfter: null });
     await late;
   });
   expect(await screen.findByRole('button', { name: /К-1/ })).toBeTruthy();
@@ -1012,11 +1299,12 @@ it('keeps a requested history page when the same session replaces its service wr
     finish({
       items: [{ ...record, parameters: { ...record.parameters, valve: 'К-2' } }],
       nextAfter: null,
+      total: null,
     });
     await response;
   });
   expect(await screen.findByRole('button', { name: /К-2/ })).toBeTruthy();
-  expect(listTests).toHaveBeenCalledWith({ limit: 100, after: testId });
+  expect(listTests).toHaveBeenCalledWith({ limit: 20, after: testId });
   expect(nextListTests).not.toHaveBeenCalled();
 });
 
@@ -1051,9 +1339,14 @@ it('finishes opening history when the same session replaces its service wrapper'
     finish(record);
     await response;
   });
-  expect(await screen.findByRole('heading', { name: 'Сохранённая запись' })).toBeTruthy();
-  expect(measurements).toHaveBeenCalledOnce();
-  expect(audit).toHaveBeenCalledOnce();
+  expect(await screen.findByRole('heading', { name: 'Результат испытания' })).toBeTruthy();
+  expect(measurements).not.toHaveBeenCalled();
+  expect(audit).not.toHaveBeenCalled();
+  const user = userEvent.setup();
+  await user.click(screen.getByText('Измерения', { selector: 'summary' }));
+  await user.click(screen.getByText('Журнал событий', { selector: 'summary' }));
+  await waitFor(() => expect(measurements).toHaveBeenCalledOnce());
+  await waitFor(() => expect(audit).toHaveBeenCalledOnce());
   expect(oldMeasurements).not.toHaveBeenCalled();
   expect(oldAudit).not.toHaveBeenCalled();
 });
@@ -1066,6 +1359,8 @@ it('explains a canceled start in the saved audit', async () => {
     items: [
       {
         sequence: 1,
+        testId,
+        revision: 1,
         occurredAt: '2026-10-30T00:00:00Z',
         action: 'start',
         outcome: 'failed',
@@ -1087,8 +1382,9 @@ it('explains a canceled start in the saved audit', async () => {
     />,
   );
   await userEvent.setup().click(await screen.findByRole('button', { name: /К-1/ }));
+  await userEvent.setup().click(await screen.findByText('Журнал событий', { selector: 'summary' }));
   expect(
-    await screen.findByText(/причина запуск отменён при остановке до подтверждения оператора/),
+    await screen.findByText(/Запуск отменён при остановке до подтверждения оператора/),
   ).toBeTruthy();
 });
 
@@ -1131,8 +1427,10 @@ it('does not reuse a pending readiness response after the core identity changes'
         backendRunId,
         revision: 1,
         lastEventSequence: 0,
+        measurementBatch: null,
         activeTest: record,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -1194,8 +1492,10 @@ it('preserves the unsaved form when the service wrapper changes', async () => {
         backendRunId: backend,
         revision: 0,
         lastEventSequence: 0,
+        measurementBatch: null,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -1220,118 +1520,69 @@ it('preserves the unsaved form when the service wrapper changes', async () => {
   expect((input as HTMLInputElement).value).toBe('Клапан');
 });
 
-it('uses core confirmation and measurements for the operator path', async () => {
-  let snapshot: Snapshot = {
-    apiVersion: 'v1',
-    backendRunId: backend,
-    revision: 0,
-    lastEventSequence: 0,
-    activeTest: null,
-    pendingAction: null,
-    measurements: [],
-  };
-  let lastCommand = {
-    commandId: '',
-    status: CommandStatusStatus.CommandStatusStatusUnknown,
-    testId,
-  };
-  const commands = new Map<string, typeof lastCommand>();
-  let activeRecord = record;
-  let startId = '';
-  let hostRevision = 0;
-  const bridge: SessionBridge = {
-    beginSessionCheck: async () => 'ticket',
-    keepAlive: async () => {},
-    sessionView: async (): Promise<SessionView> => ({
-      connection: {
-        hostRunId: host,
-        revision: ++hostRevision,
-        status: ConnectionStateStatus.Live,
-        linkValid: true,
-        leaseAcquireUnknown: false,
-        streamGeneration: 0,
-      },
-      snapshot,
-      validForMs: 6000,
-      linkValidForMs: 6000,
-    }),
-  };
-  api.list.mockResolvedValue({ items: [], nextAfter: null });
-  api.command.mockImplementation(async (id: string) => commands.get(id));
-  api.create.mockImplementation(async (input: CreateCommandInput) => {
-    expect(JSON.parse(sessionStorage.getItem(pendingKey) ?? '[]')).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: input.commandId,
-          kind: 'create',
-          schema: 2,
-          actionId: null,
-          originalJSON: JSON.stringify(input),
-        }),
-      ]),
-    );
-    lastCommand = {
-      commandId: input.commandId,
-      status: CommandStatusStatus.CommandStatusStatusCompleted,
+it.each([
+  ['lookup', 'summary'],
+  ['receipt', 'summary'],
+  ['receipt', 'region'],
+  ['receipt', 'storage'],
+] as const)(
+  'uses core confirmation and measurements for the operator path (%s, %s)',
+  async (source, focusTarget) => {
+    const scenarioDatabase =
+      focusTarget === 'storage' ? 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' : database;
+    const scenarioKey = `gk80.demo.pending-command.v1:${scenarioDatabase}`;
+    let failedStorage: ReturnType<typeof vi.spyOn> | undefined;
+    let snapshot: Snapshot = {
+      apiVersion: 'v1',
+      backendRunId: backend,
+      revision: 0,
+      lastEventSequence: 0,
+      measurementBatch: null,
+      activeTest: null,
+      pendingAction: null,
+      measurementTiming: null,
+      measurements: [],
+    };
+    let lastCommand = {
+      commandId: '',
+      status: CommandStatusStatus.CommandStatusStatusUnknown,
       testId,
     };
-    commands.set(input.commandId, lastCommand);
-    activeRecord = { ...record, parameters: input.parameters };
-    snapshot = { ...snapshot, activeTest: activeRecord, revision: 1, lastEventSequence: 1 };
-    return { delivery: 'response', command: lastCommand };
-  });
-  api.readiness.mockResolvedValue({
-    testId,
-    revision: 1,
-    ready: true,
-    checks: [
-      {
-        code: 'demo',
-        label: 'Симулятор',
-        source: ReadinessCheckSource.ReadinessCheckSourceSimulator,
-        ready: true,
-      },
-    ],
-  });
-  api.start.mockImplementation(async (_id: string, input: { commandId: string }) => {
-    expect(JSON.parse(sessionStorage.getItem(pendingKey) ?? '[]')).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: input.commandId,
-          kind: 'start',
-          testId,
-          schema: 2,
-          actionId: null,
-          originalJSON: JSON.stringify(input),
-        }),
-      ]),
-    );
-    startId = input.commandId;
-    lastCommand = {
-      commandId: input.commandId,
-      status: CommandStatusStatus.CommandStatusStatusAccepted,
-      testId,
+    const commands = new Map<string, typeof lastCommand>();
+    let activeRecord = record;
+    let startId = '';
+    let finishStart: (value: CommandDispatch) => void = () => {};
+    const startResponse = new Promise<CommandDispatch>((resolve) => {
+      finishStart = resolve;
+    });
+    let hostRevision = 0;
+    const bridge: SessionBridge = {
+      beginSessionCheck: async () => 'ticket',
+      keepAlive: async () => {},
+      sessionView: async (): Promise<SessionView> => ({
+        connection: {
+          hostRunId: host,
+          revision: ++hostRevision,
+          status: ConnectionStateStatus.Live,
+          linkValid: true,
+          leaseAcquireUnknown: false,
+          streamGeneration: 0,
+        },
+        snapshot,
+        validForMs: 6000,
+        linkValidForMs: 6000,
+      }),
     };
-    commands.set(input.commandId, lastCommand);
-    snapshot = {
-      ...snapshot,
-      activeTest: { ...activeRecord, stage: TestRecordStage.Running },
-      revision: 2,
-      lastEventSequence: 2,
-      pendingAction: { testId, actionId, instruction: 'Подтвердите измерение' },
-    };
-    return new Promise(() => {});
-  });
-  api.confirm.mockImplementation(
-    async (_id: string, _action: string, input: { commandId: string }) => {
-      expect(JSON.parse(sessionStorage.getItem(pendingKey) ?? '[]')).toEqual(
+    api.list.mockResolvedValue({ items: [], nextAfter: null });
+    api.command.mockImplementation(async (id: string) => commands.get(id));
+    api.create.mockImplementation(async (input: CreateCommandInput) => {
+      expect(JSON.parse(sessionStorage.getItem(scenarioKey) ?? '[]')).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             id: input.commandId,
-            kind: 'confirm',
-            testId,
+            kind: 'create',
             schema: 2,
-            actionId,
+            actionId: null,
             originalJSON: JSON.stringify(input),
           }),
         ]),
@@ -1342,111 +1593,344 @@ it('uses core confirmation and measurements for the operator path', async () => 
         testId,
       };
       commands.set(input.commandId, lastCommand);
-      commands.set(startId, { ...lastCommand, commandId: startId });
+      activeRecord = { ...record, parameters: input.parameters };
+      snapshot = { ...snapshot, activeTest: activeRecord, revision: 1, lastEventSequence: 1 };
+      return { delivery: 'response', command: lastCommand };
+    });
+    api.readiness.mockResolvedValue({
+      testId,
+      revision: 1,
+      ready: true,
+      checks: [
+        {
+          code: 'demo',
+          label: 'Симулятор',
+          source: ReadinessCheckSource.ReadinessCheckSourceSimulator,
+          ready: true,
+        },
+      ],
+    });
+    api.start.mockImplementation(async (_id: string, input: { commandId: string }) => {
+      expect(JSON.parse(sessionStorage.getItem(scenarioKey) ?? '[]')).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: input.commandId,
+            kind: 'start',
+            testId,
+            schema: 2,
+            actionId: null,
+            originalJSON: JSON.stringify(input),
+          }),
+        ]),
+      );
+      startId = input.commandId;
+      if (focusTarget === 'storage') {
+        failedStorage = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+          throw new Error('storage unavailable');
+        });
+      }
+      lastCommand = {
+        commandId: input.commandId,
+        status: CommandStatusStatus.CommandStatusStatusAccepted,
+        testId,
+      };
+      commands.set(input.commandId, lastCommand);
       snapshot = {
         ...snapshot,
-        lastEventSequence: 3,
-        pendingAction: null,
-        measurements: [
-          {
-            channel: MeasurementChannel.Dd1,
-            measuredAt: '2026-10-30T00:00:01Z',
-            observedAt: '2026-10-30T00:00:01Z',
-            quality: MeasurementQuality.MeasurementQualityValid,
-            quantity: MeasurementQuantity.MeasurementQuantityPressure,
-            sequence: 1,
-            source: MeasurementSource.MeasurementSourceSimulator,
-            unit: MeasurementUnit.Pa,
-            value: 1000,
-          },
-        ],
+        activeTest: { ...activeRecord, stage: TestRecordStage.Running },
+        revision: 2,
+        lastEventSequence: 2,
+        pendingAction:
+          source === 'receipt' ? null : { testId, actionId, instruction: 'Подтвердите измерение' },
       };
-      return { delivery: 'response', command: lastCommand };
-    },
-  );
-  render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
-  const user = userEvent.setup();
-  const newTest = await screen.findByRole('button', { name: 'Новое испытание' });
-  await waitFor(() => expect(newTest.hasAttribute('disabled')).toBe(false));
-  await user.click(newTest);
-  await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
-  await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
-  await user.type(screen.getByLabelText(/производителя, Па/), '10000');
-  await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
-  expect(api.create).toHaveBeenCalledTimes(1);
-  expect(api.create).toHaveBeenCalledWith(
-    expect.objectContaining({
-      parameters: expect.objectContaining({ areaM2: 0.012, pmaxPa: 10000, measurementSeconds: 60 }),
-    }),
-  );
-  await screen.findByText('Проверки демонстрационного ядра', {}, { timeout: 8000 });
-  await user.click(screen.getByRole('button', { name: 'К параметрам' }));
-  expect(screen.getByText('Текущее испытание · только просмотр')).toBeTruthy();
-  await user.click(screen.getByRole('button', { name: 'Вернуться к испытанию' }));
-  await user.click(screen.getByLabelText(/Клапан закрыт/));
-  await user.click(screen.getByLabelText(/Подключение соответствует направлению/));
-  await user.click(screen.getByRole('button', { name: /Перейти к проведению/ }));
-  expect(api.start).toHaveBeenCalledTimes(1);
-  const confirm = await screen.findByRole(
-    'button',
-    { name: 'Подтвердить действие' },
-    { timeout: 8000 },
-  );
-  await screen.findByText(/Команда: принята; завершение команды не подтверждено/);
-  await waitFor(() => expect(confirm.hasAttribute('disabled')).toBe(false));
-  await user.click(confirm);
-  expect(api.confirm).toHaveBeenCalledTimes(1);
-  await screen.findByText(/≈ 1\s?000 Па/, {}, { timeout: 8000 });
-  snapshot = {
-    ...snapshot,
-    activeTest: {
-      ...activeRecord,
-      stage: TestRecordStage.Finished,
-      outcome: TestRecordOutcome.TestRecordOutcomeCompleted,
-    },
-    lastEventSequence: 4,
-  };
-  await screen.findByRole('heading', { name: 'Результат испытания' }, { timeout: 8000 });
-  expect(screen.queryByRole('heading', { name: 'Параметры испытания' })).toBeNull();
-}, 18000);
+      return source === 'lookup'
+        ? startResponse
+        : {
+            delivery: CommandDispatchDelivery.CommandDispatchDeliveryResponse,
+            command: lastCommand,
+          };
+    });
+    api.confirm.mockImplementation(
+      async (_id: string, _action: string, input: { commandId: string }) => {
+        expect(JSON.parse(sessionStorage.getItem(pendingKey) ?? '[]')).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              id: input.commandId,
+              kind: 'confirm',
+              testId,
+              schema: 2,
+              actionId,
+              originalJSON: JSON.stringify(input),
+            }),
+          ]),
+        );
+        lastCommand = {
+          commandId: input.commandId,
+          status: CommandStatusStatus.CommandStatusStatusCompleted,
+          testId,
+        };
+        commands.set(input.commandId, lastCommand);
+        commands.set(startId, { ...lastCommand, commandId: startId });
+        snapshot = {
+          ...snapshot,
+          lastEventSequence: 3,
+          pendingAction: null,
+          measurementTiming: null,
+          measurements: [
+            {
+              channel: MeasurementChannel.Dd1,
+              measuredAt: '2026-10-30T00:00:01Z',
+              observedAt: '2026-10-30T00:00:01Z',
+              quality: MeasurementQuality.MeasurementQualityValid,
+              quantity: MeasurementQuantity.MeasurementQuantityPressure,
+              sequence: 1,
+              source: MeasurementSource.MeasurementSourceSimulator,
+              unit: MeasurementUnit.Pa,
+              value: 1000,
+            },
+          ],
+        };
+        return { delivery: 'response', command: lastCommand };
+      },
+    );
+    if (source === 'receipt') api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
+    render(
+      <LiveApp
+        session={bridge}
+        hostRunId={host}
+        backendRunId={backend}
+        databaseId={scenarioDatabase}
+      />,
+    );
+    const user = userEvent.setup();
+    const newTest = await screen.findByRole('button', { name: 'Новое испытание' });
+    await waitFor(() => expect(newTest.hasAttribute('disabled')).toBe(false));
+    await user.click(newTest);
+    await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
+    await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
+    await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+    await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
+    expect(api.create).toHaveBeenCalledTimes(1);
+    expect(api.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        parameters: expect.objectContaining({
+          areaM2: 0.012,
+          pmaxPa: 10000,
+          measurementSeconds: 60,
+        }),
+      }),
+    );
+    await screen.findByRole('heading', { name: 'Автоматические проверки' }, { timeout: 8000 });
+    expect(screen.queryByRole('button', { name: 'Вернуться к испытанию' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Остановить испытание' })).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'К параметрам' }));
+    expect(screen.getByText('Текущее испытание · только просмотр')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Вернуться к испытанию' }));
+    await user.click(screen.getByLabelText(/Клапан закрыт/));
+    await user.click(screen.getByLabelText(/Подключение соответствует направлению/));
+    try {
+      await user.click(screen.getByRole('button', { name: /Перейти к проведению/ }));
+      expect(api.start).toHaveBeenCalledTimes(1);
+      if (focusTarget === 'storage') {
+        await screen.findByText(/Не удалось обновить список команд/);
+        snapshot = {
+          ...snapshot,
+          revision: 3,
+          lastEventSequence: 3,
+          pendingAction: { testId, actionId, instruction: 'Подтвердите измерение' },
+        };
+        await screen.findByRole('button', { name: 'Подтвердить действие' }, { timeout: 8000 });
+        expect(pendingRow(startId).classList.contains('quiet-start')).toBe(false);
+        expect(
+          within(pendingRow(startId)).getByRole('button', { name: 'Проверить состояние' }),
+        ).toBeTruthy();
+        return;
+      }
+    } finally {
+      failedStorage?.mockRestore();
+    }
+    let noticeSummary: HTMLElement | null = null;
+    let noticeRegion: HTMLElement | null = null;
+    if (source === 'receipt') {
+      const notice = await screen.findByText('Команда принята или её исход ещё не подтверждён.');
+      const container = notice.closest('[role="status"]');
+      if (!(container instanceof HTMLElement)) throw new Error('Command notice missing');
+      noticeSummary = within(container).getByText('Сведения о команде');
+      noticeRegion = container.parentElement;
+      if (!noticeRegion) throw new Error('Command region missing');
+      (focusTarget === 'region' ? noticeRegion : noticeSummary).focus();
+      snapshot = {
+        ...snapshot,
+        revision: 3,
+        lastEventSequence: 3,
+        pendingAction: { testId, actionId, instruction: 'Подтвердите измерение' },
+      };
+    }
+    const confirm = await screen.findByRole(
+      'button',
+      { name: 'Подтвердить действие' },
+      { timeout: 8000 },
+    );
+    if (noticeSummary) {
+      expect(noticeSummary.isConnected).toBe(true);
+      expect(document.activeElement).toBe(focusTarget === 'region' ? noticeRegion : noticeSummary);
+      confirm.focus();
+    }
+    await screen.findByText(/Команда: принята; завершение команды не подтверждено/);
+    expect(screen.queryByText('Команда принята или её исход ещё не подтверждён.')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Проверить состояние' })).toBeTruthy();
+    const identity = screen.getByText(startId).closest('details');
+    if (!identity) throw new Error('Command details missing');
+    expect(identity.open).toBe(false);
+    expect(identity.querySelector('summary')?.textContent).toBe('Сведения о команде');
+    await user.click(within(identity).getByText('Сведения о команде'));
+    expect(identity.open).toBe(true);
+    if (source === 'lookup') {
+      await act(async () => {
+        finishStart({
+          delivery: CommandDispatchDelivery.CommandDispatchDeliveryNotSent,
+          command: null,
+        });
+        await startResponse;
+      });
+      expect(
+        screen.getByText(
+          'Ранее найденное состояние команды требует проверки; новый запрос не отправлен.',
+        ),
+      ).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Проверить состояние' })).toBeTruthy();
+      expect(api.start).toHaveBeenCalledTimes(1);
+      api.exact.mockClear();
+      await user.click(screen.getByRole('button', { name: 'Проверить состояние' }));
+      const sentStart = api.start.mock.calls[0]?.[1];
+      if (!sentStart) throw new Error('Start payload missing');
+      await waitFor(() =>
+        expect(api.exact).toHaveBeenCalledWith(
+          database,
+          'start',
+          testId,
+          '',
+          startId,
+          JSON.stringify(sentStart),
+        ),
+      );
+      expect(
+        screen.getByText(
+          'Ранее найденное состояние команды требует проверки; новый запрос не отправлен.',
+        ),
+      ).toBeTruthy();
+    }
+    await waitFor(() => expect(confirm.hasAttribute('disabled')).toBe(false));
+    await user.click(confirm);
+    expect(api.confirm).toHaveBeenCalledTimes(1);
+    await screen.findByText(/≈ 1\s?000 Па/, {}, { timeout: 8000 });
+    snapshot = {
+      ...snapshot,
+      activeTest: {
+        ...activeRecord,
+        stage: TestRecordStage.Finished,
+        outcome: TestRecordOutcome.TestRecordOutcomeCompleted,
+      },
+      lastEventSequence: 4,
+    };
+    await screen.findByRole('heading', { name: 'Результат испытания' }, { timeout: 8000 });
+    expect(screen.queryByRole('heading', { name: 'Параметры испытания' })).toBeNull();
+  },
+  18000,
+);
 
-it('does not infer a legacy Stop without its original contents', async () => {
-  sessionStorage.setItem(
-    pendingKey,
-    JSON.stringify([{ id: stopId, kind: 'stop', testId, retired: false }]),
-  );
-  const bridge: SessionBridge = {
-    beginSessionCheck: async () => 'ticket',
-    keepAlive: async () => {},
-    sessionView: async () => ({
-      connection: {
-        hostRunId: host,
-        revision: 1,
-        status: ConnectionStateStatus.Live,
-        linkValid: true,
-        leaseAcquireUnknown: false,
-        streamGeneration: 0,
-      },
-      snapshot: {
-        apiVersion: 'v1',
-        backendRunId: backend,
-        revision: 0,
-        lastEventSequence: 0,
-        activeTest: null,
-        pendingAction: null,
-        measurements: [],
-      },
-      validForMs: 6000,
-      linkValidForMs: 6000,
-    }),
-  };
-  render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
-  expect(await screen.findByText(/Исходное содержимое команды не сохранилось/)).toBeTruthy();
-  await userEvent.setup().click(screen.getByRole('button', { name: 'Проверить состояние' }));
-  expect(api.exact).not.toHaveBeenCalled();
-  expect(api.command).not.toHaveBeenCalled();
-  expect(api.stop).not.toHaveBeenCalled();
-});
+it.each([null, '77777777-7777-4777-8777-777777777777'])(
+  'keeps accepted Start notice when the pending action does not match (%s)',
+  async (actionTestId) => {
+    const startId = '66666666-6666-4666-8666-666666666666';
+    sessionStorage.setItem(
+      pendingKey,
+      JSON.stringify([savedAttempt(startId, 'start', testId, false)]),
+    );
+    const bridge: SessionBridge = {
+      beginSessionCheck: async () => 'ticket',
+      keepAlive: async () => {},
+      sessionView: async () => ({
+        connection: {
+          hostRunId: host,
+          revision: 1,
+          status: ConnectionStateStatus.Live,
+          linkValid: true,
+          leaseAcquireUnknown: false,
+          streamGeneration: 0,
+        },
+        snapshot: {
+          apiVersion: 'v1',
+          backendRunId: backend,
+          revision: 2,
+          lastEventSequence: 2,
+          measurementBatch: null,
+          activeTest: { ...record, stage: TestRecordStage.Running },
+          pendingAction: actionTestId
+            ? { testId: actionTestId, actionId, instruction: 'Подтвердите' }
+            : null,
+          measurementTiming: null,
+          measurements: [],
+        },
+        validForMs: 6000,
+        linkValidForMs: 6000,
+      }),
+    };
+    api.list.mockResolvedValue({ items: [], nextAfter: null });
+    api.command.mockResolvedValue({ commandId: startId, testId, status: 'accepted' });
+    render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+    expect(
+      await screen.findByText('Команда принята или её исход ещё не подтверждён.'),
+    ).toBeTruthy();
+    expect(pendingRow(startId).textContent).toContain('принята');
+    expect(api.start).not.toHaveBeenCalled();
+  },
+);
+
+it.each([testId, null])(
+  'does not infer a legacy Stop without its original contents (%s)',
+  async (stopTestId) => {
+    sessionStorage.setItem(
+      pendingKey,
+      JSON.stringify([{ id: stopId, kind: 'stop', testId: stopTestId, retired: false }]),
+    );
+    const bridge: SessionBridge = {
+      beginSessionCheck: async () => 'ticket',
+      keepAlive: async () => {},
+      sessionView: async () => ({
+        connection: {
+          hostRunId: host,
+          revision: 1,
+          status: ConnectionStateStatus.Live,
+          linkValid: true,
+          leaseAcquireUnknown: false,
+          streamGeneration: 0,
+        },
+        snapshot: {
+          apiVersion: 'v1',
+          backendRunId: backend,
+          revision: 0,
+          lastEventSequence: 0,
+          measurementBatch: null,
+          activeTest: null,
+          pendingAction: null,
+          measurementTiming: null,
+          measurements: [],
+        },
+        validForMs: 6000,
+        linkValidForMs: 6000,
+      }),
+    };
+    render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+    expect(await screen.findByText(/Исходное содержимое команды не сохранилось/)).toBeTruthy();
+    if (stopTestId === null)
+      expect(pendingRow(stopId).textContent).toContain('Испытание для остановки неизвестно');
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Проверить состояние' }));
+    expect(api.exact).not.toHaveBeenCalled();
+    expect(api.command).not.toHaveBeenCalled();
+    expect(api.stop).not.toHaveBeenCalled();
+  },
+);
 
 it('persists the Stop attempt before sending and reconciles it after remount without resending', async () => {
   const snapshot: Snapshot = {
@@ -1454,8 +1938,10 @@ it('persists the Stop attempt before sending and reconciles it after remount wit
     backendRunId: backend,
     revision: 2,
     lastEventSequence: 2,
+    measurementBatch: null,
     activeTest: { ...record, stage: TestRecordStage.Running },
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -1520,8 +2006,10 @@ it('distinguishes a Stop lookup conflict from rejecting the actual request', asy
         backendRunId: backend,
         revision: 2,
         lastEventSequence: 2,
+        measurementBatch: null,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -1536,7 +2024,8 @@ it('distinguishes a Stop lookup conflict from rejecting the actual request', asy
     .click(await screen.findByRole('button', { name: 'Остановить испытание' }));
   expect(await screen.findByText(/Сохранённая запись принадлежит другой команде/)).toBeTruthy();
   expect(screen.queryByText(/Запрос остановки отклонён/)).toBeNull();
-  expect(screen.getByText(new RegExp(`Остановка испытания ${testId}`))).toBeTruthy();
+  expect(within(pendingRow(stopId)).getByText(testId).closest('details')?.open).toBe(false);
+  expect(screen.getByText(/Остановка испытания\./)).toBeTruthy();
   expect(api.stop).toHaveBeenCalledOnce();
 });
 
@@ -1558,8 +2047,10 @@ it('keeps a storage conflict visible after the direct Stop succeeds', async () =
         backendRunId: backend,
         revision: 2,
         lastEventSequence: 2,
+        measurementBatch: null,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -1604,8 +2095,10 @@ it('retains a confirmed Stop in volatile memory after remount', async () => {
         backendRunId: backend,
         revision: 2,
         lastEventSequence: 2,
+        measurementBatch: null,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -1711,8 +2204,10 @@ it('does not repeatedly write a confirmed observation while storage remains unav
         backendRunId: backend,
         revision: 2,
         lastEventSequence: 2,
+        measurementBatch: null,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -1739,10 +2234,10 @@ it('does not repeatedly write a confirmed observation while storage remains unav
     await screen.findByRole('button', { name: 'Повторить чтение команд' });
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(failure).toHaveBeenCalledTimes(1);
-    expect(screen.getByText(new RegExp(`ID ${attempt.id}`))).toBeTruthy();
+    expect(within(pendingList()).getByText(attempt.id)).toBeTruthy();
     failure.mockRestore();
     await userEvent.setup().click(screen.getByRole('button', { name: 'Повторить чтение команд' }));
-    await waitFor(() => expect(screen.queryByText(new RegExp(`ID ${attempt.id}`))).toBeNull());
+    await waitFor(() => expect(within(pendingList()).queryByText(attempt.id)).toBeNull());
     expect(api.create).not.toHaveBeenCalled();
   } finally {
     failure.mockRestore();
@@ -1772,8 +2267,10 @@ it('does not give an old Stop without contents the result of a new attempt', asy
         backendRunId: backend,
         revision: 2,
         lastEventSequence: 2,
+        measurementBatch: null,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -1815,8 +2312,10 @@ it('does not attribute another Stop with the same ID but different JSON to the c
         backendRunId: backend,
         revision: 2,
         lastEventSequence: 2,
+        measurementBatch: null,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -1883,14 +2382,162 @@ it('does not attribute another Stop with the same ID but different JSON to the c
   }
 });
 
+it.each([
+  ['preparing', true, 'none'],
+  ['finished', false, 'none'],
+  ['finished', true, 'reopen'],
+  ['finished', true, 'edit'],
+  ['preparing', true, 'edit'],
+] as const)(
+  'preserves the draft when Create is reconciled after a first %s snapshot',
+  async (firstStage, editDraft, retainMode) => {
+    const retainBefore = retainMode !== 'none';
+    let snapshot: Snapshot = {
+      apiVersion: 'v1',
+      backendRunId: backend,
+      revision: 0,
+      lastEventSequence: 0,
+      measurementBatch: null,
+      activeTest: null,
+      pendingAction: null,
+      measurementTiming: null,
+      measurements: [],
+    };
+    let revision = 0;
+    const bridge: SessionBridge = {
+      beginSessionCheck: async () => 'ticket',
+      keepAlive: async () => {},
+      sessionView: async () => ({
+        connection: {
+          hostRunId: host,
+          revision: ++revision,
+          status: ConnectionStateStatus.Live,
+          linkValid: true,
+          leaseAcquireUnknown: false,
+          streamGeneration: 0,
+        },
+        snapshot,
+        validForMs: 6000,
+        linkValidForMs: 6000,
+      }),
+    };
+    api.list.mockResolvedValue({ items: [], nextAfter: null });
+    let finishLookup: (status: CommandStatus) => void = () => {};
+    const lookup = new Promise<CommandStatus>((resolve) => {
+      finishLookup = resolve;
+    });
+    api.command.mockReturnValue(lookup);
+    api.create.mockImplementation(async () => {
+      if (!retainBefore)
+        snapshot = {
+          ...snapshot,
+          activeTest:
+            firstStage === 'preparing'
+              ? record
+              : {
+                  ...record,
+                  stage: TestRecordStage.Finished,
+                  outcome: TestRecordOutcome.TestRecordOutcomeInterrupted,
+                },
+          revision: 1,
+          lastEventSequence: 1,
+        };
+      throw new Error('response lost');
+    });
+    api.readiness.mockResolvedValue({
+      testId,
+      revision: 1,
+      ready: true,
+      checks: [],
+    });
+    render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+    const user = userEvent.setup();
+    const create = await screen.findByRole('button', { name: 'Новое испытание' });
+    await waitFor(() => expect(create.hasAttribute('disabled')).toBe(false));
+    await user.click(create);
+    await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
+    await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
+    await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+    await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
+    if (retainBefore) {
+      await screen.findByText(/Исход команды пока неизвестен/);
+      if (retainMode === 'reopen') {
+        await user.click(screen.getByRole('button', { name: 'Испытания' }));
+        await user.click(screen.getByRole('button', { name: 'Параметры' }));
+      }
+      await user.type(screen.getByLabelText('Обозначение или наименование клапана'), ' новый');
+      snapshot = {
+        ...snapshot,
+        activeTest:
+          firstStage === 'preparing'
+            ? record
+            : {
+                ...record,
+                stage: TestRecordStage.Finished,
+                outcome: TestRecordOutcome.TestRecordOutcomeInterrupted,
+              },
+        revision: 1,
+        lastEventSequence: 1,
+      };
+      if (firstStage === 'finished') {
+        await screen.findByRole('button', { name: 'Результат прохода' }, { timeout: 7000 });
+        expect(screen.getByLabelText('Обозначение или наименование клапана')).toHaveProperty(
+          'value',
+          'К-1 новый',
+        );
+      }
+    }
+    if (firstStage === 'preparing') {
+      await screen.findByRole('heading', { name: /готовност/i }, { timeout: 7000 });
+      expect(screen.getByRole('main').getAttribute('aria-label')).toMatch(/Готовност/i);
+      snapshot = {
+        ...snapshot,
+        activeTest: {
+          ...record,
+          stage: TestRecordStage.Finished,
+          outcome: TestRecordOutcome.TestRecordOutcomeInterrupted,
+        },
+        revision: 2,
+        lastEventSequence: 2,
+      };
+    }
+    if (!retainBefore || firstStage === 'preparing') {
+      expect(
+        await screen.findByRole('heading', { name: 'Результат испытания' }, { timeout: 7000 }),
+      ).toBeTruthy();
+      await user.click(screen.getByRole('button', { name: 'Параметры' }));
+    }
+    const draftField = screen.getByLabelText('Обозначение или наименование клапана');
+    if (editDraft && !retainBefore) await user.type(draftField, ' новый');
+    const createCall = api.create.mock.calls[0];
+    if (!createCall) throw new Error('Create was not sent');
+    await act(async () => {
+      finishLookup({
+        commandId: createCall[0].commandId,
+        testId,
+        status: CommandStatusStatus.CommandStatusStatusCompleted,
+      });
+      await lookup;
+    });
+    await waitFor(() => expect(screen.queryByText(/Команда: исход неизвестен/)).toBeNull());
+    expect(screen.getByLabelText('Обозначение или наименование клапана')).toHaveProperty(
+      'value',
+      editDraft ? 'К-1 новый' : 'К-1',
+    );
+  },
+  15000,
+);
+
 it('does not send another creation after an unknown response and remount', async () => {
   const snapshot: Snapshot = {
     apiVersion: 'v1',
     backendRunId: backend,
     revision: 0,
     lastEventSequence: 0,
+    measurementBatch: null,
     activeTest: null,
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -1939,8 +2586,10 @@ it.each(['wails', 'browser'])(
       backendRunId: backend,
       revision: 0,
       lastEventSequence: 0,
+      measurementBatch: null,
       activeTest: null,
       pendingAction: null,
+      measurementTiming: null,
       measurements: [],
     };
     const bridge: SessionBridge = {
@@ -2031,8 +2680,10 @@ it.each(['lost', 'malformed'] as const)(
           backendRunId: backend,
           revision: 0,
           lastEventSequence: 0,
+          measurementBatch: null,
           activeTest: null,
           pendingAction: null,
+          measurementTiming: null,
           measurements: [],
         },
         validForMs: 6000,
@@ -2142,8 +2793,10 @@ it.each([
         backendRunId: backend,
         revision: 0,
         lastEventSequence: 0,
+        measurementBatch: null,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -2194,8 +2847,10 @@ it('does not replace a confirmed command with a late unknown exact lookup', asyn
         backendRunId: backend,
         revision: 0,
         lastEventSequence: 0,
+        measurementBatch: null,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -2266,8 +2921,10 @@ it.each(['failure', 'invalid'])(
           backendRunId: backend,
           revision: 0,
           lastEventSequence: 0,
+          measurementBatch: null,
           activeTest: null,
           pendingAction: null,
+          measurementTiming: null,
           measurements: [],
         },
         validForMs: 6000,
@@ -2327,8 +2984,10 @@ it('accepts a valid direct receipt without testId', async () => {
         backendRunId: backend,
         revision: 0,
         lastEventSequence: 0,
+        measurementBatch: null,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -2375,7 +3034,9 @@ it('links a completed Create without testId to its exact result and snapshot', a
         revision,
         lastEventSequence: revision,
         activeTest,
+        measurementBatch: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -2421,7 +3082,7 @@ it('links a completed Create without testId to its exact result and snapshot', a
   });
   activeTest = record;
   revision = 1;
-  await screen.findByText('Проверки демонстрационного ядра', {}, { timeout: 8000 });
+  await screen.findByRole('heading', { name: 'Автоматические проверки' }, { timeout: 8000 });
   await waitFor(() => expect(screen.queryByText(/Команда: выполнена/)).toBeNull(), {
     timeout: 8000,
   });
@@ -2449,8 +3110,10 @@ it('checks an exact ordinary attempt even when its ID is reserved for Stop', asy
         backendRunId: backend,
         revision: 2,
         lastEventSequence: 2,
+        measurementBatch: null,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -2495,8 +3158,10 @@ it('can confirm Stop while an exact lookup with the same ID is waiting', async (
         backendRunId: backend,
         revision: 2,
         lastEventSequence: 2,
+        measurementBatch: null,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -2533,7 +3198,9 @@ it('can confirm Stop while an exact lookup with the same ID is waiting', async (
   });
 });
 
-it('keeps the first unresolved Stop when a later Stop attempt is rejected', async () => {
+it('keeps keyboard focus in the application when a completed command observation disappears', async () => {
+  const attempt = savedAttempt(stopId, 'start', testId, false);
+  sessionStorage.setItem(pendingKey, JSON.stringify([attempt]));
   const bridge: SessionBridge = {
     beginSessionCheck: async () => 'ticket',
     keepAlive: async () => {},
@@ -2551,37 +3218,104 @@ it('keeps the first unresolved Stop when a later Stop attempt is rejected', asyn
         backendRunId: backend,
         revision: 2,
         lastEventSequence: 2,
+        measurementBatch: null,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
       linkValidForMs: 6000,
     }),
   };
-  api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
-  api.stop
-    .mockRejectedValueOnce(new Error('first response lost'))
-    .mockResolvedValueOnce({ delivery: 'conflict', command: null });
+  let finish: (value: {
+    outcome: string;
+    command: { commandId: string; testId: string; status: string };
+  }) => void = () => {};
+  const held = new Promise<{
+    outcome: string;
+    command: { commandId: string; testId: string; status: string };
+  }>((resolve) => {
+    finish = resolve;
+  });
+  api.exact.mockReturnValue(held);
   render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
-  const user = userEvent.setup();
-  await user.click(await screen.findByRole('button', { name: 'Остановить испытание' }));
-  await screen.findByText(/Исход остановки неизвестен/);
-  await user.click(screen.getByRole('button', { name: 'Повторить запрос остановки' }));
-  await screen.findByText(/Запрос остановки отклонён/);
-  const stored = JSON.parse(sessionStorage.getItem(pendingKey) ?? '[]');
-  expect(stored).toContainEqual(
-    expect.objectContaining({
-      id: stopId,
-      kind: 'stop',
-      testId,
-      originalJSON: JSON.stringify({ commandId: stopId }),
-    }),
-  );
-  expect(api.stop).toHaveBeenCalledTimes(2);
-  await user.click(screen.getByRole('button', { name: 'Прекратить наблюдение' }));
-  expect(screen.queryByText(/Запрос остановки отклонён/)).toBeNull();
+  await waitFor(() => expect(api.exact).toHaveBeenCalled());
+  const summary = within(pendingRow(stopId)).getByText('Сведения о команде');
+  summary.focus();
+  expect(document.activeElement).toBe(summary);
+  await act(async () => {
+    finish({ outcome: 'match', command: { commandId: stopId, testId, status: 'completed' } });
+    await held;
+  });
+  await waitFor(() => expect(summary.isConnected).toBe(false));
+  expect(document.activeElement).toBe(screen.getByRole('main'));
 });
+
+it.each([false, true])(
+  'keeps the first unresolved Stop when a later Stop attempt is rejected (storage failure: %s)',
+  async (storageFailure) => {
+    const bridge: SessionBridge = {
+      beginSessionCheck: async () => 'ticket',
+      keepAlive: async () => {},
+      sessionView: async () => ({
+        connection: {
+          hostRunId: host,
+          revision: 1,
+          status: ConnectionStateStatus.Live,
+          linkValid: true,
+          leaseAcquireUnknown: false,
+          streamGeneration: 0,
+        },
+        snapshot: {
+          apiVersion: 'v1',
+          backendRunId: backend,
+          revision: 2,
+          lastEventSequence: 2,
+          measurementBatch: null,
+          activeTest: { ...record, stage: TestRecordStage.Running },
+          pendingAction: null,
+          measurementTiming: null,
+          measurements: [],
+        },
+        validForMs: 6000,
+        linkValidForMs: 6000,
+      }),
+    };
+    api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
+    api.stop
+      .mockRejectedValueOnce(new Error('first response lost'))
+      .mockResolvedValueOnce({ delivery: 'conflict', command: null });
+    render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Остановить испытание' }));
+    await screen.findByText(/Исход остановки неизвестен/);
+    await user.click(screen.getByRole('button', { name: 'Повторить запрос остановки' }));
+    await screen.findByText(/Запрос остановки отклонён/);
+    const stored = JSON.parse(sessionStorage.getItem(pendingKey) ?? '[]');
+    expect(stored).toContainEqual(
+      expect.objectContaining({
+        id: stopId,
+        kind: 'stop',
+        testId,
+        originalJSON: JSON.stringify({ commandId: stopId }),
+      }),
+    );
+    expect(api.stop).toHaveBeenCalledTimes(2);
+    const failure = storageFailure
+      ? vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+          throw new Error('unavailable');
+        })
+      : null;
+    await user.click(screen.getByRole('button', { name: 'Прекратить наблюдение' }));
+    if (failure) {
+      expect(screen.queryByText(/Запрос остановки отклонён/)).not.toBeNull();
+      failure.mockRestore();
+      await user.click(await screen.findByRole('button', { name: 'Повторить чтение команд' }));
+    }
+    await waitFor(() => expect(screen.queryByText(/Запрос остановки отклонён/)).toBeNull());
+  },
+);
 
 it('shows the restored terminal Stop status when the operator requests it again', async () => {
   sessionStorage.setItem(pendingKey, JSON.stringify([savedAttempt(stopId, 'stop', testId, false)]));
@@ -2602,8 +3336,10 @@ it('shows the restored terminal Stop status when the operator requests it again'
         backendRunId: backend,
         revision: 2,
         lastEventSequence: 2,
+        measurementBatch: null,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -2652,8 +3388,10 @@ it.each(['failed', 'rejected'])(
           backendRunId: backend,
           revision: 2,
           lastEventSequence: 2,
+          measurementBatch: null,
           activeTest: { ...record, stage: TestRecordStage.Running },
           pendingAction: null,
+          measurementTiming: null,
           measurements: [],
         },
         validForMs: 6000,
@@ -2689,8 +3427,10 @@ it('does not let a late rejected Stop replace a confirmed finished outcome', asy
     backendRunId: backend,
     revision: 2,
     lastEventSequence: 2,
+    measurementBatch: null,
     activeTest: { ...record, stage: TestRecordStage.Running },
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -2728,6 +3468,7 @@ it('does not let a late rejected Stop replace a confirmed finished outcome', asy
     ...snapshot,
     revision: 3,
     lastEventSequence: 3,
+    measurementBatch: null,
     activeTest: {
       ...record,
       stage: TestRecordStage.Finished,
@@ -2763,8 +3504,10 @@ it('does not discard a Stop observation while an earlier request is still in fli
         backendRunId: backend,
         revision: 2,
         lastEventSequence: 2,
+        measurementBatch: null,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -2812,8 +3555,10 @@ it.each(['conflict', 'wrongTest', 'badStatus'])('does not confirm Stop from %s',
         backendRunId: backend,
         revision: 2,
         lastEventSequence: 2,
+        measurementBatch: null,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -2876,8 +3621,10 @@ it('allows an explicitly reviewed legacy observation to be removed from a full l
         backendRunId: backend,
         revision: 0,
         lastEventSequence: 0,
+        measurementBatch: null,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -2892,7 +3639,7 @@ it('allows an explicitly reviewed legacy observation to be removed from a full l
     throw new Error('unavailable');
   });
   await userEvent.setup().click(remove);
-  expect(screen.getByText(/ID old-0\./)).toBeTruthy();
+  expect(screen.getByText('old-0')).toBeTruthy();
   expect(JSON.parse(sessionStorage.getItem(pendingKey) ?? '[]')).toHaveLength(64);
   failedWrite.mockRestore();
   await userEvent.setup().click(remove);
@@ -2902,7 +3649,7 @@ it('allows an explicitly reviewed legacy observation to be removed from a full l
     ),
   );
   expect(JSON.parse(sessionStorage.getItem(pendingKey) ?? '[]')).toHaveLength(63);
-  expect(screen.queryByText(/ID old-0\./)).toBeNull();
+  expect(screen.queryByText('old-0')).toBeNull();
   expect(api.command).not.toHaveBeenCalled();
 });
 
@@ -2929,8 +3676,10 @@ it.each(['start', 'confirm'] as const)(
           backendRunId: backend,
           revision: 2,
           lastEventSequence: 2,
+          measurementBatch: null,
           activeTest: { ...record, stage: TestRecordStage.Running },
           pendingAction: { testId, actionId, instruction: 'Подтвердите измерение' },
+          measurementTiming: null,
           measurements: [],
         },
         validForMs: 6000,
@@ -2968,7 +3717,7 @@ it.each(['start', 'confirm'] as const)(
       ),
     );
     if (kind === 'start') {
-      await waitFor(() => expect(screen.queryByText(new RegExp(`Команда:.*${id}`))).toBeNull());
+      await waitFor(() => expect(within(pendingList()).queryByText(id)).toBeNull());
       await waitFor(() =>
         expect(
           screen.getByRole('button', { name: 'Подтвердить действие' }).hasAttribute('disabled'),
@@ -3002,8 +3751,10 @@ it('does not report an unpersisted Stop when an ordinary browser receipt cannot 
         backendRunId: backend,
         revision: 0,
         lastEventSequence: 0,
+        measurementBatch: null,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -3064,8 +3815,10 @@ it.each(['rejected response', 'not sent response'] as const)(
       backendRunId: backend,
       revision: 0,
       lastEventSequence: 0,
+      measurementBatch: null,
       activeTest: null,
       pendingAction: null,
+      measurementTiming: null,
       measurements: [],
     };
     const bridge: SessionBridge = {
@@ -3159,8 +3912,10 @@ it('does not restore an unknown message after a later successful lookup', async 
         backendRunId: backend,
         revision: 0,
         lastEventSequence: 0,
+        measurementBatch: null,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -3204,8 +3959,10 @@ it('keeps an unknown stop message when a different command is confirmed', async 
     backendRunId: backend,
     revision: 0,
     lastEventSequence: 0,
+    measurementBatch: null,
     activeTest: null,
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -3238,13 +3995,13 @@ it('keeps an unknown stop message when a different command is confirmed', async 
   await userEvent.setup().click(createCheck);
   await screen.findByText(/Команда: выполнена/);
   expect(screen.getByText(/Исход команды пока неизвестен/)).toBeTruthy();
-  expect(screen.getByText(new RegExp(`Остановка испытания ${testId}`))).toBeTruthy();
+  expect(within(pendingRow(stopId)).getByText(testId).closest('details')?.open).toBe(false);
   snapshot = { ...snapshot, revision: 1, lastEventSequence: 1, activeTest: record };
   await waitFor(() => expect(screen.queryByText(/Команда: выполнена/)).toBeNull(), {
     timeout: 8000,
   });
   expect(screen.getByText(/Исход команды пока неизвестен/)).toBeTruthy();
-  expect(screen.getByText(new RegExp(`Остановка испытания ${testId}`))).toBeTruthy();
+  expect(within(pendingRow(stopId)).getByText(testId).closest('details')?.open).toBe(false);
   expect(api.create).not.toHaveBeenCalled();
 }, 15000);
 
@@ -3274,8 +4031,10 @@ it('keeps another command unknown when an earlier command fails', async () => {
         backendRunId: backend,
         revision: 0,
         lastEventSequence: 0,
+        measurementBatch: null,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -3311,9 +4070,7 @@ it('keeps another command unknown when an earlier command fails', async () => {
     });
     await stop;
   });
-  expect(
-    await screen.findByText(new RegExp(`Испытание ${testId}: Остановка не выполнена`)),
-  ).toBeTruthy();
+  expect(await screen.findByText(/Другое испытание: Остановка не выполнена/)).toBeTruthy();
   expect(screen.getByText(/Исход команды пока неизвестен/)).toBeTruthy();
   expect(api.create).not.toHaveBeenCalled();
 });
@@ -3345,8 +4102,10 @@ it('keeps separate failed stop results visible until the operator hides them', a
         backendRunId: backend,
         revision: 0,
         lastEventSequence: 0,
+        measurementBatch: null,
         activeTest: null,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -3362,25 +4121,32 @@ it('keeps separate failed stop results visible until the operator hides them', a
   const view = render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   const user = userEvent.setup();
   for (const item of stops) {
-    const row = await screen.findByText(new RegExp(`ID ${item.id}`));
+    const identity = await screen.findByText(item.id);
+    const row = identity.closest('div');
+    if (!row) throw new Error('Stop observation missing');
     await user.click(within(row).getByRole('button', { name: 'Проверить состояние' }));
     await waitFor(() => expect(row.textContent).toContain('завершилась с ошибкой'));
   }
   for (const item of stops) {
-    const row = screen.getByText(new RegExp(`ID ${item.id}`));
-    expect(row.textContent).toContain(`Остановка испытания ${item.testId}`);
+    const row = screen.getByText(item.id).closest('div');
+    if (!row) throw new Error('Stop observation missing');
+    expect(row.textContent).toContain('Остановка испытания');
+    expect(row.textContent).toContain(item.testId);
     expect(row.textContent).toContain('Безопасное давление не подтверждено');
   }
-  const first = screen.getByText(new RegExp(`ID ${stops[0]?.id}`));
+  const firstId = stops[0]?.id;
+  if (!firstId) throw new Error('First stop missing');
+  const first = screen.getByText(firstId).closest('div');
+  if (!first) throw new Error('First stop observation missing');
   await user.click(within(first).getByRole('button', { name: 'Скрыть наблюдение команды' }));
-  expect(screen.queryByText(new RegExp(`ID ${stops[0]?.id}`))).toBeNull();
-  for (const item of stops.slice(1))
-    expect(screen.getByText(new RegExp(`ID ${item.id}`))).toBeTruthy();
+  expect(screen.queryByText(firstId)).toBeNull();
+  for (const item of stops.slice(1)) expect(screen.getByText(item.id)).toBeTruthy();
   view.unmount();
   api.command.mockRejectedValue(new Error('core unavailable'));
   render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   for (const item of stops.slice(1)) {
-    const row = await screen.findByText(new RegExp(`ID ${item.id}`));
+    const row = (await screen.findByText(item.id)).closest('div');
+    if (!row) throw new Error('Stop observation missing');
     expect(row.textContent).toContain('Безопасное давление не подтверждено');
     expect(row.textContent).toContain('завершилась с ошибкой');
   }
@@ -3395,8 +4161,10 @@ it.each(['notSent', 'rejected', 'failed', 'lookupRejected', 'storageUnavailable'
       backendRunId: backend,
       revision: 0,
       lastEventSequence: 0,
+      measurementBatch: null,
       activeTest: null,
       pendingAction: null,
+      measurementTiming: null,
       measurements: [],
     };
     const bridge: SessionBridge = {
@@ -3495,8 +4263,10 @@ it('keeps an earlier test command failure when creating an unrelated test', asyn
     backendRunId: backend,
     revision: 0,
     lastEventSequence: 0,
+    measurementBatch: null,
     activeTest: null,
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -3556,8 +4326,11 @@ it('keeps an earlier test command failure when creating an unrelated test', asyn
     { timeout: 8000 },
   );
   const oldNotice = screen.getByText(/Команда отклонена или не выполнена/);
-  expect(oldNotice.textContent).toContain(oldStartId);
-  expect(oldNotice.textContent).toContain(oldTestId);
+  const oldStatus = oldNotice.closest('[role="status"]');
+  if (!(oldStatus instanceof HTMLElement)) throw new Error('Failure details missing');
+  const oldDetails = within(oldStatus).getByText(oldStartId).closest('details');
+  expect(oldDetails?.open).toBe(false);
+  expect(within(oldStatus).getByText(oldTestId)).toBeTruthy();
   expect(newNotice.compareDocumentPosition(oldNotice) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(
     0,
   );
@@ -3577,8 +4350,10 @@ it('brings a repeated readiness error back into view after another notice', asyn
     backendRunId: backend,
     revision: 1,
     lastEventSequence: 1,
+    measurementBatch: null,
     activeTest: record,
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -3650,8 +4425,10 @@ it('keeps a confirmed not-sent result when the service wrapper changes', async (
     backendRunId: backend,
     revision: 0,
     lastEventSequence: 0,
+    measurementBatch: null,
     activeTest: null,
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -3726,8 +4503,10 @@ it('allows stopping while another command is unresolved and reports a confirmed 
     backendRunId: backend,
     revision: 2,
     lastEventSequence: 2,
+    measurementBatch: null,
     activeTest: { ...record, stage: TestRecordStage.Running },
     pendingAction: { testId, actionId, instruction: 'Подтвердите измерение' },
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -3775,8 +4554,10 @@ it('does not report an unknown stop after its confirmed response', async () => {
     backendRunId: backend,
     revision: 2,
     lastEventSequence: 2,
+    measurementBatch: null,
     activeTest: { ...record, stage: TestRecordStage.Running },
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -3842,8 +4623,10 @@ it('keeps a storage warning when stop fails', async () => {
     backendRunId: backend,
     revision: 2,
     lastEventSequence: 2,
+    measurementBatch: null,
     activeTest: { ...record, stage: TestRecordStage.Running },
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -3909,8 +4692,10 @@ it('clears an unknown stop when the separate stop check confirms it', async () =
     backendRunId: backend,
     revision: 2,
     lastEventSequence: 2,
+    measurementBatch: null,
     activeTest: { ...record, stage: TestRecordStage.Running },
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -3973,6 +4758,7 @@ it('clears an unknown stop when the separate stop check confirms it', async () =
   snapshot = {
     ...snapshot,
     lastEventSequence: 3,
+    measurementBatch: null,
     activeTest: { ...record, stage: TestRecordStage.Running },
   };
   await waitFor(() => expect(stopReads).toBeGreaterThan(previousReads), { timeout: 8000 });
@@ -3986,7 +4772,7 @@ it('clears an unknown stop when the separate stop check confirms it', async () =
   });
   expect(await screen.findByText('Остановка подтверждена ядром.')).toBeTruthy();
   expect(screen.queryByText(/Исход команды пока неизвестен/)).toBeNull();
-  expect(screen.getByText(new RegExp(`Команда: выполнена.*${stopId}`))).toBeTruthy();
+  expect(pendingRow(stopId).textContent).toContain('Команда: выполнена');
   view.unmount();
   await act(async () => {
     finishOld({ commandId: oldId, status: CommandStatusStatus.CommandStatusStatusUnknown });
@@ -4017,8 +4803,10 @@ it('explains when a pending start was canceled by stop', async () => {
         backendRunId: backend,
         revision: 2,
         lastEventSequence: 2,
+        measurementBatch: null,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -4044,8 +4832,10 @@ it('offers the reserved stop after remount even when heartbeat cannot be confirm
     backendRunId: backend,
     revision: 2,
     lastEventSequence: 2,
+    measurementBatch: null,
     activeTest: { ...record, stage: TestRecordStage.Running },
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -4089,7 +4879,7 @@ it('offers the reserved stop after remount even when heartbeat cannot be confirm
   );
   render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   const stop = await screen.findByRole('button', { name: 'Остановить испытание' });
-  expect(screen.getByText('Состояние управления не подтверждено')).toBeTruthy();
+  expect(screen.getByText('Связь не подтверждена')).toBeTruthy();
   await userEvent.setup().click(stop);
   expect(api.stop).toHaveBeenCalledWith(testId, { commandId: stopId });
   expect(api.start).not.toHaveBeenCalled();
@@ -4101,8 +4891,10 @@ it('does not carry an active snapshot into a different database before a new obs
     backendRunId: backend,
     revision: 2,
     lastEventSequence: 2,
+    measurementBatch: null,
     activeTest: { ...record, stage: TestRecordStage.Running },
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const current: SessionView = {
@@ -4148,8 +4940,10 @@ it('does not reuse a previous database snapshot after full remount', async () =>
     backendRunId: backend,
     revision: 2,
     lastEventSequence: 2,
+    measurementBatch: null,
     activeTest: { ...record, stage: TestRecordStage.Running },
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const current: SessionView = {
@@ -4204,8 +4998,10 @@ it('retains the running display and reserved Stop while replacing the session wr
     backendRunId: backend,
     revision: 2,
     lastEventSequence: 2,
+    measurementBatch: null,
     activeTest: { ...record, stage: TestRecordStage.Running },
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const current: SessionView = {
@@ -4246,8 +5042,10 @@ it('continues checking Stop after the interrupted result and keeps saving separa
     backendRunId: backend,
     revision: 2,
     lastEventSequence: 2,
+    measurementBatch: null,
     activeTest: { ...record, stage: TestRecordStage.Running },
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   let revision = 0;
@@ -4291,6 +5089,7 @@ it('continues checking Stop after the interrupted result and keeps saving separa
     ...snapshot,
     revision: 3,
     lastEventSequence: 3,
+    measurementBatch: null,
     activeTest: {
       ...record,
       stage: TestRecordStage.Finished,
@@ -4309,8 +5108,10 @@ it('does not let an older confirmed view hide a newer active test from fallback'
     backendRunId: backend,
     revision: 0,
     lastEventSequence: 0,
+    measurementBatch: null,
     activeTest: null,
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const newer: Snapshot = { ...older, revision: 1, lastEventSequence: 1, activeTest: record };
@@ -4355,7 +5156,7 @@ it('does not let an older confirmed view hide a newer active test from fallback'
     await pending;
   });
   expect(screen.getByRole('button', { name: 'Остановить испытание' })).toBeTruthy();
-  expect(screen.getByText('Состояние управления не подтверждено')).toBeTruthy();
+  expect(screen.getByText('Связь не подтверждена')).toBeTruthy();
   expect(api.start).not.toHaveBeenCalled();
 });
 
@@ -4372,6 +5173,7 @@ it('keeps an earlier unknown Stop observable when stopping a later test', async 
     backendRunId: backend,
     revision: 5,
     lastEventSequence: 5,
+    measurementBatch: null,
     activeTest: {
       ...record,
       testId: nextTest,
@@ -4379,6 +5181,7 @@ it('keeps an earlier unknown Stop observable when stopping a later test', async 
       stage: TestRecordStage.Running,
     },
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -4425,8 +5228,10 @@ it('keeps Stop available and reserves its identifier when the command list is fu
     backendRunId: backend,
     revision: 2,
     lastEventSequence: 2,
+    measurementBatch: null,
     activeTest: { ...record, stage: TestRecordStage.Running },
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -4470,8 +5275,10 @@ it('keeps an unpersisted Stop observable across remount when session storage fai
     backendRunId: backend,
     revision: 2,
     lastEventSequence: 2,
+    measurementBatch: null,
     activeTest: { ...record, stage: TestRecordStage.Running },
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -4513,7 +5320,7 @@ it('keeps an unpersisted Stop observable across remount when session storage fai
   expect(screen.getByText(/отслеживается только в памяти/)).toBeTruthy();
   mounted.unmount();
   render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
-  expect(await screen.findByText(new RegExp(stopId))).toBeTruthy();
+  await waitFor(() => expect(within(pendingList()).getByText(stopId)).toBeTruthy());
   setItem.mockRestore();
   api.command.mockImplementation(async (id: string) => ({
     commandId: id,
@@ -4543,8 +5350,10 @@ it('preserves a newer shared attempt when restoring an unpersisted Stop', async 
     backendRunId: backend,
     revision: 2,
     lastEventSequence: 2,
+    measurementBatch: null,
     activeTest: { ...record, stage: TestRecordStage.Running },
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -4618,7 +5427,7 @@ it('preserves a newer shared attempt when restoring an unpersisted Stop', async 
       ),
     );
     await userEvent.setup().click(
-      within(screen.getByText(new RegExp(`ID ${stopId}`))).getByRole('button', {
+      within(pendingRow(stopId)).getByRole('button', {
         name: 'Проверить состояние',
       }),
     );
@@ -4695,8 +5504,10 @@ it.each([
         backendRunId: backend,
         revision: 2,
         lastEventSequence: 2,
+        measurementBatch: null,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -4726,7 +5537,7 @@ it.each([
     await userEvent
       .setup()
       .click(await screen.findByRole('button', { name: 'Прекратить наблюдение' }));
-    expect(screen.getByText(new RegExp(`ID ${stopId}`))).toBeTruthy();
+    expect(within(pendingList()).getByText(stopId)).toBeTruthy();
     if (source !== 'local-fails' && source !== 'superseded' && source !== 'superseded-no-version')
       failure.mockRestore();
     if (
@@ -4790,7 +5601,7 @@ it.each([
     const saved: { id: string; retired: boolean }[] = JSON.parse(localStorage.getItem(key) ?? '[]');
     if (source === 'superseded' || source === 'superseded-no-version') {
       expect(saved).toEqual([]);
-      expect(screen.queryByText(new RegExp(`ID ${stopId}`))).toBeNull();
+      expect(within(pendingList()).queryByText(stopId)).toBeNull();
       return;
     }
     expect(saved).toEqual(
@@ -4801,7 +5612,7 @@ it.each([
         }),
       ]),
     );
-    expect(screen.getByText(new RegExp(`ID ${stopId}`))).toBeTruthy();
+    expect(within(pendingList()).getByText(stopId)).toBeTruthy();
   } finally {
     failure.mockRestore();
     random?.mockRestore();
@@ -4834,8 +5645,10 @@ it('retains a new Stop when an initially unreadable older observation is later r
         backendRunId: backend,
         revision: 2,
         lastEventSequence: 2,
+        measurementBatch: null,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -4911,8 +5724,10 @@ it('still sends Stop when the observation version cannot be generated', async ()
         backendRunId: backend,
         revision: 2,
         lastEventSequence: 2,
+        measurementBatch: null,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -4938,7 +5753,7 @@ it('still sends Stop when the observation version cannot be generated', async ()
     await userEvent.setup().click(stop);
     expect(api.stop).toHaveBeenCalledTimes(2);
     expect(screen.getByRole('button', { name: 'Повторить чтение команд' })).toBeTruthy();
-    expect(screen.getByText(new RegExp(`ID ${stopId}`))).toBeTruthy();
+    expect(within(pendingList()).getByText(stopId)).toBeTruthy();
     expect(localStorage.getItem(key)).not.toContain(stopId);
     random.mockRestore();
     const failedWrite = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
@@ -4985,8 +5800,10 @@ it('retains overflow until multiple requested removals can be saved, while Stop 
         backendRunId: backend,
         revision: 2,
         lastEventSequence: 2,
+        measurementBatch: null,
         activeTest: active,
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -5013,9 +5830,18 @@ it('retains overflow until multiple requested removals can be saved, while Stop 
     first.unmount();
     active = { ...active, testId: secondTest, stopCommandId: secondStop };
     const second = render(<LiveApp {...props} />);
+    // The remount initially exposes last-known data; this attempt targets the next test.
+    await waitFor(
+      () =>
+        expect(
+          sessionObservation(host, backend).getSnapshotFor(bridge).lastSnapshot?.activeTest?.testId,
+        ).toBe(secondTest),
+      { timeout: 8000 },
+    );
     await userEvent
       .setup()
       .click(await screen.findByRole('button', { name: 'Остановить испытание' }));
+    expect(api.stop).toHaveBeenLastCalledWith(secondTest, { commandId: secondStop });
     second.unmount();
     failure.mockRestore();
     const old = Array.from({ length: 65 }, (_, index) => ({
@@ -5027,23 +5853,23 @@ it('retains overflow until multiple requested removals can be saved, while Stop 
     }));
     localStorage.setItem(key, JSON.stringify(old));
     render(<LiveApp {...props} />);
-    await screen.findByText(/ID overflow-0\./);
-    expect(screen.getByText(new RegExp(`ID ${stopId}`))).toBeTruthy();
-    expect(screen.getByText(new RegExp(`ID ${secondStop}`))).toBeTruthy();
+    await screen.findByText('overflow-0');
+    expect(within(pendingList()).getByText(stopId)).toBeTruthy();
+    expect(within(pendingList()).getByText(secondStop)).toBeTruthy();
     await userEvent.setup().click(
-      within(screen.getByText(/ID overflow-0\./)).getByRole('button', {
+      within(pendingRow('overflow-0')).getByRole('button', {
         name: 'Удалить запись наблюдения',
       }),
     );
-    expect(screen.getByText(/ID overflow-0\./)).toBeTruthy();
+    expect(screen.getByText('overflow-0')).toBeTruthy();
     expect(JSON.parse(localStorage.getItem(key) ?? '[]')).toHaveLength(65);
     await userEvent.setup().click(
-      within(screen.getByText(/ID overflow-1\./)).getByRole('button', {
+      within(pendingRow('overflow-1')).getByRole('button', {
         name: 'Удалить запись наблюдения',
       }),
     );
-    expect(screen.queryByText(/ID overflow-0\./)).toBeNull();
-    expect(screen.queryByText(/ID overflow-1\./)).toBeNull();
+    expect(screen.queryByText('overflow-0')).toBeNull();
+    expect(screen.queryByText('overflow-1')).toBeNull();
     const saved: { id: string }[] = JSON.parse(localStorage.getItem(key) ?? '[]');
     expect(saved).toHaveLength(65);
     expect(saved.map((item) => item.id)).toEqual(expect.arrayContaining([stopId, secondStop]));
@@ -5075,8 +5901,10 @@ it('merges the previously unread command list before storing an emergency Stop',
     backendRunId: backend,
     revision: 2,
     lastEventSequence: 2,
+    measurementBatch: null,
     activeTest: { ...record, stage: TestRecordStage.Running },
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -5138,8 +5966,10 @@ it('can retry reading an unavailable command list without sending a command', as
     backendRunId: backend,
     revision: 0,
     lastEventSequence: 0,
+    measurementBatch: null,
     activeTest: null,
     pendingAction: null,
+    measurementTiming: null,
     measurements: [],
   };
   const bridge: SessionBridge = {
@@ -5277,8 +6107,10 @@ it.each([false, true])(
           backendRunId: backend,
           revision: 2,
           lastEventSequence: 2,
+          measurementBatch: null,
           activeTest: { ...record, stage: TestRecordStage.Running },
           pendingAction: null,
+          measurementTiming: null,
           measurements: [],
         },
         validForMs: 6000,
@@ -5316,8 +6148,10 @@ it('does not accept a raw Stop status as a dispatch response', async () => {
         backendRunId: backend,
         revision: 2,
         lastEventSequence: 2,
+        measurementBatch: null,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,
@@ -5361,12 +6195,14 @@ it.each([
           backendRunId: backend,
           revision: 2,
           lastEventSequence: 2,
+          measurementBatch: null,
           activeTest: {
             ...record,
             stage: kind === 'start' ? TestRecordStage.Preparing : TestRecordStage.Running,
           },
           pendingAction:
             kind === 'confirm' ? { testId, actionId, instruction: 'Подтвердите измерение' } : null,
+          measurementTiming: null,
           measurements: [],
         },
         validForMs: 6000,
@@ -5396,7 +6232,7 @@ it.each([
     render(<LiveApp session={bridge} service={service} hostRunId={host} backendRunId={backend} />);
     const user = userEvent.setup();
     if (kind === 'start') {
-      await screen.findByText('Проверки демонстрационного ядра');
+      await screen.findByRole('heading', { name: 'Автоматические проверки' });
       await user.click(screen.getByLabelText(/Клапан закрыт/));
       await user.click(screen.getByLabelText(/Подключение соответствует направлению/));
       const start = screen.getByRole('button', { name: /Перейти к проведению/ });
@@ -5453,8 +6289,10 @@ it('retains an unread earlier Stop after Storage recovers and a new request is n
         backendRunId: backend,
         revision: 2,
         lastEventSequence: 2,
+        measurementBatch: null,
         activeTest: { ...record, stage: TestRecordStage.Running },
         pendingAction: null,
+        measurementTiming: null,
         measurements: [],
       },
       validForMs: 6000,

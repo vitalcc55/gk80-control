@@ -1,190 +1,18 @@
-import { ArrowLeft, ArrowRight, FlaskConical, Plus, Search } from 'lucide-react';
+import { ArrowLeft, ArrowRight } from 'lucide-react';
 import {
   type Dispatch,
   type FormEvent,
+  type ReactNode,
   type SetStateAction,
   useEffect,
   useRef,
   useState,
 } from 'react';
 import { exactPositiveDecimal, trimDemoValve } from '../desktop/demo-input';
-import { outcomeLabel, qualityLabel, saveLabel } from '../desktop/display';
-import { formatNumber } from '../fixtureAdapter';
-import type {
-  Readiness,
-  TestRecord,
-} from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
+import { formatNumber } from '../lib/format';
 import type { TestParameters } from '../model';
 import { PressureNotation } from './PressureNotation';
-import './OtherScreens.css';
-
-interface TestsScreenProps {
-  empty: boolean;
-  showExample: boolean;
-  draftAvailable: boolean;
-  activeParameters: TestParameters | null;
-  history: readonly TestParameters[];
-  example: TestParameters;
-  onNew: () => void;
-  onOpen: () => void;
-  onHistory: (parameters: TestParameters) => void;
-}
-
-export function TestsScreen({
-  empty,
-  showExample,
-  draftAvailable,
-  activeParameters,
-  history,
-  example,
-  onNew,
-  onOpen,
-  onHistory,
-}: TestsScreenProps) {
-  const [query, setQuery] = useState('');
-  const entries = empty
-    ? []
-    : [
-        ...history.filter((item) => item.id !== activeParameters?.id),
-        ...(showExample &&
-        example.id !== activeParameters?.id &&
-        !history.some((item) => item.id === example.id)
-          ? [example]
-          : []),
-      ];
-  const matches = entries.filter((item) =>
-    `${item.id} ${item.valve}`
-      .toLocaleLowerCase('ru')
-      .includes(query.trim().toLocaleLowerCase('ru')),
-  );
-
-  return (
-    <section className="workpage" aria-labelledby="tests-title">
-      <div className="workpage-heading">
-        <div>
-          <h1 id="tests-title">Испытания</h1>
-        </div>
-        <div className="action-with-help">
-          {activeParameters !== null && (
-            <span id="new-test-block-reason">
-              В примере уже есть активное испытание. Вернитесь к нему ниже.
-            </span>
-          )}
-          <button
-            className="work-button work-button-primary"
-            type="button"
-            onClick={onNew}
-            disabled={activeParameters !== null}
-            aria-describedby={activeParameters !== null ? 'new-test-block-reason' : undefined}
-          >
-            <Plus aria-hidden="true" size={18} />{' '}
-            {draftAvailable ? 'Продолжить подготовку' : 'Новое испытание'}
-          </button>
-        </div>
-      </div>
-
-      {activeParameters !== null && (
-        <div className="active-example">
-          <div className="active-example-icon">
-            <FlaskConical aria-hidden="true" size={20} />
-          </div>
-          <div className="active-example-details">
-            <span className="status-label">
-              <span className="status-dot" /> Пример активного прохода
-            </span>
-            <strong>
-              {activeParameters.id} · {activeParameters.valve}
-            </strong>
-            <span>
-              {activeParameters.direction === 'pressure' ? 'Нагнетание' : 'Разрежение'} ·{' '}
-              {formatNumber(activeParameters.pmax)} Па ·{' '}
-              {activeParameters.actuator ? 'с приводом' : 'без привода'}
-            </span>
-          </div>
-          <button className="work-button work-button-secondary" type="button" onClick={onOpen}>
-            Вернуться к испытанию <ArrowRight aria-hidden="true" size={16} />
-          </button>
-        </div>
-      )}
-
-      <div className="work-surface history-surface">
-        <div className="surface-heading">
-          <div>
-            <h2>История испытаний</h2>
-          </div>
-          {entries.length > 0 && (
-            <label className="history-search">
-              <Search aria-hidden="true" size={17} />
-              <span className="visually-hidden">Поиск по номеру или изделию</span>
-              <input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="Номер или изделие"
-              />
-            </label>
-          )}
-        </div>
-        {entries.length === 0 ? (
-          <div className="empty-example">
-            <p>История пуста</p>
-          </div>
-        ) : matches.length > 0 ? (
-          <div className="table-scroll">
-            <table className="work-table">
-              <thead>
-                <tr>
-                  <th>Испытание</th>
-                  <th>Изделие</th>
-                  <th>Направление</th>
-                  <th>
-                    <PressureNotation />
-                  </th>
-                  <th>Привод</th>
-                  <th>Ход</th>
-                  <th>Сохранение</th>
-                  <th>
-                    <span className="visually-hidden">Действие</span>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {matches.map((entry) => (
-                  <tr key={entry.id}>
-                    <td>
-                      <strong>{entry.id}</strong>
-                    </td>
-                    <td>{entry.valve}</td>
-                    <td>{entry.direction === 'pressure' ? 'Нагнетание' : 'Разрежение'}</td>
-                    <td>{formatNumber(entry.pmax)} Па</td>
-                    <td>{entry.actuator ? 'Есть' : 'Нет'}</td>
-                    <td>Завершён в примере</td>
-                    <td>Пример: сохранено</td>
-                    <td>
-                      <button
-                        className="table-action"
-                        type="button"
-                        onClick={() => onHistory(entry)}
-                      >
-                        Открыть
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="empty-example">
-            <p>По запросу «{query}» ничего не найдено.</p>
-            <button className="table-action" type="button" onClick={() => setQuery('')}>
-              Сбросить поиск
-            </button>
-          </div>
-        )}
-      </div>
-    </section>
-  );
-}
+import './screens.css';
 
 type Direction = TestParameters['direction'];
 export interface Draft {
@@ -201,6 +29,17 @@ export interface Draft {
 type Errors = Partial<
   Record<'valve' | 'area' | 'pmax' | 'openSeconds' | 'closeSeconds' | 'measurementSeconds', string>
 >;
+
+function RequiredLabel({ id, children }: { id?: string; children: ReactNode }) {
+  return (
+    <span>
+      <span id={id}>{children}</span>{' '}
+      <span className="required-marker" aria-hidden="true">
+        *
+      </span>
+    </span>
+  );
+}
 
 function positiveNumber(value: string): number | null {
   const normalized = value.trim().replace(',', '.');
@@ -391,7 +230,6 @@ export function ParametersScreen({
       <div className="workpage-heading">
         <div>
           <h1 id="parameters-title">Параметры испытания</h1>
-          <p>Все поля обязательны</p>
         </div>
       </div>
       <form ref={formRef} onSubmit={submit} noValidate>
@@ -402,7 +240,7 @@ export function ParametersScreen({
             </div>
             <div className="form-grid">
               <label className="form-field form-field-wide">
-                <span id="valve-label">Обозначение или наименование клапана</span>
+                <RequiredLabel id="valve-label">Обозначение или наименование клапана</RequiredLabel>
                 <input
                   className="work-input"
                   aria-labelledby="valve-label"
@@ -418,9 +256,9 @@ export function ParametersScreen({
                 )}
               </label>
               <label className="form-field">
-                <span>
+                <RequiredLabel>
                   Площадь клапана, м<sup>2</sup>
-                </span>
+                </RequiredLabel>
                 <input
                   className="work-input"
                   aria-label="Площадь клапана, квадратные метры"
@@ -444,9 +282,9 @@ export function ParametersScreen({
             </div>
             <div className="form-grid">
               <label className="form-field">
-                <span id="pmax-label">
+                <RequiredLabel id="pmax-label">
                   <PressureNotation /> производителя, Па
-                </span>
+                </RequiredLabel>
                 <input
                   className="work-input"
                   aria-labelledby="pmax-label"
@@ -462,9 +300,9 @@ export function ParametersScreen({
                 )}
               </label>
               <label className="form-field">
-                <span id="measurementSeconds-label">
-                  {live ? 'Интервал демонстрационного измерения, с' : 'Период усреднения утечки, с'}
-                </span>
+                <RequiredLabel id="measurementSeconds-label">
+                  Длительность измерения, с
+                </RequiredLabel>
                 <input
                   className="work-input"
                   aria-labelledby="measurementSeconds-label"
@@ -499,7 +337,7 @@ export function ParametersScreen({
                       disabled={live}
                       onChange={() => setDraft({ ...draft, direction: 'vacuum' })}
                     />{' '}
-                    Разрежение
+                    Разрежение {live && <small aria-hidden="true">Недоступно</small>}
                   </label>
                 </div>
                 <small>
@@ -533,21 +371,17 @@ export function ParametersScreen({
                     disabled={live}
                     onChange={() => setDraft({ ...draft, actuator: true })}
                   />{' '}
-                  Есть
+                  Есть {live && <small aria-hidden="true">Недоступно</small>}
                 </label>
               </div>
             </fieldset>
-            {live && (
-              <p className="field-help">
-                В этом демонстрационном проходе доступны нагнетание и клапан без привода.
-              </p>
-            )}
             {draft.actuator && (
               <div className="form-grid actuator-grid">
                 <label className="form-field">
-                  <span>Внешняя цепь, В</span>
+                  <RequiredLabel id="voltage-label">Внешняя цепь, В</RequiredLabel>
                   <select
                     className="work-input"
+                    aria-labelledby="voltage-label"
                     required
                     value={draft.voltage}
                     onChange={(event) =>
@@ -559,7 +393,7 @@ export function ParametersScreen({
                   </select>
                 </label>
                 <label className="form-field">
-                  <span id="openSeconds-label">Команда открытия, с</span>
+                  <RequiredLabel id="openSeconds-label">Команда открытия, с</RequiredLabel>
                   <input
                     className="work-input"
                     aria-labelledby="openSeconds-label"
@@ -575,7 +409,7 @@ export function ParametersScreen({
                   )}
                 </label>
                 <label className="form-field">
-                  <span id="closeSeconds-label">Команда закрытия, с</span>
+                  <RequiredLabel id="closeSeconds-label">Команда закрытия, с</RequiredLabel>
                   <input
                     className="work-input"
                     aria-labelledby="closeSeconds-label"
@@ -597,6 +431,7 @@ export function ParametersScreen({
             )}
           </div>
         </div>
+        <p className="required-key">* — обязательное поле</p>
         <div className="work-actions">
           <button className="work-button work-button-secondary" type="button" onClick={onBack}>
             <ArrowLeft aria-hidden="true" size={16} /> К испытаниям
@@ -615,15 +450,7 @@ export function ParametersScreen({
   );
 }
 
-export function ActiveParametersScreen({
-  parameters,
-  onReturn,
-  live = false,
-}: {
-  parameters: TestParameters;
-  onReturn: () => void;
-  live?: boolean;
-}) {
+export function ActiveParametersScreen({ parameters }: { parameters: TestParameters }) {
   return (
     <section className="workpage workpage-narrow" aria-labelledby="active-parameters-title">
       <div className="workpage-heading">
@@ -655,7 +482,7 @@ export function ActiveParametersScreen({
             <dd>{formatNumber(parameters.pmax)} Па</dd>
           </div>
           <div>
-            <dt>{live ? 'Интервал демонстрационного измерения' : 'Период усреднения утечки'}</dt>
+            <dt>Длительность измерения</dt>
             <dd>{formatNumber(parameters.measurementSeconds)} с</dd>
           </div>
           <div>
@@ -687,301 +514,6 @@ export function ActiveParametersScreen({
             </>
           )}
         </dl>
-      </div>
-      <div className="work-actions">
-        <button className="work-button work-button-primary" type="button" onClick={onReturn}>
-          Вернуться к испытанию <ArrowRight aria-hidden="true" size={16} />
-        </button>
-      </div>
-    </section>
-  );
-}
-
-interface ReadinessScreenProps {
-  parameters: TestParameters;
-  autoCheckFailed: boolean;
-  onBack: () => void;
-  onStart: (confirmations: { valveClosed: boolean; connectionConfirmed: boolean }) => void;
-  readiness?: Readiness;
-  pending?: boolean;
-  stale?: boolean;
-}
-
-export function ReadinessScreen({
-  parameters,
-  autoCheckFailed,
-  onBack,
-  onStart,
-  readiness,
-  pending = false,
-  stale = false,
-}: ReadinessScreenProps) {
-  const [valveConfirmed, setValveConfirmed] = useState(false);
-  const [connectionConfirmed, setConnectionConfirmed] = useState(false);
-  const canStart =
-    valveConfirmed &&
-    connectionConfirmed &&
-    !autoCheckFailed &&
-    (readiness?.ready ?? true) &&
-    !pending;
-  return (
-    <section className="workpage workpage-narrow" aria-labelledby="readiness-title">
-      <div className="workpage-heading">
-        <div>
-          <h1 id="readiness-title">Готовность</h1>
-        </div>
-      </div>
-      <div className="parameter-summary">
-        <div>
-          <span>Изделие</span>
-          <strong>{parameters.valve}</strong>
-        </div>
-        <div>
-          <span>Рабочая точка</span>
-          <strong>{formatNumber(parameters.pmax)} Па</strong>
-        </div>
-        <div>
-          <span>Направление</span>
-          <strong>{parameters.direction === 'pressure' ? 'Нагнетание' : 'Разрежение'}</strong>
-        </div>
-        <div>
-          <span>Привод</span>
-          <strong>{parameters.actuator ? 'Есть' : 'Нет'}</strong>
-        </div>
-      </div>
-      <div className="work-surface readiness-surface">
-        <div className="section-heading">
-          <h2>Автоматические проверки</h2>
-          <p>{readiness ? 'Проверки демонстрационного ядра' : 'Подготовленный пример состояния'}</p>
-        </div>
-        <ul className="checks-list">
-          {readiness ? (
-            readiness.checks?.map((check) => (
-              <li key={check.code}>
-                <span>{check.label}</span>
-                <strong className={check.ready ? undefined : 'error-text'}>
-                  {stale ? 'Не подтверждено' : check.ready ? 'Готово' : 'Не готово'}
-                </strong>
-              </li>
-            ))
-          ) : (
-            <>
-              <li>
-                <span>Связь и актуальность показаний</span>
-                <strong className={autoCheckFailed ? 'error-text' : undefined}>
-                  {autoCheckFailed ? 'Нет связи · пример' : 'Готово'}
-                </strong>
-              </li>
-              <li>
-                <span>Аварийный вход и конфигурация</span>
-                <strong>Готово</strong>
-              </li>
-              <li>
-                <span>Необходимое оборудование</span>
-                <strong>Готово</strong>
-              </li>
-            </>
-          )}
-        </ul>
-        <div className="section-heading checks-heading">
-          <h2>Подтверждения оператора</h2>
-        </div>
-        <div className="confirm-list">
-          <label>
-            <input
-              type="checkbox"
-              checked={valveConfirmed}
-              onChange={(event) => setValveConfirmed(event.target.checked)}
-            />
-            <span>
-              <strong>Клапан закрыт</strong>
-              <small>Визуально проверьте положение клапана.</small>
-            </span>
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={connectionConfirmed}
-              onChange={(event) => setConnectionConfirmed(event.target.checked)}
-            />
-            <span>
-              <strong>Подключение соответствует направлению</strong>
-              <small>
-                Патрубок переключается вручную; диафрагма №{' '}
-                {parameters.direction === 'pressure' ? '1' : '2'}.
-              </small>
-            </span>
-          </label>
-        </div>
-      </div>
-      <div className="work-actions">
-        <button className="work-button work-button-secondary" type="button" onClick={onBack}>
-          <ArrowLeft aria-hidden="true" size={16} /> К параметрам
-        </button>
-        <div className="action-with-help">
-          {!canStart && (
-            <span>
-              {stale
-                ? 'Связь или готовность не подтверждены.'
-                : pending
-                  ? 'Ожидаем ответ ядра.'
-                  : autoCheckFailed
-                    ? 'Автоматическая проверка не пройдена.'
-                    : 'Отметьте оба подтверждения оператора.'}
-            </span>
-          )}
-          <button
-            className="work-button work-button-primary"
-            type="button"
-            disabled={!canStart}
-            onClick={() => onStart({ valveClosed: valveConfirmed, connectionConfirmed })}
-          >
-            {pending ? 'Ожидание ядра…' : 'Перейти к проведению'}{' '}
-            <ArrowRight aria-hidden="true" size={16} />
-          </button>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-interface ResultScreenProps {
-  parameters: TestParameters;
-  saveError: boolean;
-  interrupted: boolean;
-  active: boolean;
-  draftAvailable: boolean;
-  onList: () => void;
-  onNew: () => void;
-  record?: TestRecord;
-}
-
-export function ResultScreen({
-  parameters,
-  saveError,
-  interrupted,
-  active,
-  draftAvailable,
-  onList,
-  onNew,
-  record,
-}: ResultScreenProps) {
-  return (
-    <section className="workpage" aria-labelledby="result-title">
-      <div className="workpage-heading">
-        <div>
-          <h1 id="result-title">Результат испытания</h1>
-          <p>
-            {parameters.id} · {parameters.valve}
-          </p>
-        </div>
-      </div>
-      <div className="result-overview">
-        <div>
-          <span>Ход испытания</span>
-          <strong>
-            {record
-              ? outcomeLabel(record.outcome)
-              : interrupted
-                ? 'Прерван в примере'
-                : 'Завершён в примере'}
-          </strong>
-        </div>
-        <div>
-          <span>Данные</span>
-          <strong>
-            {record
-              ? qualityLabel(record.dataQuality)
-              : interrupted
-                ? 'Пример: частичные данные'
-                : 'Пример: данные доступны'}
-          </strong>
-        </div>
-        <div>
-          <span>Сохранение</span>
-          <strong className={saveError ? 'error-text' : ''}>
-            {record
-              ? saveLabel(record.saveStatus)
-              : saveError
-                ? 'Ошибка сохранения · пример'
-                : 'Пример: сохранено'}
-          </strong>
-          {saveError && <p>Запись результата не подтверждена.</p>}
-        </div>
-      </div>
-      <div className="result-layout">
-        <div className="work-surface result-section">
-          <div className="section-heading">
-            <h2>Параметры прохода</h2>
-          </div>
-          <dl className="result-details">
-            <div>
-              <dt>Изделие</dt>
-              <dd>{parameters.valve}</dd>
-            </div>
-            <div>
-              <dt>Площадь клапана</dt>
-              <dd>
-                {formatNumber(parameters.area)} м<sup>2</sup>
-              </dd>
-            </div>
-            <div>
-              <dt>
-                Давление <PressureNotation />
-              </dt>
-              <dd>{formatNumber(parameters.pmax)} Па</dd>
-            </div>
-            <div>
-              <dt>Направление</dt>
-              <dd>{parameters.direction === 'pressure' ? 'Нагнетание' : 'Разрежение'}</dd>
-            </div>
-            <div>
-              <dt>Привод</dt>
-              <dd>{parameters.actuator ? 'Есть' : 'Нет'}</dd>
-            </div>
-            <div>
-              <dt>
-                {record ? 'Интервал демонстрационного измерения' : 'Период усреднения утечки'}
-              </dt>
-              <dd>{formatNumber(parameters.measurementSeconds)} с</dd>
-            </div>
-          </dl>
-        </div>
-        <div className="work-surface result-section">
-          <div className="section-heading">
-            <h2>Результаты расчёта</h2>
-            <p>
-              {record
-                ? 'В демонстрационном проходе не рассчитываются'
-                : 'В макете не рассчитываются'}
-            </p>
-          </div>
-          <dl className="result-details">
-            <div>
-              <dt>Расход</dt>
-              <dd>Не рассчитан</dd>
-            </div>
-            <div>
-              <dt>Класс герметичности</dt>
-              <dd>Не определён</dd>
-            </div>
-          </dl>
-        </div>
-      </div>
-      <div className="work-actions">
-        <button className="work-button work-button-secondary" type="button" onClick={onList}>
-          <ArrowLeft aria-hidden="true" size={16} /> К списку
-        </button>
-        <button
-          className="work-button work-button-primary"
-          type="button"
-          onClick={onNew}
-          disabled={active}
-          title={active ? 'Вернитесь к активному проходу' : undefined}
-        >
-          {draftAvailable && !active ? 'Продолжить подготовку' : 'Новое по этим параметрам'}{' '}
-          <ArrowRight aria-hidden="true" size={16} />
-        </button>
       </div>
     </section>
   );

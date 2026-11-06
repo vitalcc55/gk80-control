@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { SnapshotStatus } from '../components/SnapshotStatus';
 import type { SessionView } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
 import type { SessionBridge } from './bridge';
 import { useSessionObservation } from './use-session-observation';
@@ -21,37 +22,49 @@ export function SessionStatus({
   const { projection } = useSessionObservation(bridge, hostRunId, backendRunId, onView, onGap);
   const isConfirmed = projection.linkValid;
   const needsRestart = projection.unknownAcquire;
-  const [showUpdating, setShowUpdating] = useState(false);
+  const confirmedSnapshot = snapshotAccepted && projection.connection !== null;
+  const [notice, setNotice] = useState<'none' | 'unconfirmed' | 'restored'>('none');
   useEffect(() => {
-    if (!isConfirmed || snapshotAccepted) {
-      setShowUpdating(false);
-      return undefined;
+    if (confirmedSnapshot) {
+      setNotice((previous) => (previous === 'unconfirmed' ? 'restored' : 'none'));
+      return;
     }
-    const timer = setTimeout(() => setShowUpdating(true), 500);
-    return () => clearTimeout(timer);
-  }, [isConfirmed, snapshotAccepted]);
+    setNotice('none');
+    const timer = window.setTimeout(() => {
+      setNotice('unconfirmed');
+    }, 1500);
+    return () => window.clearTimeout(timer);
+  }, [confirmedSnapshot]);
   return (
-    <div role="status" className="session-status">
-      <p className="session-status-title">
-        <span>
-          {needsRestart
-            ? 'Получение управления не подтверждено'
-            : isConfirmed
-              ? 'При последней проверке связь с ядром подтверждена'
-              : 'Состояние управления не подтверждено'}
-        </span>
-      </p>
-      <p className="session-status-help">
-        <span>
-          {needsRestart
-            ? 'Состояние испытания не подтверждено. Закройте приложение. Запустите снова только после завершения ядра.'
-            : isConfirmed
-              ? showUpdating
-                ? 'Ожидаем актуальное состояние ядра; действия временно недоступны.'
-                : ''
-              : 'Состояние испытания не подтверждено; последние показания могут быть неактуальны. Если связь не восстанавливается, перезапустите приложение.'}
-        </span>
-      </p>
+    <div className="session-status">
+      <div role="status" aria-atomic="true">
+        <p className="session-status-title">
+          <span>
+            {needsRestart
+              ? 'Управление не подтверждено'
+              : isConfirmed
+                ? 'Связь подтверждена'
+                : 'Связь не подтверждена'}
+          </span>
+        </p>
+        <p className="session-status-help">
+          <span>
+            {needsRestart
+              ? 'Состояние испытания не подтверждено. Закройте приложение. Запустите снова только после завершения ядра.'
+              : isConfirmed
+                ? ''
+                : 'Состояние испытания не подтверждено; последние показания могут быть неактуальны. Если связь не восстанавливается, перезапустите приложение.'}
+          </span>
+        </p>
+      </div>
+      <SnapshotStatus unconfirmed={!confirmedSnapshot && notice === 'unconfirmed'} />
+      <span className="sr-only" role="status">
+        {notice === 'unconfirmed'
+          ? 'Состояние не подтверждено. Обычные команды временно недоступны.'
+          : notice === 'restored'
+            ? 'Состояние обновлено'
+            : ''}
+      </span>
     </div>
   );
 }

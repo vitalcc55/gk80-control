@@ -763,7 +763,7 @@ func TestMigrationKeepsVersionOneHistory(t *testing.T) {
 	if err != nil || reopened != old {
 		t.Fatalf("old record: %+v %v", reopened, err)
 	}
-	items, next, err := store.ListTests(context.Background(), nil, 1)
+	items, next, _, err := store.ListTests(context.Background(), contract.ListTestsParams{After: nil, Limit: new(1)})
 	if err != nil || len(items) != 1 || items[0] != old || next != nil {
 		t.Fatalf("old history page: %+v %v", items, err)
 	}

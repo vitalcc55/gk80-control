@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/google/uuid"
 	"github.com/vitalcc55/gk80-control/internal/contract"
 )
 
@@ -44,19 +43,14 @@ func registerHistoryRoutes(mux *http.ServeMux, s *browserSession, service histor
 		s.reply(w, r, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 	}
 	register("GET /api/tests", func(w http.ResponseWriter, r *http.Request) {
-		after, limit, err := pageQuery(r)
+		values, err := url.ParseQuery(r.URL.RawQuery)
+		params := contract.ListTestsParams{}
+		if err == nil {
+			params, err = contract.ParseTestListQuery(values)
+		}
 		if err != nil {
 			invalid(w, r)
 			return
-		}
-		params := contract.ListTestsParams{Limit: &limit}
-		if after != "" {
-			if !validID(after) {
-				invalid(w, r)
-				return
-			}
-			id, _ := uuid.Parse(after)
-			params.After = &id
 		}
 		s.call(w, r, func(ctx context.Context) (any, error) { return service.ListTests(ctx, params) })
 	})

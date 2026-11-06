@@ -1,7 +1,7 @@
-import { useLayoutEffect, useRef } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
-import { formatNumber } from '../fixtureAdapter';
+import { formatNumber } from '../lib/format';
 import type { GraphPoint } from '../model';
 
 interface MeasurementChartProps {
@@ -17,6 +17,18 @@ interface MeasurementChartProps {
 const formatValue = (value: number | null): string =>
   value === null ? 'Нет данных' : formatNumber(value, 12);
 
+// A line cannot show a sample with gaps on both sides; mark only those samples.
+const isolatedPoints: uPlot.Series.Points.Filter = (chart, seriesIndex) => {
+  const values = chart.data[seriesIndex];
+  if (!values) return [];
+  const isolated: number[] = [];
+  for (let index = 0; index < values.length; index++) {
+    if (values[index] != null && values[index - 1] == null && values[index + 1] == null)
+      isolated.push(index);
+  }
+  return isolated;
+};
+
 /** Выбирает точность по отметкам, чтобы соседние значения не сливались в один текст. */
 function formatAxisValues(splits: number[]): string[] {
   const scientific = splits.some(
@@ -24,11 +36,9 @@ function formatAxisValues(splits: number[]): string[] {
   );
   const uniqueCount = new Set(splits).size;
   for (let digits = 3; digits <= 17; digits++) {
-    const formatter = new Intl.NumberFormat('ru-RU', {
-      notation: scientific ? 'scientific' : 'standard',
-      maximumSignificantDigits: digits,
-    });
-    const labels = splits.map((value) => (value === 0 ? '0' : formatter.format(value)));
+    const labels = splits.map((value) =>
+      value === 0 ? '0' : formatNumber(value, digits, scientific ? 'scientific' : 'standard'),
+    );
     if (new Set(labels).size === uniqueCount) return labels;
   }
   return splits.map((value) => String(value));
@@ -125,6 +135,7 @@ export function MeasurementChart({
   rangeSeconds,
   live = false,
 }: MeasurementChartProps) {
+  const [tableOpen, setTableOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<uPlot | null>(null);
   const projectionRef = useRef<ChartProjection | null>(null);
@@ -246,7 +257,7 @@ export function MeasurementChart({
           scale: 'pressure',
           stroke: color('--chart-pressure'),
           width: 2,
-          points: { show: false },
+          points: { show: true, filter: isolatedPoints, size: 4, fill: color('--chart-pressure') },
           spanGaps: false,
         },
         {
@@ -263,7 +274,12 @@ export function MeasurementChart({
           stroke: color('--chart-differential'),
           width: 2,
           dash: [7, 3],
-          points: { show: false },
+          points: {
+            show: true,
+            filter: isolatedPoints,
+            size: 4,
+            fill: color('--chart-differential'),
+          },
           spanGaps: false,
         },
         {
@@ -336,31 +352,33 @@ export function MeasurementChart({
         </span>
         {tolerance !== undefined && <span>Допуск ±{tolerance}%</span>}
       </div>
-      <details className="chart-data">
+      <details className="chart-data" onToggle={(event) => setTableOpen(event.currentTarget.open)}>
         <summary>Таблица показаний</summary>
-        <div className="chart-data-scroll">
-          <table className="chart-data-table">
-            <caption className="visually-hidden">
-              {live ? 'Показания симулятора по времени' : 'Подготовленные показания по времени'}
-            </caption>
-            <thead>
-              <tr>
-                <th scope="col">Время, с</th>
-                <th scope="col">Давление ДД1, Па</th>
-                <th scope="col">Перепад, Па</th>
-              </tr>
-            </thead>
-            <tbody>
-              {points.map((point) => (
-                <tr key={point.seconds}>
-                  <td>{formatValue(point.seconds)}</td>
-                  <td>{formatValue(point.pressure)}</td>
-                  <td>{formatValue(point.differential)}</td>
+        {tableOpen && (
+          <div className="chart-data-scroll">
+            <table className="chart-data-table">
+              <caption className="visually-hidden">
+                {live ? 'Показания симулятора по времени' : 'Подготовленные показания по времени'}
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col">Время, с</th>
+                  <th scope="col">Давление ДД1, Па</th>
+                  <th scope="col">Перепад, Па</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {points.map((point) => (
+                  <tr key={point.seconds}>
+                    <td>{formatValue(point.seconds)}</td>
+                    <td>{formatValue(point.pressure)}</td>
+                    <td>{formatValue(point.differential)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </details>
     </div>
   );

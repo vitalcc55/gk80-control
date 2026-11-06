@@ -118,7 +118,7 @@ it('shows an occupied profile and degraded diagnostics separately', async () => 
   render(<DesktopApp bridge={bridge} />);
   expect(await screen.findByText('Профиль уже открыт')).toBeTruthy();
   expect(screen.getByText('Журнал диагностики недоступен или неполон.')).toBeTruthy();
-  expect(screen.getByText('Демонстрация · тестовые данные')).toBeTruthy();
+  expect(screen.queryByText('Демонстрация · тестовые данные')).toBeNull();
 });
 
 it('ignores a delayed RPC failure after a newer event', async () => {

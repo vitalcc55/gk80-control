@@ -2,14 +2,20 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BrowserApp } from '../src/browser/BrowserApp';
+import type { MeasurementSeriesContext } from '../src/desktop/measurement-series';
+
+const contexts = vi.hoisted((): MeasurementSeriesContext[] => []);
 
 vi.mock('../src/desktop/DesktopApp', () => ({
-  DesktopApp: () => (
-    <>
-      <p>Рабочий экран</p>
-      <input aria-label="Черновик" />
-    </>
-  ),
+  DesktopApp: ({ measurementContext }: { measurementContext: MeasurementSeriesContext }) => {
+    contexts.push(measurementContext);
+    return (
+      <>
+        <p>Рабочий экран</p>
+        <input aria-label="Черновик" />
+      </>
+    );
+  },
 }));
 
 const generation = '11111111-1111-4111-8111-111111111111:1';
@@ -70,7 +76,7 @@ describe('browser entry', () => {
     render(<BrowserApp />);
     await waitFor(() => expect(Socket.instances).toHaveLength(1));
     Socket.instances[0]?.receive({ busy: true, channel: generation });
-    expect((await screen.findByRole('alert')).textContent).toContain('уже открыта');
+    expect((await screen.findByRole('alert')).textContent).toMatch(/уже открыт/);
     await new Promise((resolve) => setTimeout(resolve, 600));
     expect(Socket.instances).toHaveLength(1);
     expect(fetch).not.toHaveBeenCalled();
@@ -110,7 +116,7 @@ describe('browser entry', () => {
       await waitFor(() => expect(Socket.instances).toHaveLength(index + 1));
       Socket.instances[index]?.receive({ retry: true });
     }
-    expect((await screen.findByRole('alert')).textContent).toContain('уже открыта');
+    expect((await screen.findByRole('alert')).textContent).toMatch(/уже открыт/);
     await new Promise((resolve) => setTimeout(resolve, 600));
     expect(Socket.instances).toHaveLength(5);
   });
@@ -147,10 +153,13 @@ describe('browser entry', () => {
   });
 
   it('recreates the screen only when the host instance changes', async () => {
+    contexts.length = 0;
     render(<BrowserApp />);
     await waitFor(() => expect(Socket.instances).toHaveLength(1));
     Socket.instances[0]?.receive({ channel: generation });
     const input = await screen.findByLabelText('Черновик');
+    const context = contexts[0];
+    expect(context).toBeDefined();
     fireEvent.change(input, { target: { value: 'Клапан' } });
     Socket.instances[0]?.close();
     await waitFor(() => expect(Socket.instances).toHaveLength(2));
@@ -159,6 +168,7 @@ describe('browser entry', () => {
     const replacement = screen.getByLabelText('Черновик');
     expect(replacement).not.toBe(input);
     expect((replacement as HTMLInputElement).value).toBe('');
+    expect(contexts.at(-1)).toBe(context);
   });
 
   it('bounds repeated short-lived channels', async () => {

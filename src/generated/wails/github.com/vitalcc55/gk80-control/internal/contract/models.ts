@@ -237,6 +237,22 @@ export interface Handshake {
  */
 export interface ListTestsParams {
     /**
+     * Q Подстрока UUID или изделия без учёта Unicode-регистра; внешние пробелы игнорируются, % и _ буквальные.
+     */
+    "q"?: string | null;
+
+    /**
+     * CreatedFrom Начало диапазона createdAt включительно; RFC 3339, точность до наносекунды.
+     */
+    "createdFrom"?: string | null;
+
+    /**
+     * CreatedBefore Конец диапазона createdAt исключительно; позже createdFrom, точность до наносекунды.
+     */
+    "createdBefore"?: string | null;
+    "outcome"?: TestRecordOutcome | null;
+
+    /**
      * After Последний прочитанный UUID; порядок по UUID, не по времени.
      */
     "after"?: types$0.UUID | null;
@@ -336,6 +352,14 @@ export enum MeasurementSource {
 };
 
 /**
+ * MeasurementTiming Монотонное время Engine на последнем принятом отсчёте. Нулевой остаток не подтверждает завершение этапа.
+ */
+export interface MeasurementTiming {
+    "elapsedSeconds": number;
+    "remainingSeconds": number;
+}
+
+/**
  * MeasurementUnit defines model for Measurement.Unit.
  */
 export enum MeasurementUnit {
@@ -417,6 +441,16 @@ export interface Snapshot {
     "apiVersion": string;
     "backendRunId": types$0.UUID;
     "lastEventSequence": number;
+
+    /**
+     * MeasurementBatch Номер последнего принятого пакета текущего испытания. До первого пакета null; каждый успешно принятый пакет получает следующий номер начиная с 1. Публикуется атомарно с measurements и сохраняется с ними при остановке и завершении. Не подтверждает запись в Store.
+     */
+    "measurementBatch": number | null;
+
+    /**
+     * MeasurementTiming Неизвестно до первого принятого отсчёта и вне измерения; это последнее наблюдение, не таймер UI.
+     */
+    "measurementTiming": MeasurementTiming | null;
     "measurements": Measurement[] | null;
     "pendingAction": PendingAction | null;
     "revision": number;
@@ -428,6 +462,11 @@ export interface Snapshot {
 export interface TestList {
     "items": TestRecord[] | null;
     "nextAfter": types$0.UUID | null;
+
+    /**
+     * Total Число записей по фильтрам без ограничения курсором; null, если история изменилась при чтении.
+     */
+    "total": number | null;
 }
 
 /**
@@ -501,7 +540,7 @@ export enum TestRecordDataQuality {
 };
 
 /**
- * TestRecordOutcome defines model for TestRecord.Outcome.
+ * TestRecordOutcome defines model for TestRecordOutcome.
  */
 export enum TestRecordOutcome {
     /**

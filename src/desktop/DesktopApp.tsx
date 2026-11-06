@@ -3,6 +3,7 @@ import type { DesktopStatus } from '../generated/wails/github.com/vitalcc55/gk80
 import type { DesktopBridge, SessionBridge } from './bridge';
 import type { DemoService } from './demo-service';
 import { LiveApp } from './LiveApp';
+import { MeasurementSeriesContext } from './measurement-series';
 import { SessionStatus } from './SessionStatus';
 
 interface ViewState {
@@ -44,14 +45,18 @@ export function DesktopApp({
   service,
   pendingStorage,
   retainLiveOnError = false,
+  measurementContext: providedMeasurementContext,
 }: {
   bridge: DesktopBridge;
   session?: SessionBridge;
   service?: DemoService;
   pendingStorage?: Storage;
   retainLiveOnError?: boolean;
+  measurementContext?: MeasurementSeriesContext;
 }) {
   const current = useRef<ViewState>({ status: null, bridgeError: false });
+  const [localMeasurementContext] = useState(() => new MeasurementSeriesContext());
+  const measurementContext = providedMeasurementContext ?? localMeasurementContext;
   const [view, setView] = useState<ViewState>(current.current);
   const [pending, setPending] = useState(false);
   const [verifiedBridge, setVerifiedBridge] = useState<DesktopBridge | null>(null);
@@ -163,6 +168,7 @@ export function DesktopApp({
         {bridgeError && <p role="alert">Не удалось подтвердить состояние приложения.</p>}
         <div hidden={bridgeError}>
           <LiveApp
+            measurementContext={measurementContext}
             session={session}
             service={service}
             hostRunId={status.hostRunId}
@@ -180,11 +186,10 @@ export function DesktopApp({
     <main className="desktop-shell">
       <header className="desktop-header">
         <strong>ГК80</strong>
-        <span>Демонстрация · тестовые данные</span>
       </header>
       <section className="desktop-card" aria-labelledby="desktop-title">
         <p className="desktop-eyebrow">Проверка приложения</p>
-        <h1 id="desktop-title">Связь с демонстрационным ядром</h1>
+        <h1 id="desktop-title">Подключение</h1>
         <p role="status" aria-live="polite" className="desktop-status">
           {label}
         </p>

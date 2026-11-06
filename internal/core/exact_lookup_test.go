@@ -190,7 +190,7 @@ func TestExactCreateLookupMatchesStoredIdentityWithoutExecuting(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(beforeAudit, afterAudit) {
 		t.Fatalf("lookup changed audit: %+v %v", afterAudit, err)
 	}
-	list, _, err := store.ListTests(context.Background(), nil, 100)
+	list, _, _, err := store.ListTests(context.Background(), contract.ListTestsParams{After: nil, Limit: new(100)})
 	if err != nil || len(list) != 1 || list[0].TestId != *created.TestId {
 		t.Fatalf("stored tests changed: %+v %v", list, err)
 	}

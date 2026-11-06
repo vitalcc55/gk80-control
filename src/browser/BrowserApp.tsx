@@ -2,12 +2,14 @@ import { useEffect, useRef, useState } from 'react';
 import { createBrowserBridge } from '../desktop/browser-bridge';
 import { parseBrowserJSON, responseGuards } from '../desktop/browser-responses';
 import { DesktopApp } from '../desktop/DesktopApp';
+import { MeasurementSeriesContext } from '../desktop/measurement-series';
 
 type Bridges = ReturnType<typeof createBrowserBridge>;
 type Connection = { bridges: Bridges; instance: string };
 type Screen = 'connecting' | 'connected' | 'busy' | 'unavailable';
 
 export function BrowserApp() {
+  const [measurementContext] = useState(() => new MeasurementSeriesContext());
   const [screen, setScreen] = useState<Screen>('connecting');
   const [connection, setConnection] = useState<Connection | null>(null);
   const pendingStorage = useRef<Storage | null>(null);
@@ -119,16 +121,15 @@ export function BrowserApp() {
         <main className="desktop-shell">
           <header className="desktop-header">
             <strong>ГК80</strong>
-            <span>Демонстрация · тестовые данные</span>
           </header>
           <section className="desktop-card">
-            <h1>Подключение к демонстрации</h1>
+            <h1>Подключение</h1>
             {screen === 'connecting' && (
               <p role="status">Подключение… Показания не подтверждены.</p>
             )}
-            {screen === 'busy' && <p role="alert">Демонстрация уже открыта в другом интерфейсе.</p>}
+            {screen === 'busy' && <p role="alert">Приложение уже открыто в другом окне.</p>}
             {screen === 'unavailable' && (
-              <p role="alert">Подключение не подтверждено. Проверьте, что демонстрация запущена.</p>
+              <p role="alert">Подключение не подтверждено. Проверьте, что приложение запущено.</p>
             )}
             {(screen === 'busy' || screen === 'unavailable') && (
               <button type="button" onClick={() => setScreen('connecting')}>
@@ -141,6 +142,7 @@ export function BrowserApp() {
       {connection && pendingStorage.current && (
         <div style={{ display: screen === 'connected' ? undefined : 'none' }}>
           <DesktopApp
+            measurementContext={measurementContext}
             key={connection.instance}
             {...connection.bridges}
             pendingStorage={pendingStorage.current}

@@ -251,6 +251,18 @@ function exactLookup(value: unknown): value is Contract.ExactLookupResult {
   );
 }
 
+function measurementTiming(value: unknown): value is Contract.MeasurementTiming {
+  return (
+    fields(value, ['elapsedSeconds', 'remainingSeconds']) &&
+    finite(value['elapsedSeconds']) &&
+    value['elapsedSeconds'] >= 0 &&
+    value['elapsedSeconds'] <= Number.MAX_SAFE_INTEGER &&
+    finite(value['remainingSeconds']) &&
+    value['remainingSeconds'] >= 0 &&
+    value['remainingSeconds'] <= 3600
+  );
+}
+
 function snapshot(value: unknown): value is Contract.Snapshot {
   return (
     fields(value, [
@@ -261,6 +273,8 @@ function snapshot(value: unknown): value is Contract.Snapshot {
       'activeTest',
       'pendingAction',
       'measurements',
+      'measurementBatch',
+      'measurementTiming',
     ]) &&
     text(value['apiVersion']) &&
     uuid(value['backendRunId']) &&
@@ -268,9 +282,20 @@ function snapshot(value: unknown): value is Contract.Snapshot {
     counter(value['lastEventSequence']) &&
     (value['activeTest'] === null || testRecord(value['activeTest'])) &&
     (value['pendingAction'] === null || pendingAction(value['pendingAction'])) &&
+    (value['measurementTiming'] === null ||
+      (measurementTiming(value['measurementTiming']) &&
+        value['measurementBatch'] !== null &&
+        testRecord(value['activeTest']) &&
+        value['activeTest'].stage === 'running' &&
+        value['pendingAction'] === null)) &&
     Array.isArray(value['measurements']) &&
     value['measurements'].length <= 3 &&
-    value['measurements'].every(measurement)
+    value['measurements'].every(measurement) &&
+    (value['measurementBatch'] === null
+      ? value['measurements'].length === 0
+      : counter(value['measurementBatch'], 1) &&
+        value['measurements'].length > 0 &&
+        value['activeTest'] !== null)
   );
 }
 
@@ -384,11 +409,14 @@ function auditPage(value: unknown): value is Contract.AuditPage {
 
 function testList(value: unknown): value is Contract.TestList {
   return (
-    fields(value, ['items', 'nextAfter']) &&
+    fields(value, ['items', 'nextAfter', 'total']) &&
     Array.isArray(value['items']) &&
     value['items'].length <= 500 &&
     value['items'].every(testRecord) &&
-    (value['nextAfter'] === null || uuid(value['nextAfter']))
+    (value['nextAfter'] === null || uuid(value['nextAfter'])) &&
+    (value['total'] === null ||
+      (counter(value['total']) &&
+        value['total'] >= value['items'].length + (value['nextAfter'] === null ? 0 : 1)))
   );
 }
 

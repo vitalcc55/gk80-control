@@ -199,10 +199,10 @@ func TestHistoryMethodResponses(t *testing.T) {
 	}
 }
 
-func (s *blockedHistory) ListTests(ctx context.Context, after *uuid.UUID, limit int) ([]contract.TestRecord, *uuid.UUID, error) {
+func (s *blockedHistory) ListTests(ctx context.Context, params contract.ListTestsParams) ([]contract.TestRecord, *uuid.UUID, *int64, error) {
 	close(s.entered)
 	<-s.release // Deliberately ignores cancellation to test worker ownership.
-	return s.Store.ListTests(context.Background(), after, limit)
+	return s.Store.ListTests(context.Background(), params)
 }
 
 func TestHistoryRevocationAndBlockedReadRemainBounded(t *testing.T) {

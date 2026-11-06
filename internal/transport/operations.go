@@ -160,20 +160,11 @@ func (c *Client) Snapshot(ctx context.Context, lease uuid.UUID) (contract.Snapsh
 
 func (c *Client) ListTests(ctx context.Context, lease uuid.UUID, params contract.ListTestsParams) (contract.TestList, error) {
 	var result contract.TestList
-	query := url.Values{}
-	if params.After != nil {
-		if *params.After == uuid.Nil {
-			return result, invalidRequest()
-		}
-		query.Set("after", params.After.String())
+	query, err := contract.EncodeTestListQuery(params)
+	if err != nil {
+		return result, invalidRequest()
 	}
-	if params.Limit != nil {
-		if *params.Limit < 1 || *params.Limit > 500 {
-			return result, invalidRequest()
-		}
-		query.Set("limit", strconv.Itoa(*params.Limit))
-	}
-	err := c.get(ctx, "/v1/tests?"+query.Encode(), lease, "TestList", &result)
+	err = c.get(ctx, "/v1/tests?"+query.Encode(), lease, "TestList", &result)
 	if err == nil {
 		limit := 100
 		if params.Limit != nil {
@@ -184,6 +175,13 @@ func (c *Client) ListTests(ctx context.Context, lease uuid.UUID, params contract
 			previous = params.After.String()
 		}
 		if len(result.Items) > limit {
+			return contract.TestList{}, &RequestError{Code: "invalid_response"}
+		}
+		minimumTotal := int64(len(result.Items))
+		if result.NextAfter != nil {
+			minimumTotal++
+		}
+		if result.Total != nil && *result.Total < minimumTotal {
 			return contract.TestList{}, &RequestError{Code: "invalid_response"}
 		}
 		for _, item := range result.Items {

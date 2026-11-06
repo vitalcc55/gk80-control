@@ -11,7 +11,11 @@ func TestResponseValidationRejectsMissingNullAndDuplicateFields(t *testing.T) {
 		body  string
 		valid bool
 	}{
-		{`{"items":[],"nextAfter":null}`, true},
+		{`{"items":[],"nextAfter":null,"total":0}`, true},
+		{`{"items":[],"nextAfter":null,"total":null}`, true},
+		{`{"items":[],"nextAfter":null}`, false},
+		{`{"items":[],"nextAfter":null,"total":-1}`, false},
+		{`{"items":[],"nextAfter":null,"total":1.5}`, false},
 		{`{"items":[]}`, false},
 		{`{"items":null,"nextAfter":null}`, false},
 		{`{"items":[],"items":[],"nextAfter":null}`, false},

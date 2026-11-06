@@ -12,7 +12,7 @@ export const stages: readonly { id: StageId; label: string }[] = [
 ];
 
 export const defaultParameters: TestParameters = {
-  id: 'ДЕМО-001',
+  id: 'ИСП-001',
   valve: 'Образец клапана',
   area: 0.012,
   pmax: 10000,

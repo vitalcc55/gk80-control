@@ -19,16 +19,6 @@ export const fixtureSource: PreviewSource = {
   find: getFixture,
 };
 
-/** Точность входных данных сохраняется по умолчанию; для подготовленных значений её можно указать отдельно. */
-export function formatNumber(value: number, maximumSignificantDigits = 21): string {
-  const magnitude = Math.abs(value);
-  const scientific = magnitude >= 1e12 || (magnitude > 0 && magnitude < 1e-9);
-  return new Intl.NumberFormat('ru-RU', {
-    notation: scientific ? 'scientific' : 'standard',
-    maximumSignificantDigits,
-  }).format(value);
-}
-
 /** Переходы предназначены только для просмотра; это не алгоритм core. */
 export const demoSteps: readonly {
   stage: StageId;

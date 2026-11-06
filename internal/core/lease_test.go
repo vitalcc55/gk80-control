@@ -182,3 +182,29 @@ func TestSnapshotRejectsLeaseRevokedWhileReading(t *testing.T) {
 		t.Fatal("snapshot did not return")
 	}
 }
+
+func TestSnapshotCarriesAcceptedMeasurementBatch(t *testing.T) {
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	engine, err := demo.NewEngine(context.Background(), store, demo.NewSimulator(), uuid.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	leases := newUILeases(engine, time.Minute)
+	defer leases.close()
+	lease, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch := int64(3)
+	source := &eventTestSource{state: demo.State{BackendRunID: uuid.New(), MeasurementBatch: &batch}, changed: make(chan struct{}, 1)}
+	feed := newEventFeed(source)
+	defer feed.close()
+	snapshot, err := leases.snapshot(lease.id, feed)
+	if err != nil || snapshot.MeasurementBatch == nil || *snapshot.MeasurementBatch != batch {
+		t.Fatalf("snapshot lost batch: %+v %v", snapshot, err)
+	}
+}
