@@ -18,7 +18,6 @@ import {
   mergePending,
   mergeStatus,
   type Pending,
-  ordinaryNoticeKey,
   pendingKey,
   pruneStatuses,
   readLegacyPending,
@@ -96,22 +95,12 @@ export function createCommandCoordinator({
   let commandFailure: CommandFailure | null = null;
   let latestNotice: 'message' | 'commandFailure' = 'message';
   let storageMessage = '';
-  let commandMessages = new Map<string, {
-    id: string;
-    testId?: string | null;
-    text: string;
-    source: 'ordinary' | 'stop';
-    category: 'normal' | 'accepted' | 'attention' | 'manual' | 'direct';
-    status?: CommandStatus;
-    conflict?: boolean;
-    originalJSON?: string | null;
-  }>();
+  let commandMessages = new Map<string, { id: string; text: string; startAcceptedFor?: string; attention?: true }>();
   let stopMessage = '';
   let volatileStopTracking = false;
   let stopRequestedFor: string | null = null;
   let lastStopId: string | null = null;
   const stopStatuses = new Map<string, CommandStatus>();
-  const manualChecks = new Map<string, number>();
   let lookupIndex = 0;
   let createdVersion = 0;
   let input: CommandInput;
@@ -216,103 +205,25 @@ export function createCommandCoordinator({
     latestNotice = 'commandFailure';
     changed();
   }
-  function setCommandMessage(
-    id: string,
-    text: string,
-    key = id,
-    source: 'ordinary' | 'stop' = 'stop',
-    category: 'normal' | 'accepted' | 'attention' | 'manual' | 'direct' = 'normal',
-    testId?: string | null,
-  ) {
+  function setCommandMessage(id: string, text: string, key = id, startAcceptedFor?: string, attention = false) {
     const previous = commandMessages.get(key);
-    if (category === 'accepted' && previous?.category === 'attention') return;
-    if ((previous?.text ?? '') === text && previous?.source === source &&
-        previous?.category === category && previous?.testId === testId) return;
+    if (startAcceptedFor && previous?.attention) return;
+    if ((previous?.text ?? '') === text && previous?.startAcceptedFor === startAcceptedFor && !!previous?.attention === attention) return;
     commandMessages = new Map(commandMessages);
-    if (text)
-      commandMessages.set(key, {
-        id,
-        text,
-        source,
-        category,
-        ...(testId ? { testId } : {}),
-      });
+    if (text) commandMessages.set(key, { id, text, ...(startAcceptedFor ? { startAcceptedFor } : {}), ...(attention ? { attention: true as const } : {}) });
     else commandMessages.delete(key);
     changed();
   }
-  function setObservationMessage(item: Pending, text: string, category: 'normal' | 'accepted' | 'attention' = 'normal') {
-    const source = item.kind === 'stop' ? 'stop' : 'ordinary';
-    const key = item.kind === 'stop' ? stopNoticeKey(item.id, item.testId, item.originalJSON) : ordinaryNoticeKey(item);
-    setCommandMessage(item.id, text, key, source, category);
-  }
-  function unknownMessage(item: Pending) {
-    setObservationMessage(item, 'Исход команды пока неизвестен. Автоматический повтор не выполняется.');
-  }
-  function clearObservationNotices(item: Pending) {
-    setObservationMessage(item, '');
-    if (item.kind === 'stop') {
-      setCommandMessage(item.id, '', stopLookupNoticeKey(item.id, item.testId, item.originalJSON));
-    }
-  }
-  function clearMissingObservations(previous: Pending[], current: Pending[]) {
-    for (const item of previous) {
-      if (!current.some((entry) => samePending(entry, item))) clearObservationNotices(item);
-    }
-  }
-  function manualResultText(source: 'ordinary' | 'stop', status: CommandStatus | null | undefined, conflict: boolean) {
-    if (conflict) {
-      const reason = 'Точная сверка невозможна: запись принадлежит другой команде.';
-      return status && status.status !== 'unknown'
-        ? `${reason} ${manualResultText(source, status, false)}`
-        : source === 'stop' ? `${reason} Безопасное давление не подтверждено.` : reason;
-    }
-    return !status || status.status === 'unknown'
-      ? source === 'stop'
-        ? 'Исход остановки не подтверждён. Безопасное давление не подтверждено.'
-        : 'Исход команды не подтверждён.'
-      : source === 'stop'
-      ? status.status === 'completed'
-        ? 'Остановка подтверждена ядром.'
-        : status.status === 'failed' || status.status === 'rejected'
-          ? 'Остановка не выполнена или отклонена. Безопасное давление не подтверждено.'
-          : 'Остановка запрошена, её завершение ещё не подтверждено.'
-      : status.status === 'completed'
-        ? 'Команда выполнена.'
-        : status.status === 'failed' || status.status === 'rejected'
-          ? 'Команда отклонена или не выполнена.'
-          : 'Команда принята; её завершение ещё не подтверждено.';
-  }
-  function showManualResult(item: Pending, result: CommandStatus | null, conflict = false) {
-    const key = `manual:${pendingKey(item)}`;
-    const previous = commandMessages.get(key)?.status ?? (item.kind === 'stop' ? stopStatuses.get(pendingKey(item)) : undefined) ?? item.status;
-    const status = result ? mergeStatus(previous ?? null, result) : previous;
-    const source = item.kind === 'stop' ? 'stop' : 'ordinary';
-    const text = manualResultText(source, status, conflict);
-    commandMessages = new Map(commandMessages);
-    const testId = item.testId ?? status?.testId;
-    commandMessages.set(key, { id: item.id, ...(testId ? { testId } : {}), originalJSON: item.originalJSON, text, ...(status ? { status } : {}), ...(conflict ? { conflict } : {}), source, category: 'manual' });
-    changed();
-  }
-  function refreshManualStatus(identity: string, result: CommandStatus): CommandStatus {
-    const key = `manual:${identity}`;
-    const notice = commandMessages.get(key);
-    const status = mergeStatus(notice?.status ?? null, result);
-    if (notice?.category === 'manual') {
-      commandMessages = new Map(commandMessages);
-      commandMessages.set(key, { ...notice, ...(notice.testId || !status.testId ? {} : { testId: status.testId }), status, text: manualResultText(notice.source, status, !!notice.conflict) });
-      changed();
-    }
-    return status;
-  }
-  function rememberStopStatus(identity: string, result: CommandStatus): CommandStatus {
-    const status = refreshManualStatus(identity, mergeStatus(stopStatuses.get(identity) ?? null, result));
-    stopStatuses.set(identity, status);
-    return status;
+  function unknownMessage(id: string, key = id) {
+    setCommandMessage(
+      id,
+      'Исход команды пока неизвестен. Автоматический повтор не выполняется.',
+      key,
+    );
   }
   const savePending = (values: Pending[], allowVolatile = false, remove?: Pending): boolean => {
     if (!active) return false;
     let recovered = values;
-    const previousPending = pending;
     const requestedRemovals = [...memory.removals];
     try {
       for (const item of memory.retained) {
@@ -367,10 +278,10 @@ export function createCommandCoordinator({
       );
       pending = values;
       setPending(values);
-      clearMissingObservations([...previousPending, ...requestedRemovals, ...memory.removals], values);
       for (const removed of [...requestedRemovals, ...memory.removals]) {
-        if (removed.kind === 'stop' && !values.some((item) => samePending(item, removed)))
+        if (removed.kind === 'stop' && !values.some((item) => samePending(item, removed))) {
           setCommandMessage(removed.id, '', stopAttemptNoticeKey(removed.id, removed.testId, removed.originalJSON));
+        }
       }
       memory.volatile = null;
       memory.baseline = values;
@@ -395,7 +306,6 @@ export function createCommandCoordinator({
       }
       memory.volatile = recovered;
       pending = recovered;
-      clearMissingObservations(previousPending, recovered);
       setPending(recovered);
       setVolatileStopTracking(hasUnstoredStop(recovered, storageKey, pendingStorage));
       setStorageMessage(
@@ -406,9 +316,16 @@ export function createCommandCoordinator({
   };
   const forget = (item: Pending) => {
     if (pending.some((current) => samePending(current, item)) && !savePending(pending, false, item))
-      return false;
-    clearObservationNotices(item);
-    return true;
+      return;
+    setCommandMessage(
+      item.id,
+      '',
+      item.kind === 'stop' ? stopNoticeKey(item.id, item.testId, item.originalJSON) : item.id,
+    );
+    if (item.kind === 'stop')
+      setCommandMessage(item.id, '', stopLookupNoticeKey(item.id, item.testId, item.originalJSON));
+    if (item.kind === 'stop')
+      setCommandMessage(item.id, '', stopAttemptNoticeKey(item.id, item.testId, item.originalJSON));
   };
   const updateTrackedStatus = (
     id: string,
@@ -434,38 +351,29 @@ export function createCommandCoordinator({
     setPending(pending);
   };
   const lookup = async (item: Pending, manual = false) => {
-    if (!active || !pending.some((current) => samePending(current, item))) return;
+    if (!active) return;
     const service = input.service;
     if (item.originalJSON === null) {
       if (manual)
-        setObservationMessage(item, 'Исход этой команды не подтверждён; требуется точная сверка её содержимого.');
+        setCommandMessage(
+          item.id,
+          'Исход этой команды не подтверждён; требуется точная сверка её содержимого.',
+          item.kind === 'stop' ? stopNoticeKey(item.id, item.testId, item.originalJSON) : item.id,
+        );
       return;
     }
     const lookupKey = commandLookupKey(hostRunId, backendRunId, databaseId, item.id);
     const lookupKind = item.kind === 'stop' ? 'stopLookup' : 'lookup';
-    const manualKey = `manual:${pendingKey(item)}`;
-    if (manual) {
-      if (manualChecks.has(manualKey)) {
-        showMessage('Проверка этой команды уже выполняется.');
-        return;
-      }
-      const retained = [...commandMessages.values()].filter((notice) => notice.category === 'manual').length;
-      if (commandMessages.has(manualKey) || retained + manualChecks.size >= 64) {
-        showMessage(retained
-          ? 'Закройте сообщения о проверенных командах, прежде чем начать новую проверку.'
-          : 'Дождитесь завершения текущих проверок команд.');
-        return;
-      }
-    }
     if (!beginCall(lookupKind, lookupKey, manual ? 2 : 1)) {
       if (manual) showMessage('Ожидаем завершения предыдущих проверок состояния команды.');
       return;
     }
     const generation = generationVersion;
-    if (manual) manualChecks.set(manualKey, generation);
     try {
       let status: CommandStatus;
       {
+        const noticeKey =
+          item.kind === 'stop' ? stopNoticeKey(item.id, item.testId, item.originalJSON) : item.id;
         const result = await service.lookupCommandExact(
           databaseId,
           item.kind,
@@ -476,21 +384,17 @@ export function createCommandCoordinator({
         );
         if (
           generationVersion !== generation ||
-          (!manual && !pending.some((current) => samePending(current, item)))
+          !pending.some((current) => samePending(current, item))
         )
           return;
         const current = pending.find((pendingItem) => samePending(pendingItem, item));
-        const knownStatus = current?.status ?? (manual ? item.status : null);
-        const alreadyConfirmed = knownStatus && knownStatus.status !== 'unknown';
+        const alreadyConfirmed = current?.status && current.status.status !== 'unknown';
         if (!validExactEnvelope(result)) {
-          if (!current && manual) showManualResult(item, null);
-          else if (!alreadyConfirmed) unknownMessage(item);
+          if (!alreadyConfirmed) unknownMessage(item.id, noticeKey);
           return;
         }
         if (result.outcome === 'conflict' && result.command === null) {
-          if (!current && manual) {
-            showManualResult(item, null, true);
-          } else if (item.kind === 'stop') {
+          if (item.kind === 'stop') {
             setCommandMessage(
               item.id,
               'Сохранённая запись принадлежит другой команде; точная сверка остановки невозможна.',
@@ -511,8 +415,7 @@ export function createCommandCoordinator({
           result.outcome !== 'match' ||
           !confirmedCommandStatus(result.command, item.id, item.testId)
         ) {
-          if (!current && manual) showManualResult(item, null);
-          else if (!alreadyConfirmed) unknownMessage(item);
+          if (!alreadyConfirmed) unknownMessage(item.id, noticeKey);
           return;
         }
         status = result.command;
@@ -524,17 +427,10 @@ export function createCommandCoordinator({
           );
       }
       if (generationVersion !== generation || status.commandId !== item.id) return;
-      const existing = pending.find((current) => samePending(current, item)) ?? (manual ? item : undefined);
+      const existing = pending.find((current) => samePending(current, item));
       if (!existing || existing.originalJSON === null) return;
       let merged = mergeStatus(existing.status, status);
-      if (item.kind === 'stop') {
-        merged = rememberStopStatus(pendingKey(item), merged);
-        if (lastStopId === stopNoticeKey(item.id, item.testId, item.originalJSON)) {
-          const record = currentView().record;
-          setStopMessage(stopOutcomeMessage(merged, record?.testId === item.testId ? record : null));
-        }
-      } else merged = refreshManualStatus(pendingKey(item), merged);
-      if (pending.some((current) => samePending(current, item)) && existing.receiptRequired && status.status !== 'unknown') {
+      if (existing.receiptRequired && status.status !== 'unknown') {
         savePending(
           pending.map((current) =>
             samePending(current, item) ? { ...current, receiptRequired: false } : current,
@@ -542,14 +438,11 @@ export function createCommandCoordinator({
           true,
         );
       }
-      if (!pending.some((current) => samePending(current, item))) {
-        // The result of a user-requested check is independent of its observation record.
-        if (manual) showManualResult(item, merged);
-        return;
-      }
       if (item.kind === 'stop') {
         const stopKey = stopNoticeKey(item.id, item.testId, item.originalJSON);
-        const stopStatus = merged;
+        const identity = pendingKey(item);
+        const stopStatus = mergeStatus(stopStatuses.get(identity) ?? null, merged);
+        stopStatuses.set(identity, stopStatus);
         merged = stopStatus;
         if (terminalStatus(stopStatus))
           setCommandMessage(item.id, '', stopNoticeKey(item.id, item.testId, item.originalJSON));
@@ -570,9 +463,9 @@ export function createCommandCoordinator({
         setPending(pending);
       }
       if (item.kind !== 'stop' && merged.status === 'completed')
-        setObservationMessage(item, 'Действие подтверждено ядром; ожидаем состояние.');
+        setCommandMessage(item.id, 'Действие подтверждено ядром; ожидаем состояние.');
       else if (item.kind !== 'stop' && merged.status === 'accepted')
-        setObservationMessage(item, 'Команда принята или её исход ещё не подтверждён.', 'accepted');
+        setCommandMessage(item.id, 'Команда принята или её исход ещё не подтверждён.', item.id, item.kind === 'start' ? item.testId ?? undefined : undefined);
       if (merged.status === 'rejected' || merged.status === 'failed') {
         if (item.kind === 'stop') {
           const failure =
@@ -607,10 +500,6 @@ export function createCommandCoordinator({
     } catch {
       const current = pending.find((pendingItem) => samePending(pendingItem, item));
       const knownStop = item.kind === 'stop' ? (stopStatuses.get(pendingKey(item)) ?? null) : null;
-      if (generationVersion === generation && manual && !current) {
-        showManualResult(item, null);
-        return;
-      }
       if (
         generationVersion === generation &&
         current &&
@@ -619,9 +508,11 @@ export function createCommandCoordinator({
           : !current.status || current.status.status === 'unknown') &&
         !terminalStatus(knownStop)
       )
-        unknownMessage(item);
+        unknownMessage(
+          item.id,
+          item.kind === 'stop' ? stopNoticeKey(item.id, item.testId, item.originalJSON) : item.id,
+        );
     } finally {
-      if (manual && manualChecks.get(manualKey) === generation) manualChecks.delete(manualKey);
       endCall(lookupKind, lookupKey);
     }
   };
@@ -759,27 +650,31 @@ export function createCommandCoordinator({
     setCommandFailure((previous) =>
       previous?.kind === kind && previous.testId === testId ? null : previous,
     );
-    setObservationMessage(item, 'Команда отправлена. Ожидаем подтверждения ядра.');
+    setCommandMessage(item.id, 'Команда отправлена. Ожидаем подтверждения ядра.');
     try {
       const dispatch = await attempt.send();
-      if (generationVersion !== generation) return;
-      if (!pending.some((current) => samePending(current, item))) {
-        if (commandMessages.has(`manual:${pendingKey(item)}`) && validDispatchEnvelope(dispatch) &&
-            dispatch.delivery === 'response' && confirmedCommandStatus(dispatch.command, item.id, item.testId, false))
-          refreshManualStatus(pendingKey(item), dispatch.command);
+      if (
+        generationVersion !== generation ||
+        !pending.some((current) => samePending(current, item))
+      )
         return;
-      }
       if (!validDispatchEnvelope(dispatch)) {
         const current = pending.find((pendingItem) => samePending(pendingItem, item));
         if (current && (!current.status || current.status.status === 'unknown'))
-          unknownMessage(item);
+          unknownMessage(item.id);
         return;
       }
       if (dispatch.delivery === 'notSent' && dispatch.command === null) {
         const existing = pending.find((current) => samePending(current, item));
         if (existing?.status && existing.status.status !== 'unknown') {
           if (terminalStatus(existing.status)) return;
-          setObservationMessage(item, 'Ранее найденное состояние команды требует проверки; новый запрос не отправлен.', 'attention');
+          setCommandMessage(
+            item.id,
+            'Ранее найденное состояние команды требует проверки; новый запрос не отправлен.',
+            item.id,
+            undefined,
+            true,
+          );
           return;
         }
         showCommandFailure({
@@ -798,12 +693,12 @@ export function createCommandCoordinator({
       ) {
         const current = pending.find((pendingItem) => samePending(pendingItem, item));
         if (current && (!current.status || current.status.status === 'unknown'))
-          unknownMessage(item);
+          unknownMessage(item.id);
         return;
       }
       const existing = pending.find((current) => samePending(current, item));
       if (!existing) return;
-      const merged = refreshManualStatus(pendingKey(item), mergeStatus(existing.status, result));
+      const merged = mergeStatus(existing.status, result);
       memory.statuses.set(pendingKey(item), merged);
       if (existing.receiptRequired && result.status !== 'unknown') {
         savePending(
@@ -815,7 +710,6 @@ export function createCommandCoordinator({
           true,
         );
       }
-      if (!pending.some((current) => samePending(current, item))) return;
       pending = pending.map((current) =>
         samePending(current, item) ? { ...current, status: merged } : current,
       );
@@ -830,12 +724,13 @@ export function createCommandCoordinator({
         });
         forget(item);
       } else
-        setObservationMessage(
-          item,
+        setCommandMessage(
+          item.id,
           merged.status === 'completed'
             ? 'Действие подтверждено ядром; ожидаем состояние.'
             : 'Команда принята или её исход ещё не подтверждён.',
-          merged.status === 'accepted' ? 'accepted' : 'normal',
+          item.id,
+          merged.status === 'accepted' && item.kind === 'start' ? item.testId ?? undefined : undefined,
         );
     } catch (error) {
       const current = pending.find((pendingItem) => samePending(pendingItem, item));
@@ -854,7 +749,7 @@ export function createCommandCoordinator({
         current &&
         (!current.status || current.status.status === 'unknown')
       )
-        unknownMessage(item);
+        unknownMessage(item.id);
     }
   }
   async function stop() {
@@ -896,7 +791,8 @@ export function createCommandCoordinator({
     memory.removals = memory.removals.filter((item) => pendingKey(item) !== stopIdentity);
     const knownStatus = existing?.status ?? memory.statuses.get(stopIdentity) ?? null;
     if (knownStatus) {
-      rememberStopStatus(stopIdentity, knownStatus);
+      const previous = stopStatuses.get(stopIdentity) ?? null;
+      stopStatuses.set(stopIdentity, mergeStatus(previous, knownStatus));
     }
     let observationVersion: string | undefined;
     try {
@@ -994,7 +890,8 @@ export function createCommandCoordinator({
           setStopMessage('Исход остановки неизвестен; безопасное давление не подтверждено.');
         return;
       }
-      const merged = rememberStopStatus(stopIdentity, result);
+      const merged = mergeStatus(stopStatuses.get(stopIdentity) ?? null, result);
+      stopStatuses.set(stopIdentity, merged);
       if (terminalStatus(merged)) setCommandMessage(record.stopCommandId, '', stopKey);
       updateTrackedStatus(record.stopCommandId, record.testId, originalJSON, merged);
       if (currentView().record?.testId === record.testId)
@@ -1002,7 +899,6 @@ export function createCommandCoordinator({
     } catch (error) {
       const known = stopStatuses.get(stopIdentity);
       if (generationVersion === generation && error instanceof CommandConflictError) {
-        if (terminalStatus(known ?? null)) return;
         const attempt = pending.find(
           (item) =>
             item.kind === 'stop' &&
@@ -1019,20 +915,9 @@ export function createCommandCoordinator({
             record.stopCommandId,
             'Запрос остановки отклонён: идентификатор принадлежит другой команде.',
             attemptNoticeKey,
-            'stop',
-            pending.some((item) => samePending(item, attempt)) ? 'normal' : 'direct',
-            record.testId,
           );
-        } else {
-          setCommandMessage(
-            record.stopCommandId,
-            'Запрос остановки отклонён: идентификатор принадлежит другой команде.',
-            attemptNoticeKey,
-            'stop',
-            'direct',
-            record.testId,
-          );
-          if (currentView().record?.testId === record.testId && !terminalStatus(known ?? null))
+        } else if (currentView().record?.testId === record.testId) {
+          if (!terminalStatus(known ?? null))
             setStopMessage(
               'Запрос остановки отклонён: идентификатор принадлежит другой команде. Безопасное давление не подтверждено.',
             );
@@ -1132,7 +1017,6 @@ export function createCommandCoordinator({
       generationVersion += 1;
       memory = memoryFor(databaseId);
       const restored = restorePending(storageKey, memory, pendingStorage);
-      if (restored) clearMissingObservations(pending, restored);
       pending = restored ?? (memory.volatile ? restoredMemory(memory.volatile) : []);
       legacy = readLegacyPending();
       legacyReviewed = false;
@@ -1156,7 +1040,6 @@ export function createCommandCoordinator({
     dispose() {
       active = false;
       generationVersion += 1;
-      manualChecks.clear();
       stopCalls?.();
       stopCalls = undefined;
       reconcileNeeded = false;
@@ -1166,15 +1049,8 @@ export function createCommandCoordinator({
     confirmAction,
     stop,
     lookup,
-    dismissCommandMessage: (key: string) => {
-      if (!active || !['manual', 'direct'].includes(commandMessages.get(key)?.category ?? '')) return;
-      commandMessages = new Map(commandMessages);
-      commandMessages.delete(key);
-      changed();
-    },
     forget: (item: Pending) => {
-      if (active && canForget(item) && forget(item) && item.kind === 'stop')
-        setCommandMessage(item.id, '', stopAttemptNoticeKey(item.id, item.testId, item.originalJSON));
+      if (active && canForget(item)) forget(item);
     },
     showMessage,
     retryStorage: () => savePending(pending, true),

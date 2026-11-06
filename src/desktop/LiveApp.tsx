@@ -26,7 +26,7 @@ import type {
 } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
 import type { TestParameters as FormParameters, Screen } from '../model';
 import type { SessionBridge } from './bridge';
-import { type Pending, ordinaryNoticeKey, pendingKey, terminalStatus } from './command-attempt-state';
+import { type Pending, pendingKey, terminalStatus } from './command-attempt-state';
 import {
   type CommandCoordinator,
   commandObservation,
@@ -81,25 +81,21 @@ function commandStatusLabel(status: CommandStatus['status'] | undefined): string
   }
 }
 
-function CommandDetails({ id, testId, originalJSON }: { id?: string | undefined; testId?: string | null | undefined; originalJSON?: string | null | undefined }) {
+function CommandDetails({ id, testId }: { id?: string | undefined; testId?: string | null | undefined }) {
   return (
     <details>
       <summary>Сведения о команде</summary>
       {id && <p>Идентификатор команды: <span>{id}</span></p>}
       {testId && <p>Идентификатор испытания: <span>{testId}</span></p>}
-      {originalJSON && <p>Исходный запрос: <span>{originalJSON}</span></p>}
     </details>
   );
 }
 
-function CommandNotice({ id, testId, originalJSON, text, prefix, suppressed, onDismiss, focusTarget }: {
+function CommandNotice({ id, text, prefix, suppressed, focusTarget }: {
   id: string;
-  testId?: string | null | undefined;
-  originalJSON?: string | null | undefined;
   text: string;
   prefix: string;
   suppressed: boolean;
-  onDismiss?: () => void;
   focusTarget: RefObject<HTMLElement | null>;
 }) {
   const [focused, setFocused] = useState(false);
@@ -118,8 +114,7 @@ function CommandNotice({ id, testId, originalJSON, text, prefix, suppressed, onD
       }}
     >
       <p>{prefix}{text}</p>
-      <CommandDetails id={id} testId={testId} originalJSON={originalJSON} />
-      {onDismiss && <button type="button" onClick={onDismiss}>Скрыть сообщение</button>}
+      <CommandDetails id={id} />
     </div>
   );
 }
@@ -331,15 +326,16 @@ function ActiveLiveApp({
   useMeasurementObservation(measurementContext, measurementKey, snapshot, fresh, gapVersion);
   const activeId = record?.testId;
   const stage = record?.stage;
-  const expectedStarts = new Set(
-    fresh && record?.stage === 'running' && snapshot?.pendingAction?.testId === record.testId
-      ? pending
-          .filter((item) => !item.retired && item.kind === 'start' && item.testId === record.testId && item.status?.status === 'accepted')
-          .map(ordinaryNoticeKey)
-      : [],
-  );
+  const isExpectedStart = (key: string, notice: { id: string; startAcceptedFor?: string }) => {
+    const sameId = pending.filter((item) => item.id === notice.id);
+    const item = sameId[0];
+    return key === notice.id && sameId.length === 1 && !!item && !item.retired &&
+      item.kind === 'start' && item.status?.status === 'accepted' &&
+      fresh && record?.stage === 'running' && item.testId === record.testId &&
+      notice.startAcceptedFor === record.testId && snapshot?.pendingAction?.testId === record.testId;
+  };
   const visibleCommandMessages = [...commandMessages].filter(
-    ([key, notice]) => notice.category !== 'accepted' || !expectedStarts.has(key),
+    ([key, notice]) => !isExpectedStart(key, notice),
   );
   const revision = snapshot?.revision;
   const commandMessageRegion = useRef<HTMLDivElement>(null);
@@ -506,20 +502,14 @@ function ActiveLiveApp({
               </div>
             )}
             {message && latestNotice !== 'message' && <p role="status">{message}</p>}
-            {[...commandMessages].map(([key, { id, testId, originalJSON, text, category, source }]) => (
+            {[...commandMessages].map(([key, notice]) => (
               <CommandNotice
                 key={key}
-                id={id}
-                testId={testId}
-                originalJSON={originalJSON}
+                id={notice.id}
                 focusTarget={mainRef}
-                text={text}
-                prefix={visibleCommandMessages.length > 1 ? `${source === 'ordinary' ? 'Команда' : 'Остановка'}: ` : ''}
-                suppressed={category === 'accepted' && expectedStarts.has(key)}
-                {...(category === 'manual' || category === 'direct' ? { onDismiss: () => {
-                  mainRef.current?.focus();
-                  coordinator.dismissCommandMessage(key);
-                } } : {})}
+                text={notice.text}
+                prefix={visibleCommandMessages.length > 1 ? `${key === notice.id ? 'Команда' : 'Остановка'}: ` : ''}
+                suppressed={isExpectedStart(key, notice)}
               />
             ))}
           </div>

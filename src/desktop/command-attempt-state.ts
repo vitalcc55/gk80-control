@@ -28,9 +28,6 @@ export function samePending(left: Pending, right: Pending): boolean {
 export function pendingKey(item: Pending): string {
   return JSON.stringify([item.id, item.kind, item.testId, item.actionId, item.originalJSON]);
 }
-export function ordinaryNoticeKey(item: Pending): string {
-  return `ordinary:${pendingKey(item)}`;
-}
 export function mergePending(
   stored: Pending[],
   memory: Pending[],
