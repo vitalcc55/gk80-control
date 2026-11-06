@@ -1,16 +1,17 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-test('one generation uses the new schema for both Go and Wails bindings', () => {
+test('one generation uses the new schema for both Go and Wails bindings', (t) => {
   const tempRoot = join(root, '.tmp', '.codex');
   mkdirSync(tempRoot, { recursive: true });
   const copy = mkdtempSync(join(tempRoot, 'contract-regression-'));
+  t.after(() => rmSync(copy, { recursive: true, force: true, maxRetries: 3 }));
   for (const path of ['api', 'internal', 'src/generated', 'scripts', 'go.mod', 'go.sum']) {
     cpSync(join(root, path), join(copy, path), { recursive: true });
   }
