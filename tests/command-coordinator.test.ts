@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { countCalls } from '../src/desktop/call-limits';
+import { countCalls, totalCalls } from '../src/desktop/call-limits';
+import { commandLookupKey, memoryFor, pendingKey } from '../src/desktop/command-attempt-state';
 import {
   type CommandCoordinator,
   type CommandInput,
@@ -51,14 +52,25 @@ const unknown: ExactLookupResult = {
 async function flush() {
   for (let i = 0; i < 8; i++) await Promise.resolve();
 }
-function input(api: DemoService): CommandInput {
+function deferred<T>() {
+  let complete: (value: T) => void;
+  const promise = new Promise<T>((resolve) => {
+    complete = resolve;
+  });
+  return { promise, resolve: (value: T) => complete(value) };
+}
+function input(
+  api: DemoService,
+  activeTest: Snapshot['activeTest'] = null,
+  { hostRunId = 'host', backendRunId = 'backend' } = {},
+): CommandInput {
   const snapshot: Snapshot = {
     apiVersion: 'v1',
-    backendRunId: 'backend',
+    backendRunId,
     revision: 0,
     lastEventSequence: 0,
     measurementBatch: null,
-    activeTest: null,
+    activeTest,
     pendingAction: null,
     measurementTiming: null,
     measurements: [],
@@ -66,7 +78,7 @@ function input(api: DemoService): CommandInput {
   const connection = {
     view: {
       connection: {
-        hostRunId: 'host',
+        hostRunId,
         revision: 1,
         status: ConnectionStateStatus.Live,
         linkValid: true,
@@ -86,15 +98,67 @@ function input(api: DemoService): CommandInput {
     isCurrentConnection: (value) => value === connection,
   };
 }
-function coordinator() {
+function coordinator(identity: Partial<Parameters<typeof createCommandCoordinator>[0]> = {}) {
   const value = createCommandCoordinator({
     hostRunId: 'host',
     backendRunId: 'backend',
     databaseId,
     pendingStorage: localStorage,
+    ...identity,
   });
   coordinators.push(value);
   return value;
+}
+function observeCoordinator(identity?: Parameters<typeof coordinator>[0]) {
+  const NativeMap = globalThis.Map;
+  const maps: ReadonlyMap<unknown, unknown>[] = [];
+  // Observe the private cache allocated by the real coordinator without changing its API.
+  globalThis.Map = class ObservedMap<K, V> extends NativeMap<K, V> {
+    constructor(entries?: Iterable<readonly [K, V]> | null) {
+      super(entries);
+      maps.push(this);
+    }
+  };
+  try {
+    return {
+      value: coordinator(identity),
+      cacheWith: (key: string) => maps.find((map) => map.has(key)),
+    };
+  } finally {
+    globalThis.Map = NativeMap;
+  }
+}
+function runningRecord(): NonNullable<Snapshot['activeTest']> {
+  return {
+    testId: crypto.randomUUID(),
+    stopCommandId: crypto.randomUUID(),
+    createdAt: '2026-11-06T00:00:00Z',
+    operatorId: 'demo',
+    demo: true,
+    stage: TestRecordStage.Running,
+    outcome: TestRecordOutcome.TestRecordOutcomePending,
+    dataQuality: TestRecordDataQuality.TestRecordDataQualityPending,
+    saveStatus: TestRecordSaveStatus.TestRecordSaveStatusSaved,
+    parameters: {
+      valve: parameters.valve,
+      areaM2: parameters.area,
+      pmaxPa: parameters.pmax,
+      measurementSeconds: parameters.measurementSeconds,
+      direction: TestParametersDirection.TestParametersDirectionPressure,
+      actuator: false,
+    },
+  };
+}
+function finishedRecord(
+  record: ReturnType<typeof runningRecord>,
+): ReturnType<typeof runningRecord> {
+  return {
+    ...record,
+    stage: TestRecordStage.Finished,
+    outcome: TestRecordOutcome.TestRecordOutcomeInterrupted,
+    dataQuality: TestRecordDataQuality.TestRecordDataQualityIncomplete,
+    saveStatus: TestRecordSaveStatus.TestRecordSaveStatusSaved,
+  };
 }
 function seed() {
   localStorage.setItem(
@@ -133,7 +197,324 @@ it('constructs and reads a stable snapshot without storage or transport effects'
   read.mockRestore();
 });
 
-it('reports failed Stop when pending removal is saved during a manual lookup', async () => {
+it('releases past terminal Stop results throughout sequential saved tests', async () => {
+  const { value, cacheWith } = observeCoordinator();
+  const post = vi.fn<DemoService['stopTest']>(async (testId, { commandId }) => ({
+    delivery: CommandDispatchDelivery.CommandDispatchDeliveryResponse,
+    command: { commandId, testId, status: CommandStatusStatus.CommandStatusStatusAccepted },
+  }));
+  const lookup = vi.fn<DemoService['lookupCommandExact']>(
+    async (_, __, testId, ___, commandId) => ({
+      outcome: ExactLookupResultOutcome.ExactLookupResultOutcomeMatch,
+      command: { commandId, testId, status: CommandStatusStatus.CommandStatusStatusCompleted },
+    }),
+  );
+  const api = service({ stopTest: post, lookupCommandExact: lookup });
+  const sizes: number[] = [];
+  let stopsFromPastTests = 0;
+  let cache: ReturnType<typeof cacheWith>;
+  value.start();
+  for (let i = 0; i < 128; i++) {
+    const record = runningRecord();
+    value.update(input(api, record));
+    await value.stop();
+    await flush();
+
+    const [item] = value.getSnapshot().pending;
+    if (!item) throw new Error('Stop observation missing before the test finishes');
+    expect(item).toMatchObject({
+      testId: record.testId,
+      receiptRequired: false,
+      status: { status: CommandStatusStatus.CommandStatusStatusCompleted },
+    });
+    const key = pendingKey(item);
+    cache ??= cacheWith(key);
+    if (!cache) throw new Error('Stop cache was not observed');
+    value.update(input(api, finishedRecord(record)));
+    await flush();
+
+    expect(value.getSnapshot().stopMessage).toBe('Остановка подтверждена ядром.');
+    expect(value.getSnapshot().pending).toEqual([]);
+    expect(localStorage.getItem(storageKey)).toBe('[]');
+    expect(memoryFor(databaseId).statuses.size).toBe(0);
+    expect(totalCalls('stop')).toBe(0);
+    expect(totalCalls('stopLookup')).toBe(0);
+    expect(cache.has(key)).toBe(true);
+    sizes.push(cache.size);
+    stopsFromPastTests = Math.max(stopsFromPastTests, cache.size - 1);
+    expect(post).toHaveBeenCalledTimes(i + 1);
+    expect(lookup).toHaveBeenCalledTimes(i + 1);
+  }
+  expect({
+    sizesAtCheckpoints: [sizes[0], sizes[63], sizes[64], sizes[127]],
+    peakPastResults: stopsFromPastTests,
+  }).toEqual({ sizesAtCheckpoints: [1, 1, 1, 1], peakPastResults: 0 });
+  value.update(input(api));
+  value.dispose();
+  await flush();
+  expect(cache?.size).toBe(0);
+});
+
+it.each(['current', 'previous'] as const)(
+  'holds a terminal Stop until a late direct response settles for a %s test',
+  async (context) => {
+    const { value, cacheWith } = observeCoordinator();
+    const direct = deferred<Awaited<ReturnType<DemoService['stopTest']>>>();
+    const post = vi.fn<DemoService['stopTest']>(() => direct.promise);
+    const a = runningRecord();
+    const b = runningRecord();
+    const completed = {
+      commandId: a.stopCommandId,
+      testId: a.testId,
+      status: CommandStatusStatus.CommandStatusStatusCompleted,
+    };
+    const lookup = vi.fn<DemoService['lookupCommandExact']>(async () => ({
+      outcome: ExactLookupResultOutcome.ExactLookupResultOutcomeMatch,
+      command: completed,
+    }));
+    const api = service({ stopTest: post, lookupCommandExact: lookup });
+    value.update(input(api, a));
+    value.start();
+    const sent = value.stop();
+    try {
+      await flush();
+      const [item] = value.getSnapshot().pending;
+      if (!item) throw new Error('Stop observation missing');
+      const key = pendingKey(item);
+      const cache = cacheWith(key);
+      expect(item.status).toEqual(completed);
+      expect(totalCalls('stopLookup')).toBe(0);
+
+      value.update(input(api, finishedRecord(a)));
+      await flush();
+      expect(value.getSnapshot().pending).toEqual([]);
+      for (const record of [b, finishedRecord(a), context === 'previous' ? b : finishedRecord(a)]) {
+        value.update(input(api, record));
+        await flush();
+        expect(cache?.has(key)).toBe(true);
+        expect(countCalls('stop', a.testId)).toBe(1);
+      }
+
+      direct.resolve({
+        delivery: CommandDispatchDelivery.CommandDispatchDeliveryResponse,
+        command: { ...completed, status: CommandStatusStatus.CommandStatusStatusAccepted },
+      });
+      await sent;
+      await flush();
+      if (context === 'current') {
+        expect(value.getSnapshot().stopMessage).toBe('Остановка подтверждена ядром.');
+        expect(cache?.has(key)).toBe(true);
+        value.update(input(api, b));
+        await flush();
+      }
+      expect(cache?.has(key)).toBe(false);
+      expect(countCalls('stop', a.testId)).toBe(0);
+      expect(post).toHaveBeenCalledOnce();
+      expect(lookup).toHaveBeenCalledOnce();
+    } finally {
+      direct.resolve({
+        delivery: CommandDispatchDelivery.CommandDispatchDeliveryNotSent,
+        command: null,
+      });
+      await sent;
+    }
+  },
+);
+
+it('does not apply a previous generation Stop response to a restored attempt or another identity', async () => {
+  const { value, cacheWith } = observeCoordinator();
+  const a = runningRecord();
+  const direct = deferred<Awaited<ReturnType<DemoService['stopTest']>>>();
+  const post = vi.fn<DemoService['stopTest']>(() => direct.promise);
+  const api = service({ stopTest: post, lookupCommandExact: async () => unknown });
+  const otherIdentity = {
+    hostRunId: 'other-host',
+    backendRunId: 'other-backend',
+    databaseId: crypto.randomUUID(),
+  };
+  const other = observeCoordinator(otherIdentity);
+  value.update(input(api, a));
+  value.start();
+  const sent = value.stop();
+  try {
+    await flush();
+    value.dispose();
+    other.value.update(input(api, a, otherIdentity));
+    other.value.start();
+    value.start();
+    await flush();
+    const [restored] = value.getSnapshot().pending;
+    if (!restored) throw new Error('Stop observation was not recovered');
+    expect(restored).toMatchObject({ receiptRequired: true, status: null });
+    expect(value.getSnapshot().stopCount).toBe(1);
+    expect(other.value.getSnapshot().stopCount).toBe(1);
+
+    direct.resolve({
+      delivery: CommandDispatchDelivery.CommandDispatchDeliveryResponse,
+      command: {
+        commandId: a.stopCommandId,
+        testId: a.testId,
+        status: CommandStatusStatus.CommandStatusStatusCompleted,
+      },
+    });
+    await sent;
+    await flush();
+    const key = pendingKey(restored);
+    expect(value.getSnapshot().pending).toEqual([restored]);
+    expect(cacheWith(key)).toBeUndefined();
+    expect(other.value.getSnapshot().pending).toEqual([]);
+    expect(other.cacheWith(key)).toBeUndefined();
+    expect(other.value.getSnapshot().stopMessage).toBe('');
+    expect(countCalls('stop', a.testId)).toBe(0);
+    expect(post).toHaveBeenCalledOnce();
+  } finally {
+    direct.resolve({
+      delivery: CommandDispatchDelivery.CommandDispatchDeliveryNotSent,
+      command: null,
+    });
+    await sent;
+  }
+});
+
+it.each(['active', 'disposed'] as const)(
+  'keeps a direct terminal Stop through a required receipt and releases it after the last lookup with an %s consumer',
+  async (consumer) => {
+    const { value, cacheWith } = observeCoordinator();
+    const firstLookup = deferred<ExactLookupResult>();
+    const lateLookup = deferred<ExactLookupResult>();
+    const a = runningRecord();
+    const completed = {
+      commandId: a.stopCommandId,
+      testId: a.testId,
+      status: CommandStatusStatus.CommandStatusStatusCompleted,
+    };
+    const post = vi.fn<DemoService['stopTest']>(async () => ({
+      delivery: CommandDispatchDelivery.CommandDispatchDeliveryResponse,
+      command: completed,
+    }));
+    const lookup = vi
+      .fn<DemoService['lookupCommandExact']>()
+      .mockReturnValueOnce(firstLookup.promise)
+      .mockReturnValueOnce(lateLookup.promise)
+      .mockResolvedValue({
+        outcome: ExactLookupResultOutcome.ExactLookupResultOutcomeMatch,
+        command: completed,
+      });
+    const api = service({ stopTest: post, lookupCommandExact: lookup });
+    value.update(input(api, a));
+    value.start();
+    try {
+      await value.stop();
+      await flush();
+      const [item] = value.getSnapshot().pending;
+      if (!item) throw new Error('Stop observation missing');
+      const key = pendingKey(item);
+      const cache = cacheWith(key);
+      const slot = commandLookupKey('host', 'backend', databaseId, a.stopCommandId);
+      expect(item).toMatchObject({ receiptRequired: true, status: completed });
+      expect(countCalls('stop', a.testId)).toBe(0);
+      expect(countCalls('stopLookup', slot)).toBe(1);
+
+      firstLookup.resolve(unknown);
+      await flush();
+      expect(value.getSnapshot().pending).toEqual([item]);
+      expect(value.getSnapshot().commandMessages.size).toBe(0);
+      expect(value.getSnapshot().stopMessage).toBe('Остановка подтверждена ядром.');
+
+      value.update(input(api, finishedRecord(a)));
+      await flush();
+      expect(value.getSnapshot().pending).toEqual([item]);
+      expect(countCalls('stopLookup', slot)).toBe(1);
+      await value.lookup(item, true);
+      await flush();
+      expect(value.getSnapshot().pending).toEqual([]);
+      value.update(input(api, runningRecord()));
+      await flush();
+      expect(cache?.has(key)).toBe(true);
+      expect(countCalls('stopLookup', slot)).toBe(1);
+
+      if (consumer === 'disposed') value.dispose();
+      lateLookup.resolve(unknown);
+      await flush();
+      expect(countCalls('stopLookup', slot)).toBe(0);
+      expect(cache?.has(key)).toBe(false);
+      expect(localStorage.getItem(storageKey)).toBe('[]');
+      expect(post).toHaveBeenCalledOnce();
+      expect(lookup).toHaveBeenCalledTimes(3);
+    } finally {
+      firstLookup.resolve(unknown);
+      lateLookup.resolve(unknown);
+      await flush();
+    }
+  },
+);
+
+it('keeps a terminal Stop for the exact observation during an unreadable Storage restart', async () => {
+  const { value, cacheWith } = observeCoordinator();
+  const a = runningRecord();
+  const rejected = {
+    commandId: a.stopCommandId,
+    status: CommandStatusStatus.CommandStatusStatusRejected,
+  };
+  const post = vi.fn<DemoService['stopTest']>(async () => ({
+    delivery: CommandDispatchDelivery.CommandDispatchDeliveryResponse,
+    command: rejected,
+  }));
+  const lookup = vi.fn<DemoService['lookupCommandExact']>().mockResolvedValue(unknown);
+  const api = service({ stopTest: post, lookupCommandExact: lookup });
+  value.update(input(api, a));
+  value.start();
+  await value.stop();
+  await flush();
+  const [item] = value.getSnapshot().pending;
+  if (!item) throw new Error('Stop observation missing');
+  expect(item).toMatchObject({ status: rejected, retired: true });
+  const key = pendingKey(item);
+  const cache = cacheWith(key);
+  value.update(input(api, runningRecord()));
+  await flush();
+  value.dispose();
+
+  const read = Storage.prototype.getItem;
+  const unavailable = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (
+    this: Storage,
+    key,
+  ) {
+    if (key === storageKey) throw new Error('unavailable');
+    return read.call(this, key);
+  });
+  try {
+    value.start();
+    await flush();
+    expect(value.getSnapshot().storageUnconfirmed).toBe(true);
+    expect(value.getSnapshot().pending).toEqual([]);
+    expect(cache?.has(key)).toBe(true);
+  } finally {
+    unavailable.mockRestore();
+  }
+
+  lookup.mockResolvedValue({
+    outcome: ExactLookupResultOutcome.ExactLookupResultOutcomeMatch,
+    command: {
+      ...rejected,
+      testId: a.testId,
+      status: CommandStatusStatus.CommandStatusStatusAccepted,
+    },
+  });
+  expect(value.retryStorage()).toBe(true);
+  await flush();
+  const [restored] = value.getSnapshot().pending;
+  if (!restored) throw new Error('Stop observation was not recovered');
+  expect(restored).toMatchObject({ status: rejected, retired: true, receiptRequired: false });
+  expect(pendingKey(restored)).toBe(key);
+  value.forget(restored);
+  await flush();
+  expect(cache?.has(key)).toBe(false);
+  expect(localStorage.getItem(storageKey)).toBe('[]');
+  expect(post).toHaveBeenCalledOnce();
+});
+
+async function checkStopAfterSavedRemoval(status: CommandStatusStatus, message: RegExp) {
   const testId = 'd7dcc7dd-127d-4ba1-81ea-f84c173777fa';
   const originalJSON = JSON.stringify({ commandId });
   localStorage.setItem(
@@ -152,9 +533,9 @@ it('reports failed Stop when pending removal is saved during a manual lookup', a
   );
   const lookup = vi.fn<DemoService['lookupCommandExact']>(async () => ({
     outcome: ExactLookupResultOutcome.ExactLookupResultOutcomeMatch,
-    command: { commandId, testId, status: CommandStatusStatus.CommandStatusStatusFailed },
+    command: { commandId, testId, status },
   }));
-  const value = coordinator();
+  const { value, cacheWith } = observeCoordinator();
   value.update({
     ...input(service({ lookupCommandExact: lookup })),
     connection: null,
@@ -179,8 +560,19 @@ it('reports failed Stop when pending removal is saved during a manual lookup', a
   await flush();
   expect(lookup).toHaveBeenCalledTimes(1);
   expect(value.getSnapshot().pending).toHaveLength(0);
-  expect(value.getSnapshot().stopMessage).toMatch(/Безопасное давление не подтверждено/);
-});
+  expect(value.getSnapshot().stopMessage).toMatch(message);
+  expect(cacheWith(pendingKey(item))).toBeUndefined();
+  expect(memoryFor(databaseId).statuses.has(pendingKey(item))).toBe(false);
+}
+
+it('reports failed Stop when pending removal is saved during a manual lookup', () =>
+  checkStopAfterSavedRemoval(
+    CommandStatusStatus.CommandStatusStatusFailed,
+    /Безопасное давление не подтверждено/,
+  ));
+
+it('does not restore a completed Stop after saving its pending removal during a manual lookup', () =>
+  checkStopAfterSavedRemoval(CommandStatusStatus.CommandStatusStatusCompleted, /^$/));
 
 it('keeps public actions inert before start and after dispose', async () => {
   const value = coordinator();

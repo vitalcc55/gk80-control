@@ -49,6 +49,14 @@ function stopOutcomeMessage(status: CommandStatus, record: Snapshot['activeTest'
       : stopPendingMessage(record);
 }
 
+function reservedStopKey(
+  id: string,
+  testId: string,
+  originalJSON = JSON.stringify({ commandId: id }),
+) {
+  return JSON.stringify([id, 'stop', testId, null, originalJSON]);
+}
+
 export type CommandInput = {
   service: DemoService;
   connection: SessionProjection['connection'];
@@ -103,7 +111,8 @@ export function createCommandCoordinator({
   let volatileStopTracking = false;
   let stopRequestedFor: string | null = null;
   let lastStopId: string | null = null;
-  const stopStatuses = new Map<string, CommandStatus>();
+  // A rejected response may omit testId; the physical Stop slot uses the attempt's testId.
+  const stopStatuses = new Map<string, { testId: string | null; status: CommandStatus }>();
   let lookupIndex = 0;
   let createdVersion = 0;
   let input: CommandInput;
@@ -113,6 +122,37 @@ export function createCommandCoordinator({
   let stopCalls: (() => void) | undefined;
   function currentView() {
     return commandObservation(input ?? { connection: null, lastSnapshot: null });
+  }
+  function pruneStopStatuses() {
+    if (!stopStatuses.size) return;
+    const { record } = currentView();
+    const currentKey = record && reservedStopKey(record.stopCommandId, record.testId);
+    const tracked = memory.storageUnknown
+      ? [
+          ...pending,
+          ...(memory.volatile ?? []),
+          ...(memory.baseline ?? []),
+          ...memory.retained,
+          ...memory.removals,
+        ]
+      : pending;
+    for (const [key, { testId, status }] of stopStatuses) {
+      if (
+        !terminalStatus(status) ||
+        key === currentKey ||
+        (testId !== null && countCalls('stop', testId) > 0) ||
+        countCalls(
+          'stopLookup',
+          commandLookupKey(hostRunId, backendRunId, databaseId, status.commandId),
+        ) > 0 ||
+        tracked.some(
+          (item) =>
+            item.id === status.commandId && item.kind === 'stop' && pendingKey(item) === key,
+        )
+      )
+        continue;
+      stopStatuses.delete(key);
+    }
   }
   function legacyBlocked() {
     return (
@@ -163,6 +203,7 @@ export function createCommandCoordinator({
         reconcileNeeded = false;
         reconcile();
       }
+      pruneStopStatuses();
       snapshot = view();
       for (const listener of listeners) listener();
     });
@@ -465,8 +506,8 @@ export function createCommandCoordinator({
       if (item.kind === 'stop') {
         const stopKey = stopNoticeKey(item.id, item.testId, item.originalJSON);
         const identity = pendingKey(item);
-        const stopStatus = mergeStatus(stopStatuses.get(identity) ?? null, merged);
-        stopStatuses.set(identity, stopStatus);
+        const stopStatus = mergeStatus(stopStatuses.get(identity)?.status ?? null, merged);
+        stopStatuses.set(identity, { testId: item.testId, status: stopStatus });
         merged = stopStatus;
         if (terminalStatus(stopStatus))
           setCommandMessage(item.id, '', stopNoticeKey(item.id, item.testId, item.originalJSON));
@@ -478,7 +519,10 @@ export function createCommandCoordinator({
             );
         }
       }
-      memory.statuses.set(pendingKey(item), merged);
+      // Saving the receipt can also commit a previously requested removal. The lookup still
+      // reports its outcome, but the removed Stop no longer has an observation to restore.
+      if (item.kind !== 'stop' || pending.some((current) => samePending(current, item)))
+        memory.statuses.set(pendingKey(item), merged);
       if (JSON.stringify(existing.status) !== JSON.stringify(merged)) {
         pending = pending.map((current) =>
           samePending(current, item) ? { ...current, status: merged } : current,
@@ -528,7 +572,8 @@ export function createCommandCoordinator({
       }
     } catch {
       const current = pending.find((pendingItem) => samePending(pendingItem, item));
-      const knownStop = item.kind === 'stop' ? (stopStatuses.get(pendingKey(item)) ?? null) : null;
+      const knownStop =
+        item.kind === 'stop' ? (stopStatuses.get(pendingKey(item))?.status ?? null) : null;
       if (
         generationVersion === generation &&
         current &&
@@ -543,6 +588,7 @@ export function createCommandCoordinator({
         );
     } finally {
       endCall(lookupKind, lookupKey);
+      if (item.kind === 'stop' && !active) pruneStopStatuses();
     }
   };
   function reconcile() {
@@ -803,13 +849,7 @@ export function createCommandCoordinator({
     );
     setCommandMessage(record.stopCommandId, '', attemptNoticeKey);
     lastStopId = stopKey;
-    const stopIdentity = JSON.stringify([
-      record.stopCommandId,
-      'stop',
-      record.testId,
-      null,
-      originalJSON,
-    ]);
+    const stopIdentity = reservedStopKey(record.stopCommandId, record.testId, originalJSON);
     const storageUnknownBeforeSend = memory.storageUnknown;
     const existing = pending.find(
       (item) =>
@@ -821,8 +861,11 @@ export function createCommandCoordinator({
     memory.removals = memory.removals.filter((item) => pendingKey(item) !== stopIdentity);
     const knownStatus = existing?.status ?? memory.statuses.get(stopIdentity) ?? null;
     if (knownStatus) {
-      const previous = stopStatuses.get(stopIdentity) ?? null;
-      stopStatuses.set(stopIdentity, mergeStatus(previous, knownStatus));
+      const previous = stopStatuses.get(stopIdentity)?.status ?? null;
+      stopStatuses.set(stopIdentity, {
+        testId: record.testId,
+        status: mergeStatus(previous, knownStatus),
+      });
     }
     let observationVersion: string | undefined;
     try {
@@ -871,7 +914,7 @@ export function createCommandCoordinator({
       }
     }
     const generation = generationVersion;
-    const knownBeforeSend = stopStatuses.get(stopIdentity);
+    const knownBeforeSend = stopStatuses.get(stopIdentity)?.status;
     setStopMessage(
       knownBeforeSend && terminalStatus(knownBeforeSend)
         ? stopOutcomeMessage(knownBeforeSend, currentView().record)
@@ -901,7 +944,7 @@ export function createCommandCoordinator({
           forget(current);
         if (
           currentView().record?.testId === record.testId &&
-          !terminalStatus(stopStatuses.get(stopIdentity) ?? null)
+          !terminalStatus(stopStatuses.get(stopIdentity)?.status ?? null)
         )
           setStopMessage(
             'Новый запрос остановки не отправлен. Прежний исход необходимо проверить.',
@@ -915,19 +958,19 @@ export function createCommandCoordinator({
       if (!confirmedCommandStatus(result, record.stopCommandId, record.testId)) {
         if (
           currentView().record?.testId === record.testId &&
-          !terminalStatus(stopStatuses.get(stopIdentity) ?? null)
+          !terminalStatus(stopStatuses.get(stopIdentity)?.status ?? null)
         )
           setStopMessage('Исход остановки неизвестен; безопасное давление не подтверждено.');
         return;
       }
-      const merged = mergeStatus(stopStatuses.get(stopIdentity) ?? null, result);
-      stopStatuses.set(stopIdentity, merged);
+      const merged = mergeStatus(stopStatuses.get(stopIdentity)?.status ?? null, result);
+      stopStatuses.set(stopIdentity, { testId: record.testId, status: merged });
       if (terminalStatus(merged)) setCommandMessage(record.stopCommandId, '', stopKey);
       updateTrackedStatus(record.stopCommandId, record.testId, originalJSON, merged);
       if (currentView().record?.testId === record.testId)
         setStopMessage(stopOutcomeMessage(merged, currentView().record));
     } catch (error) {
-      const known = stopStatuses.get(stopIdentity);
+      const known = stopStatuses.get(stopIdentity)?.status;
       if (generationVersion === generation && error instanceof CommandConflictError) {
         const attempt = pending.find(
           (item) =>
@@ -968,6 +1011,7 @@ export function createCommandCoordinator({
         );
     } finally {
       endCall('stop', record.testId);
+      if (!active) pruneStopStatuses();
     }
   }
 
@@ -1073,6 +1117,7 @@ export function createCommandCoordinator({
       stopCalls?.();
       stopCalls = undefined;
       reconcileNeeded = false;
+      pruneStopStatuses();
     },
     create,
     startTest,
