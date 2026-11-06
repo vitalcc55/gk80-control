@@ -100,7 +100,13 @@ export function History({
   const needsRead = useRef(true);
   const selectedRefresh = useRef('');
   const completedKey = completedRecord ? resultReadVersion(completedRecord) : '';
-  const readTriggers = useRef({ visible: false, resetVersion, completedKey: '', activeTestId });
+  const readTriggers = useRef({
+    visible: false,
+    available,
+    resetVersion,
+    completedKey: '',
+    activeTestId,
+  });
   const completedId = completedRecord?.testId;
   const selectedId = selected?.testId;
   const selectedKey = selected ? resultReadVersion(selected) : '';
@@ -162,6 +168,11 @@ export function History({
   useLayoutEffect(() => {
     const previous = readTriggers.current;
     const reset = previous.resetVersion !== resetVersion;
+    if (previous.available && !available) {
+      listGeneration.current++;
+      if (loading) needsRead.current = true;
+      setLoading(false);
+    }
     if (previous.activeTestId !== activeTestId) {
       listGeneration.current++;
       setList(null);
@@ -174,12 +185,12 @@ export function History({
       previous.activeTestId !== activeTestId
     )
       needsRead.current = true;
-    readTriggers.current = { visible, resetVersion, completedKey, activeTestId };
+    readTriggers.current = { visible, available, resetVersion, completedKey, activeTestId };
     if ((!visible && previous.visible) || reset) {
       cancelSelected(reset);
     }
     if (visible && available && needsRead.current) void load(cursor.current);
-  }, [visible, available, resetVersion, completedKey, activeTestId, load, cancelSelected]);
+  }, [visible, available, resetVersion, completedKey, activeTestId, load, cancelSelected, loading]);
   useEffect(() => {
     if (
       !visible ||

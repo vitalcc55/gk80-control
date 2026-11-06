@@ -91,6 +91,70 @@ function PreparedHistory({ entries }: { entries: Array<typeof fixtureSource.init
   );
 }
 
+it('не принимает старый список после потери связи и обновляет запрошенную страницу', async () => {
+  let finish: (value: TestList) => void = () => {};
+  const pending = new Promise<TestList>((resolve) => {
+    finish = resolve;
+  });
+  const listTests = vi
+    .fn()
+    .mockReturnValueOnce(pending)
+    .mockResolvedValue({ items: [], nextAfter: null });
+  const service = { ...desktopDemoService, listTests };
+  const draw = (available: boolean) => (
+    <History
+      {...callbacks}
+      service={service}
+      available={available}
+      disabled={false}
+      draftAvailable={false}
+    />
+  );
+  const view = render(draw(true));
+  await waitFor(() => expect(listTests).toHaveBeenCalledTimes(1));
+  view.rerender(draw(false));
+  await act(async () => finish({ items: [record], nextAfter: null }));
+  expect(screen.queryByRole('button', { name: /Открыть Первая/ })).toBeNull();
+  view.rerender(draw(true));
+  await waitFor(() => expect(listTests).toHaveBeenCalledTimes(2));
+  expect(listTests).toHaveBeenLastCalledWith({ limit: 20, after: null });
+});
+
+it('после восстановления повторяет страницу применённого поиска и игнорирует прежний ответ', async () => {
+  let finish: (value: TestList) => void = () => {};
+  const pending = new Promise<TestList>((resolve) => {
+    finish = resolve;
+  });
+  const listTests = vi
+    .fn()
+    .mockResolvedValueOnce({ items: [record], nextAfter: record.testId })
+    .mockResolvedValueOnce({ items: [record], nextAfter: record.testId })
+    .mockReturnValueOnce(pending)
+    .mockResolvedValue({ items: [], nextAfter: null });
+  const service = { ...desktopDemoService, listTests };
+  const draw = (available: boolean) => (
+    <History
+      {...callbacks}
+      service={service}
+      available={available}
+      disabled={false}
+      draftAvailable={false}
+    />
+  );
+  const view = render(draw(true));
+  const user = userEvent.setup();
+  await screen.findByRole('button', { name: /Открыть Первая/ });
+  await user.type(screen.getByLabelText('Поиск по номеру или изделию'), 'Клапан');
+  await user.click(screen.getByRole('button', { name: 'Найти' }));
+  await user.click(await screen.findByRole('button', { name: 'Следующая страница' }));
+  view.rerender(draw(false));
+  view.rerender(draw(true));
+  await waitFor(() => expect(listTests).toHaveBeenCalledTimes(4));
+  expect(listTests).toHaveBeenLastCalledWith({ q: 'Клапан', limit: 20, after: record.testId });
+  await act(async () => finish({ items: [record], nextAfter: null }));
+  expect(screen.queryByRole('button', { name: /Открыть Первая/ })).toBeNull();
+});
+
 it('limits the prepared history page including the active record', async () => {
   const entries = Array.from({ length: 21 }, (_, index) => ({
     ...fixtureSource.initial,
