@@ -226,7 +226,7 @@ export function TestsScreen({
                       <td>
                         {row.outcome}
                         {row.active && (
-                          <small>{row.activeLabel ?? 'Проход по последнему снимку'}</small>
+                          <small>{row.activeLabel ?? 'Текущее по последним данным'}</small>
                         )}
                       </td>
                       <td>{row.saving}</td>
@@ -236,7 +236,7 @@ export function TestsScreen({
                           type="button"
                           aria-label={
                             row.active
-                              ? `Вернуться: ${row.activeLabel ?? 'проход по последнему снимку'} ${row.valve} · ${row.id}`
+                              ? `Вернуться к испытанию ${row.valve} · ${row.id}`
                               : `Открыть ${row.valve} · ${row.id}`
                           }
                           onClick={() => onOpen(row.id)}

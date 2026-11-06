@@ -211,12 +211,12 @@ describe('подготовленные состояния оператора', (
       ),
     ).toBeTruthy();
     expect(
-      screen.getByRole('button', { name: /Вернуться: Текущее испытание.*Образец клапана/ }),
+      screen.getByRole('button', { name: /Вернуться к испытанию.*Образец клапана/ }),
     ).toBeTruthy();
     expect(screen.queryByRole('cell', { name: 'Завершено' })).toBeNull();
     await user.selectOptions(screen.getByLabelText('Исход'), 'pending');
     await user.click(
-      screen.getByRole('button', { name: /Вернуться: Текущее испытание.*Образец клапана/ }),
+      screen.getByRole('button', { name: /Вернуться к испытанию.*Образец клапана/ }),
     );
     expect(screen.getByRole('heading', { name: 'Проведение испытания' })).toBeTruthy();
   });
@@ -236,9 +236,7 @@ describe('подготовленные состояния оператора', (
     );
     await user.click(screen.getByRole('button', { name: 'Перейти к проведению' }));
     await user.click(screen.getByRole('button', { name: 'К испытаниям' }));
-    expect(
-      screen.getByRole('button', { name: /Вернуться: Текущее испытание.*Клапан П/ }),
-    ).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Вернуться к испытанию.*Клапан П/ })).toBeTruthy();
     expect(screen.queryByRole('cell', { name: 'Завершено' })).toBeNull();
     expect(screen.queryByRole('button', { name: /^Открыть / })).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Вернуться к испытанию' }));

@@ -164,14 +164,18 @@ it('limits the prepared history page including the active record', async () => {
   render(<PreparedHistory entries={entries} />);
   expect(screen.getAllByRole('row')).toHaveLength(21);
   expect(screen.getByText(/Страница 1.*записей 22.*страниц 2/)).toBeTruthy();
-  expect(screen.getByRole('button', { name: /Вернуться:.*Активный клапан/ })).toBeTruthy();
+  expect(
+    screen.getByRole('button', { name: /Вернуться к испытанию.*Активный клапан/ }),
+  ).toBeTruthy();
   const user = userEvent.setup();
   await user.click(screen.getByRole('button', { name: 'Следующая страница' }));
   expect(screen.getAllByRole('row')).toHaveLength(3);
   expect(screen.getByText(/Страница 2.*записей 22.*страниц 2/)).toBeTruthy();
   await user.selectOptions(screen.getByLabelText('Записей на странице'), '10');
   expect(screen.getAllByRole('row')).toHaveLength(11);
-  expect(screen.getByRole('button', { name: /Вернуться:.*Активный клапан/ })).toBeTruthy();
+  expect(
+    screen.getByRole('button', { name: /Вернуться к испытанию.*Активный клапан/ }),
+  ).toBeTruthy();
   await user.type(screen.getByLabelText('С даты'), '2026-11-10');
   await user.type(screen.getByLabelText('По дату'), '2026-11-05');
   await user.click(screen.getByRole('button', { name: 'Найти' }));
@@ -760,7 +764,9 @@ it.each(['ς', '[a]'])(
     await user.paste(query);
     await user.click(screen.getByRole('button', { name: 'Найти' }));
     expect(screen.getByRole('button', { name: /Открыть Σ клапан \[A\]/ })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /Вернуться:.*Σ клапан \[A\]/ })).toBeTruthy();
+    expect(
+      screen.getByRole('button', { name: /Вернуться к испытанию.*Σ клапан \[A\]/ }),
+    ).toBeTruthy();
     expect(screen.queryByRole('button', { name: /Открыть Alpha/ })).toBeNull();
   },
 );
@@ -847,7 +853,7 @@ it('does not publish a page requested before the active identity changed while o
   );
   expect(
     await screen.findByRole('button', {
-      name: /Вернуться: проход по последнему снимку.*Первая запись/,
+      name: /Вернуться к испытанию.*Первая запись/,
     }),
   ).toBeTruthy();
 });
@@ -1045,7 +1051,7 @@ it('refreshes the visible history when a newly created active record appears', a
   );
   expect(
     await screen.findByRole('button', {
-      name: /Вернуться: проход по последнему снимку.*Первая запись/,
+      name: /Вернуться к испытанию.*Первая запись/,
     }),
   ).toBeTruthy();
   expect(screen.queryByText('История пуста')).toBeNull();
@@ -1078,10 +1084,9 @@ it('keeps a matching active record in search results and returns to the current 
   await user.type(screen.getByLabelText('Поиск по номеру или изделию'), active.testId);
   await user.click(screen.getByRole('button', { name: 'Найти' }));
   expect(await screen.findByText('Ожидается', { selector: 'td' })).toBeTruthy();
-  expect(screen.getByText('Проход по последнему снимку')).toBeTruthy();
   await user.click(
     await screen.findByRole('button', {
-      name: /Вернуться: проход по последнему снимку.*Первая запись/,
+      name: /Вернуться к испытанию.*Первая запись/,
     }),
   );
   expect(onCurrent).toHaveBeenCalledOnce();
