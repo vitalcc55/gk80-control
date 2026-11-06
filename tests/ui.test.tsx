@@ -29,9 +29,24 @@ describe('подготовленные состояния оператора', (
           revision: 1,
           ready: true,
           checks: [
-            { code: 'demo', label: 'Демонстрационный режим ядра', ready: true, source: ReadinessCheckSource.ReadinessCheckSourceCore },
-            { code: 'simulator', label: 'Симулятор готов', ready: true, source: ReadinessCheckSource.ReadinessCheckSourceSimulator },
-            { code: 'other', label: 'Новая проверка', ready: false, source: ReadinessCheckSource.ReadinessCheckSourceCore },
+            {
+              code: 'demo',
+              label: 'Демонстрационный режим ядра',
+              ready: true,
+              source: ReadinessCheckSource.ReadinessCheckSourceCore,
+            },
+            {
+              code: 'simulator',
+              label: 'Симулятор готов',
+              ready: true,
+              source: ReadinessCheckSource.ReadinessCheckSourceSimulator,
+            },
+            {
+              code: 'other',
+              label: 'Новая проверка',
+              ready: false,
+              source: ReadinessCheckSource.ReadinessCheckSourceCore,
+            },
           ],
         }}
       />,
@@ -190,7 +205,11 @@ describe('подготовленные состояния оператора', (
     window.history.replaceState(null, '', '/?fixture=measuring');
     render(<App />);
     await user.click(screen.getByRole('button', { name: 'К испытаниям' }));
-    expect(within(screen.getByRole('complementary', { name: 'Активное испытание' })).getByText('Текущее испытание')).toBeTruthy();
+    expect(
+      within(screen.getByRole('complementary', { name: 'Активное испытание' })).getByText(
+        'Текущее испытание',
+      ),
+    ).toBeTruthy();
     expect(
       screen.getByRole('button', { name: /Вернуться: Текущее испытание.*Образец клапана/ }),
     ).toBeTruthy();
@@ -372,7 +391,9 @@ describe('подготовленные состояния оператора', (
     );
     expect(screen.getByRole('status').textContent).toMatch(/[Пп]отеря ДД1/);
     await user.click(screen.getByRole('button', { name: 'Остановить испытание' }));
-    expect(screen.getByRole('status').textContent).toMatch(/[Пп]отеря ДД1.*остановка не подтверждена/);
+    expect(screen.getByRole('status').textContent).toMatch(
+      /[Пп]отеря ДД1.*остановка не подтверждена/,
+    );
   });
   it('в примере с приводом не требует ручного подтверждения серии', async () => {
     const user = userEvent.setup();

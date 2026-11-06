@@ -136,21 +136,37 @@ it('constructs and reads a stable snapshot without storage or transport effects'
 it('reports failed Stop when pending removal is saved during a manual lookup', async () => {
   const testId = 'd7dcc7dd-127d-4ba1-81ea-f84c173777fa';
   const originalJSON = JSON.stringify({ commandId });
-  localStorage.setItem(storageKey, JSON.stringify([{
-    schema: 2, id: commandId, kind: 'stop', testId,
-    actionId: null, originalJSON, retired: true,
-  }]));
+  localStorage.setItem(
+    storageKey,
+    JSON.stringify([
+      {
+        schema: 2,
+        id: commandId,
+        kind: 'stop',
+        testId,
+        actionId: null,
+        originalJSON,
+        retired: true,
+      },
+    ]),
+  );
   const lookup = vi.fn<DemoService['lookupCommandExact']>(async () => ({
     outcome: ExactLookupResultOutcome.ExactLookupResultOutcomeMatch,
     command: { commandId, testId, status: CommandStatusStatus.CommandStatusStatusFailed },
   }));
   const value = coordinator();
-  value.update({ ...input(service({ lookupCommandExact: lookup })), connection: null, lastSnapshot: null });
+  value.update({
+    ...input(service({ lookupCommandExact: lookup })),
+    connection: null,
+    lastSnapshot: null,
+  });
   value.start();
   await flush();
   const item = value.getSnapshot().pending[0];
   if (!item) throw new Error('Stop observation missing');
-  const failure = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('unavailable'); });
+  const failure = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+    throw new Error('unavailable');
+  });
   try {
     value.forget(item);
     await flush();

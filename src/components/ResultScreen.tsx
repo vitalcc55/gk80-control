@@ -46,11 +46,7 @@ export function ResultScreen({
             <div>
               <span>Ход испытания</span>
               <strong>
-                {record
-                  ? outcomeLabel(record.outcome)
-                  : interrupted
-                    ? 'Прервано'
-                    : 'Завершено'}
+                {record ? outcomeLabel(record.outcome) : interrupted ? 'Прервано' : 'Завершено'}
               </strong>
             </div>
             <div>

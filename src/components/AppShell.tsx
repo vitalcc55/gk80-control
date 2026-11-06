@@ -119,6 +119,7 @@ export function AppShell({
             )}
           </div>
           {status && (
+            // biome-ignore lint/a11y/noNoninteractiveTabindex: keyboard users need to scroll long status messages.
             <section className="sidebar-session" aria-label="Связь и состояние" tabIndex={0}>
               {status}
             </section>

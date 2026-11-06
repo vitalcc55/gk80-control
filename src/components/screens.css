@@ -137,8 +137,8 @@
   cursor: not-allowed;
   opacity: 0.55;
 }
-.history-pages button[aria-disabled='true'],
-.measurement-retry[aria-disabled='true'] {
+.history-pages button[aria-disabled="true"],
+.measurement-retry[aria-disabled="true"] {
   cursor: not-allowed;
   opacity: 0.55;
 }

@@ -113,7 +113,9 @@ function RunScreen({
         state: index === stageIndex ? 'current' : index < stageIndex ? 'done' : 'next',
       }))}
       pressure={pressureValue === null ? 'Неизвестно' : formatMeasurement(pressureValue)}
-      differential={differentialValue === null ? 'Неизвестно' : formatMeasurement(differentialValue)}
+      differential={
+        differentialValue === null ? 'Неизвестно' : formatMeasurement(differentialValue)
+      }
       target={`${formatNumber(parameters.pmax)} Па`}
       pressureNote={
         <>
@@ -150,8 +152,8 @@ function RunScreen({
           <>
             {item.stage === 'measurement' && (
               <p className="action-instruction">
-                Прошло {formatElapsedSeconds(parameters.measurementSeconds / 2)} с ·
-                осталось {formatRemainingSeconds(parameters.measurementSeconds / 2)} с
+                Прошло {formatElapsedSeconds(parameters.measurementSeconds / 2)} с · осталось{' '}
+                {formatRemainingSeconds(parameters.measurementSeconds / 2)} с
               </p>
             )}
             {isActuator && item.stage === 'cycles' && (

@@ -1,6 +1,9 @@
 const numberFormats = new Map<string, Intl.NumberFormat>();
 const dateFormat = new Intl.DateTimeFormat('ru-RU', { dateStyle: 'short', timeStyle: 'short' });
-const eventDateFormat = new Intl.DateTimeFormat('ru-RU', { dateStyle: 'short', timeStyle: 'medium' });
+const eventDateFormat = new Intl.DateTimeFormat('ru-RU', {
+  dateStyle: 'short',
+  timeStyle: 'medium',
+});
 const measurementFormat = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 3 });
 const ungroupedMeasurementFormat = new Intl.NumberFormat('en-US', {
   useGrouping: false,

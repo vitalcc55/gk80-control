@@ -111,7 +111,9 @@ const actionId = '44444444-4444-4444-8444-444444444444';
 const stopId = '55555555-5555-4555-8555-555555555555';
 
 function pendingList(): HTMLElement {
-  const list = screen.getByRole('region', { name: 'Сообщения команд' }).querySelector('.demo-message-list');
+  const list = screen
+    .getByRole('region', { name: 'Сообщения команд' })
+    .querySelector('.demo-message-list');
   if (!(list instanceof HTMLElement)) throw new Error('Pending command list missing');
   return list;
 }
@@ -480,8 +482,9 @@ it('does not attribute an unbound legacy command to the confirmed database', asy
   expect(screen.getByText('legacy').closest('details')?.open).toBe(false);
   expect(screen.getByText('legacy-stop').closest('details')?.open).toBe(false);
   expect(screen.getByText(/Прежняя команда: создание испытания/)).toBeTruthy();
-  expect(screen.getByText(/Прежняя команда: остановка испытания/).textContent)
-    .toContain('Безопасное давление не подтверждено');
+  expect(screen.getByText(/Прежняя команда: остановка испытания/).textContent).toContain(
+    'Безопасное давление не подтверждено',
+  );
   await userEvent.setup().click(screen.getByRole('button', { name: 'Я проверил прежние команды' }));
   await waitFor(() =>
     expect(screen.getByRole('button', { name: 'Новое испытание' }).hasAttribute('disabled')).toBe(
@@ -1516,124 +1519,60 @@ it('preserves the unsaved form when the service wrapper changes', async () => {
   expect((input as HTMLInputElement).value).toBe('Клапан');
 });
 
-it.each(['lookup', 'receipt'] as const)('uses core confirmation and measurements for the operator path (%s)', async (source) => {
-  let snapshot: Snapshot = {
-    apiVersion: 'v1',
-    backendRunId: backend,
-    revision: 0,
-    lastEventSequence: 0,
-    measurementBatch: null,
-    activeTest: null,
-    pendingAction: null,
-    measurementTiming: null,
-    measurements: [],
-  };
-  let lastCommand = {
-    commandId: '',
-    status: CommandStatusStatus.CommandStatusStatusUnknown,
-    testId,
-  };
-  const commands = new Map<string, typeof lastCommand>();
-  let activeRecord = record;
-  let startId = '';
-  let finishStart: (value: CommandDispatch) => void = () => {};
-  const startResponse = new Promise<CommandDispatch>((resolve) => { finishStart = resolve; });
-  let hostRevision = 0;
-  const bridge: SessionBridge = {
-    beginSessionCheck: async () => 'ticket',
-    keepAlive: async () => {},
-    sessionView: async (): Promise<SessionView> => ({
-      connection: {
-        hostRunId: host,
-        revision: ++hostRevision,
-        status: ConnectionStateStatus.Live,
-        linkValid: true,
-        leaseAcquireUnknown: false,
-        streamGeneration: 0,
-      },
-      snapshot,
-      validForMs: 6000,
-      linkValidForMs: 6000,
-    }),
-  };
-  api.list.mockResolvedValue({ items: [], nextAfter: null });
-  api.command.mockImplementation(async (id: string) => commands.get(id));
-  api.create.mockImplementation(async (input: CreateCommandInput) => {
-    expect(JSON.parse(sessionStorage.getItem(pendingKey) ?? '[]')).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: input.commandId,
-          kind: 'create',
-          schema: 2,
-          actionId: null,
-          originalJSON: JSON.stringify(input),
-        }),
-      ]),
-    );
-    lastCommand = {
-      commandId: input.commandId,
-      status: CommandStatusStatus.CommandStatusStatusCompleted,
+it.each(['lookup', 'receipt'] as const)(
+  'uses core confirmation and measurements for the operator path (%s)',
+  async (source) => {
+    let snapshot: Snapshot = {
+      apiVersion: 'v1',
+      backendRunId: backend,
+      revision: 0,
+      lastEventSequence: 0,
+      measurementBatch: null,
+      activeTest: null,
+      pendingAction: null,
+      measurementTiming: null,
+      measurements: [],
+    };
+    let lastCommand = {
+      commandId: '',
+      status: CommandStatusStatus.CommandStatusStatusUnknown,
       testId,
     };
-    commands.set(input.commandId, lastCommand);
-    activeRecord = { ...record, parameters: input.parameters };
-    snapshot = { ...snapshot, activeTest: activeRecord, revision: 1, lastEventSequence: 1 };
-    return { delivery: 'response', command: lastCommand };
-  });
-  api.readiness.mockResolvedValue({
-    testId,
-    revision: 1,
-    ready: true,
-    checks: [
-      {
-        code: 'demo',
-        label: 'Симулятор',
-        source: ReadinessCheckSource.ReadinessCheckSourceSimulator,
-        ready: true,
-      },
-    ],
-  });
-  api.start.mockImplementation(async (_id: string, input: { commandId: string }) => {
-    expect(JSON.parse(sessionStorage.getItem(pendingKey) ?? '[]')).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: input.commandId,
-          kind: 'start',
-          testId,
-          schema: 2,
-          actionId: null,
-          originalJSON: JSON.stringify(input),
-        }),
-      ]),
-    );
-    startId = input.commandId;
-    lastCommand = {
-      commandId: input.commandId,
-      status: CommandStatusStatus.CommandStatusStatusAccepted,
-      testId,
+    const commands = new Map<string, typeof lastCommand>();
+    let activeRecord = record;
+    let startId = '';
+    let finishStart: (value: CommandDispatch) => void = () => {};
+    const startResponse = new Promise<CommandDispatch>((resolve) => {
+      finishStart = resolve;
+    });
+    let hostRevision = 0;
+    const bridge: SessionBridge = {
+      beginSessionCheck: async () => 'ticket',
+      keepAlive: async () => {},
+      sessionView: async (): Promise<SessionView> => ({
+        connection: {
+          hostRunId: host,
+          revision: ++hostRevision,
+          status: ConnectionStateStatus.Live,
+          linkValid: true,
+          leaseAcquireUnknown: false,
+          streamGeneration: 0,
+        },
+        snapshot,
+        validForMs: 6000,
+        linkValidForMs: 6000,
+      }),
     };
-    commands.set(input.commandId, lastCommand);
-    snapshot = {
-      ...snapshot,
-      activeTest: { ...activeRecord, stage: TestRecordStage.Running },
-      revision: 2,
-      lastEventSequence: 2,
-      pendingAction: source === 'receipt' ? null : { testId, actionId, instruction: 'Подтвердите измерение' },
-    };
-    return source === 'lookup'
-      ? startResponse
-      : { delivery: CommandDispatchDelivery.CommandDispatchDeliveryResponse, command: lastCommand };
-  });
-  api.confirm.mockImplementation(
-    async (_id: string, _action: string, input: { commandId: string }) => {
+    api.list.mockResolvedValue({ items: [], nextAfter: null });
+    api.command.mockImplementation(async (id: string) => commands.get(id));
+    api.create.mockImplementation(async (input: CreateCommandInput) => {
       expect(JSON.parse(sessionStorage.getItem(pendingKey) ?? '[]')).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             id: input.commandId,
-            kind: 'confirm',
-            testId,
+            kind: 'create',
             schema: 2,
-            actionId,
+            actionId: null,
             originalJSON: JSON.stringify(input),
           }),
         ]),
@@ -1644,191 +1583,310 @@ it.each(['lookup', 'receipt'] as const)('uses core confirmation and measurements
         testId,
       };
       commands.set(input.commandId, lastCommand);
-      commands.set(startId, { ...lastCommand, commandId: startId });
+      activeRecord = { ...record, parameters: input.parameters };
+      snapshot = { ...snapshot, activeTest: activeRecord, revision: 1, lastEventSequence: 1 };
+      return { delivery: 'response', command: lastCommand };
+    });
+    api.readiness.mockResolvedValue({
+      testId,
+      revision: 1,
+      ready: true,
+      checks: [
+        {
+          code: 'demo',
+          label: 'Симулятор',
+          source: ReadinessCheckSource.ReadinessCheckSourceSimulator,
+          ready: true,
+        },
+      ],
+    });
+    api.start.mockImplementation(async (_id: string, input: { commandId: string }) => {
+      expect(JSON.parse(sessionStorage.getItem(pendingKey) ?? '[]')).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: input.commandId,
+            kind: 'start',
+            testId,
+            schema: 2,
+            actionId: null,
+            originalJSON: JSON.stringify(input),
+          }),
+        ]),
+      );
+      startId = input.commandId;
+      lastCommand = {
+        commandId: input.commandId,
+        status: CommandStatusStatus.CommandStatusStatusAccepted,
+        testId,
+      };
+      commands.set(input.commandId, lastCommand);
       snapshot = {
         ...snapshot,
-        lastEventSequence: 3,
-        pendingAction: null,
-        measurementTiming: null,
-        measurements: [
-          {
-            channel: MeasurementChannel.Dd1,
-            measuredAt: '2026-10-30T00:00:01Z',
-            observedAt: '2026-10-30T00:00:01Z',
-            quality: MeasurementQuality.MeasurementQualityValid,
-            quantity: MeasurementQuantity.MeasurementQuantityPressure,
-            sequence: 1,
-            source: MeasurementSource.MeasurementSourceSimulator,
-            unit: MeasurementUnit.Pa,
-            value: 1000,
-          },
-        ],
+        activeTest: { ...activeRecord, stage: TestRecordStage.Running },
+        revision: 2,
+        lastEventSequence: 2,
+        pendingAction:
+          source === 'receipt' ? null : { testId, actionId, instruction: 'Подтвердите измерение' },
       };
-      return { delivery: 'response', command: lastCommand };
-    },
-  );
-  if (source === 'receipt') api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
-  render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
-  const user = userEvent.setup();
-  const newTest = await screen.findByRole('button', { name: 'Новое испытание' });
-  await waitFor(() => expect(newTest.hasAttribute('disabled')).toBe(false));
-  await user.click(newTest);
-  await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
-  await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
-  await user.type(screen.getByLabelText(/производителя, Па/), '10000');
-  await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
-  expect(api.create).toHaveBeenCalledTimes(1);
-  expect(api.create).toHaveBeenCalledWith(
-    expect.objectContaining({
-      parameters: expect.objectContaining({ areaM2: 0.012, pmaxPa: 10000, measurementSeconds: 60 }),
-    }),
-  );
-  await screen.findByRole('heading', { name: 'Автоматические проверки' }, { timeout: 8000 });
-  expect(screen.queryByRole('button', { name: 'Вернуться к испытанию' })).toBeNull();
-  expect(screen.getByRole('button', { name: 'Остановить испытание' })).toBeTruthy();
-  await user.click(screen.getByRole('button', { name: 'К параметрам' }));
-  expect(screen.getByText('Текущее испытание · только просмотр')).toBeTruthy();
-  await user.click(screen.getByRole('button', { name: 'Вернуться к испытанию' }));
-  await user.click(screen.getByLabelText(/Клапан закрыт/));
-  await user.click(screen.getByLabelText(/Подключение соответствует направлению/));
-  await user.click(screen.getByRole('button', { name: /Перейти к проведению/ }));
-  expect(api.start).toHaveBeenCalledTimes(1);
-  let noticeSummary: HTMLElement | null = null;
-  if (source === 'receipt') {
-    const notice = await screen.findByText('Команда принята или её исход ещё не подтверждён.');
-    const container = notice.closest('[role="status"]');
-    if (!(container instanceof HTMLElement)) throw new Error('Command notice missing');
-    noticeSummary = within(container).getByText('Сведения о команде');
-    noticeSummary.focus();
+      return source === 'lookup'
+        ? startResponse
+        : {
+            delivery: CommandDispatchDelivery.CommandDispatchDeliveryResponse,
+            command: lastCommand,
+          };
+    });
+    api.confirm.mockImplementation(
+      async (_id: string, _action: string, input: { commandId: string }) => {
+        expect(JSON.parse(sessionStorage.getItem(pendingKey) ?? '[]')).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              id: input.commandId,
+              kind: 'confirm',
+              testId,
+              schema: 2,
+              actionId,
+              originalJSON: JSON.stringify(input),
+            }),
+          ]),
+        );
+        lastCommand = {
+          commandId: input.commandId,
+          status: CommandStatusStatus.CommandStatusStatusCompleted,
+          testId,
+        };
+        commands.set(input.commandId, lastCommand);
+        commands.set(startId, { ...lastCommand, commandId: startId });
+        snapshot = {
+          ...snapshot,
+          lastEventSequence: 3,
+          pendingAction: null,
+          measurementTiming: null,
+          measurements: [
+            {
+              channel: MeasurementChannel.Dd1,
+              measuredAt: '2026-10-30T00:00:01Z',
+              observedAt: '2026-10-30T00:00:01Z',
+              quality: MeasurementQuality.MeasurementQualityValid,
+              quantity: MeasurementQuantity.MeasurementQuantityPressure,
+              sequence: 1,
+              source: MeasurementSource.MeasurementSourceSimulator,
+              unit: MeasurementUnit.Pa,
+              value: 1000,
+            },
+          ],
+        };
+        return { delivery: 'response', command: lastCommand };
+      },
+    );
+    if (source === 'receipt') api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
+    render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+    const user = userEvent.setup();
+    const newTest = await screen.findByRole('button', { name: 'Новое испытание' });
+    await waitFor(() => expect(newTest.hasAttribute('disabled')).toBe(false));
+    await user.click(newTest);
+    await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
+    await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
+    await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+    await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
+    expect(api.create).toHaveBeenCalledTimes(1);
+    expect(api.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        parameters: expect.objectContaining({
+          areaM2: 0.012,
+          pmaxPa: 10000,
+          measurementSeconds: 60,
+        }),
+      }),
+    );
+    await screen.findByRole('heading', { name: 'Автоматические проверки' }, { timeout: 8000 });
+    expect(screen.queryByRole('button', { name: 'Вернуться к испытанию' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Остановить испытание' })).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'К параметрам' }));
+    expect(screen.getByText('Текущее испытание · только просмотр')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Вернуться к испытанию' }));
+    await user.click(screen.getByLabelText(/Клапан закрыт/));
+    await user.click(screen.getByLabelText(/Подключение соответствует направлению/));
+    await user.click(screen.getByRole('button', { name: /Перейти к проведению/ }));
+    expect(api.start).toHaveBeenCalledTimes(1);
+    let noticeSummary: HTMLElement | null = null;
+    if (source === 'receipt') {
+      const notice = await screen.findByText('Команда принята или её исход ещё не подтверждён.');
+      const container = notice.closest('[role="status"]');
+      if (!(container instanceof HTMLElement)) throw new Error('Command notice missing');
+      noticeSummary = within(container).getByText('Сведения о команде');
+      noticeSummary.focus();
+      snapshot = {
+        ...snapshot,
+        revision: 3,
+        lastEventSequence: 3,
+        pendingAction: { testId, actionId, instruction: 'Подтвердите измерение' },
+      };
+    }
+    const confirm = await screen.findByRole(
+      'button',
+      { name: 'Подтвердить действие' },
+      { timeout: 8000 },
+    );
+    if (noticeSummary) {
+      expect(noticeSummary.isConnected).toBe(true);
+      expect(document.activeElement).toBe(noticeSummary);
+      confirm.focus();
+    }
+    await screen.findByText(/Команда: принята; завершение команды не подтверждено/);
+    expect(screen.queryByText('Команда принята или её исход ещё не подтверждён.')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Проверить состояние' })).toBeTruthy();
+    const identity = screen.getByText(startId).closest('details');
+    if (!identity) throw new Error('Command details missing');
+    expect(identity.open).toBe(false);
+    expect(identity.querySelector('summary')?.textContent).toBe('Сведения о команде');
+    await user.click(within(identity).getByText('Сведения о команде'));
+    expect(identity.open).toBe(true);
+    if (source === 'lookup') {
+      await act(async () => {
+        finishStart({
+          delivery: CommandDispatchDelivery.CommandDispatchDeliveryNotSent,
+          command: null,
+        });
+        await startResponse;
+      });
+      expect(
+        screen.getByText(
+          'Ранее найденное состояние команды требует проверки; новый запрос не отправлен.',
+        ),
+      ).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Проверить состояние' })).toBeTruthy();
+      expect(api.start).toHaveBeenCalledTimes(1);
+      api.exact.mockClear();
+      await user.click(screen.getByRole('button', { name: 'Проверить состояние' }));
+      const sentStart = api.start.mock.calls[0]?.[1];
+      if (!sentStart) throw new Error('Start payload missing');
+      await waitFor(() =>
+        expect(api.exact).toHaveBeenCalledWith(
+          database,
+          'start',
+          testId,
+          '',
+          startId,
+          JSON.stringify(sentStart),
+        ),
+      );
+      expect(
+        screen.getByText(
+          'Ранее найденное состояние команды требует проверки; новый запрос не отправлен.',
+        ),
+      ).toBeTruthy();
+    }
+    await waitFor(() => expect(confirm.hasAttribute('disabled')).toBe(false));
+    await user.click(confirm);
+    expect(api.confirm).toHaveBeenCalledTimes(1);
+    await screen.findByText(/≈ 1\s?000 Па/, {}, { timeout: 8000 });
     snapshot = {
       ...snapshot,
-      revision: 3,
-      lastEventSequence: 3,
-      pendingAction: { testId, actionId, instruction: 'Подтвердите измерение' },
+      activeTest: {
+        ...activeRecord,
+        stage: TestRecordStage.Finished,
+        outcome: TestRecordOutcome.TestRecordOutcomeCompleted,
+      },
+      lastEventSequence: 4,
     };
-  }
-  const confirm = await screen.findByRole(
-    'button',
-    { name: 'Подтвердить действие' },
-    { timeout: 8000 },
-  );
-  if (noticeSummary) {
-    expect(noticeSummary.isConnected).toBe(true);
-    expect(document.activeElement).toBe(noticeSummary);
-    confirm.focus();
-  }
-  await screen.findByText(/Команда: принята; завершение команды не подтверждено/);
-  expect(screen.queryByText('Команда принята или её исход ещё не подтверждён.')).toBeNull();
-  expect(screen.getByRole('button', { name: 'Проверить состояние' })).toBeTruthy();
-  const identity = screen.getByText(startId).closest('details');
-  if (!identity) throw new Error('Command details missing');
-  expect(identity.open).toBe(false);
-  expect(identity.querySelector('summary')?.textContent).toBe('Сведения о команде');
-  await user.click(within(identity).getByText('Сведения о команде'));
-  expect(identity.open).toBe(true);
-  if (source === 'lookup') {
-    await act(async () => {
-      finishStart({ delivery: CommandDispatchDelivery.CommandDispatchDeliveryNotSent, command: null });
-      await startResponse;
-    });
-    expect(screen.getByText('Ранее найденное состояние команды требует проверки; новый запрос не отправлен.')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Проверить состояние' })).toBeTruthy();
-    expect(api.start).toHaveBeenCalledTimes(1);
-    api.exact.mockClear();
-    await user.click(screen.getByRole('button', { name: 'Проверить состояние' }));
-    const sentStart = api.start.mock.calls[0]?.[1];
-    if (!sentStart) throw new Error('Start payload missing');
-    await waitFor(() => expect(api.exact).toHaveBeenCalledWith(database, 'start', testId, '', startId, JSON.stringify(sentStart)));
-    expect(screen.getByText('Ранее найденное состояние команды требует проверки; новый запрос не отправлен.')).toBeTruthy();
-  }
-  await waitFor(() => expect(confirm.hasAttribute('disabled')).toBe(false));
-  await user.click(confirm);
-  expect(api.confirm).toHaveBeenCalledTimes(1);
-  await screen.findByText(/≈ 1\s?000 Па/, {}, { timeout: 8000 });
-  snapshot = {
-    ...snapshot,
-    activeTest: {
-      ...activeRecord,
-      stage: TestRecordStage.Finished,
-      outcome: TestRecordOutcome.TestRecordOutcomeCompleted,
-    },
-    lastEventSequence: 4,
-  };
-  await screen.findByRole('heading', { name: 'Результат испытания' }, { timeout: 8000 });
-  expect(screen.queryByRole('heading', { name: 'Параметры испытания' })).toBeNull();
-}, 18000);
+    await screen.findByRole('heading', { name: 'Результат испытания' }, { timeout: 8000 });
+    expect(screen.queryByRole('heading', { name: 'Параметры испытания' })).toBeNull();
+  },
+  18000,
+);
 
 it.each([null, '77777777-7777-4777-8777-777777777777'])(
   'keeps accepted Start notice when the pending action does not match (%s)',
   async (actionTestId) => {
     const startId = '66666666-6666-4666-8666-666666666666';
-    sessionStorage.setItem(pendingKey, JSON.stringify([savedAttempt(startId, 'start', testId, false)]));
+    sessionStorage.setItem(
+      pendingKey,
+      JSON.stringify([savedAttempt(startId, 'start', testId, false)]),
+    );
     const bridge: SessionBridge = {
       beginSessionCheck: async () => 'ticket',
       keepAlive: async () => {},
       sessionView: async () => ({
         connection: {
-          hostRunId: host, revision: 1, status: ConnectionStateStatus.Live,
-          linkValid: true, leaseAcquireUnknown: false, streamGeneration: 0,
+          hostRunId: host,
+          revision: 1,
+          status: ConnectionStateStatus.Live,
+          linkValid: true,
+          leaseAcquireUnknown: false,
+          streamGeneration: 0,
         },
         snapshot: {
-          apiVersion: 'v1', backendRunId: backend, revision: 2, lastEventSequence: 2,
-          measurementBatch: null, activeTest: { ...record, stage: TestRecordStage.Running },
-          pendingAction: actionTestId ? { testId: actionTestId, actionId, instruction: 'Подтвердите' } : null,
-          measurementTiming: null, measurements: [],
+          apiVersion: 'v1',
+          backendRunId: backend,
+          revision: 2,
+          lastEventSequence: 2,
+          measurementBatch: null,
+          activeTest: { ...record, stage: TestRecordStage.Running },
+          pendingAction: actionTestId
+            ? { testId: actionTestId, actionId, instruction: 'Подтвердите' }
+            : null,
+          measurementTiming: null,
+          measurements: [],
         },
-        validForMs: 6000, linkValidForMs: 6000,
+        validForMs: 6000,
+        linkValidForMs: 6000,
       }),
     };
     api.list.mockResolvedValue({ items: [], nextAfter: null });
     api.command.mockResolvedValue({ commandId: startId, testId, status: 'accepted' });
     render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
-    expect(await screen.findByText('Команда принята или её исход ещё не подтверждён.')).toBeTruthy();
+    expect(
+      await screen.findByText('Команда принята или её исход ещё не подтверждён.'),
+    ).toBeTruthy();
     expect(pendingRow(startId).textContent).toContain('принята');
     expect(api.start).not.toHaveBeenCalled();
   },
 );
 
-it.each([testId, null])('does not infer a legacy Stop without its original contents (%s)', async (stopTestId) => {
-  sessionStorage.setItem(
-    pendingKey,
-    JSON.stringify([{ id: stopId, kind: 'stop', testId: stopTestId, retired: false }]),
-  );
-  const bridge: SessionBridge = {
-    beginSessionCheck: async () => 'ticket',
-    keepAlive: async () => {},
-    sessionView: async () => ({
-      connection: {
-        hostRunId: host,
-        revision: 1,
-        status: ConnectionStateStatus.Live,
-        linkValid: true,
-        leaseAcquireUnknown: false,
-        streamGeneration: 0,
-      },
-      snapshot: {
-        apiVersion: 'v1',
-        backendRunId: backend,
-        revision: 0,
-        lastEventSequence: 0,
-        measurementBatch: null,
-        activeTest: null,
-        pendingAction: null,
-        measurementTiming: null,
-        measurements: [],
-      },
-      validForMs: 6000,
-      linkValidForMs: 6000,
-    }),
-  };
-  render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
-  expect(await screen.findByText(/Исходное содержимое команды не сохранилось/)).toBeTruthy();
-  if (stopTestId === null) expect(pendingRow(stopId).textContent).toContain('Испытание для остановки неизвестно');
-  await userEvent.setup().click(screen.getByRole('button', { name: 'Проверить состояние' }));
-  expect(api.exact).not.toHaveBeenCalled();
-  expect(api.command).not.toHaveBeenCalled();
-  expect(api.stop).not.toHaveBeenCalled();
-});
+it.each([testId, null])(
+  'does not infer a legacy Stop without its original contents (%s)',
+  async (stopTestId) => {
+    sessionStorage.setItem(
+      pendingKey,
+      JSON.stringify([{ id: stopId, kind: 'stop', testId: stopTestId, retired: false }]),
+    );
+    const bridge: SessionBridge = {
+      beginSessionCheck: async () => 'ticket',
+      keepAlive: async () => {},
+      sessionView: async () => ({
+        connection: {
+          hostRunId: host,
+          revision: 1,
+          status: ConnectionStateStatus.Live,
+          linkValid: true,
+          leaseAcquireUnknown: false,
+          streamGeneration: 0,
+        },
+        snapshot: {
+          apiVersion: 'v1',
+          backendRunId: backend,
+          revision: 0,
+          lastEventSequence: 0,
+          measurementBatch: null,
+          activeTest: null,
+          pendingAction: null,
+          measurementTiming: null,
+          measurements: [],
+        },
+        validForMs: 6000,
+        linkValidForMs: 6000,
+      }),
+    };
+    render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+    expect(await screen.findByText(/Исходное содержимое команды не сохранилось/)).toBeTruthy();
+    if (stopTestId === null)
+      expect(pendingRow(stopId).textContent).toContain('Испытание для остановки неизвестно');
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Проверить состояние' }));
+    expect(api.exact).not.toHaveBeenCalled();
+    expect(api.command).not.toHaveBeenCalled();
+    expect(api.stop).not.toHaveBeenCalled();
+  },
+);
 
 it('persists the Stop attempt before sending and reconciles it after remount without resending', async () => {
   const snapshot: Snapshot = {
@@ -3103,35 +3161,6 @@ it('keeps keyboard focus in the application when a completed command observation
     beginSessionCheck: async () => 'ticket',
     keepAlive: async () => {},
     sessionView: async () => ({
-      connection: { hostRunId: host, revision: 1, status: ConnectionStateStatus.Live,
-        linkValid: true, leaseAcquireUnknown: false, streamGeneration: 0 },
-      snapshot: { apiVersion: 'v1', backendRunId: backend, revision: 2, lastEventSequence: 2,
-        measurementBatch: null, activeTest: { ...record, stage: TestRecordStage.Running },
-        pendingAction: null, measurementTiming: null, measurements: [] },
-      validForMs: 6000, linkValidForMs: 6000,
-    }),
-  };
-  let finish: (value: { outcome: string; command: { commandId: string; testId: string; status: string } }) => void = () => {};
-  const held = new Promise<{ outcome: string; command: { commandId: string; testId: string; status: string } }>((resolve) => { finish = resolve; });
-  api.exact.mockReturnValue(held);
-  render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
-  await waitFor(() => expect(api.exact).toHaveBeenCalled());
-  const summary = within(pendingRow(stopId)).getByText('Сведения о команде');
-  summary.focus();
-  expect(document.activeElement).toBe(summary);
-  await act(async () => {
-    finish({ outcome: 'match', command: { commandId: stopId, testId, status: 'completed' } });
-    await held;
-  });
-  await waitFor(() => expect(summary.isConnected).toBe(false));
-  expect(document.activeElement).toBe(screen.getByRole('main'));
-});
-
-it.each([false, true])('keeps the first unresolved Stop when a later Stop attempt is rejected (storage failure: %s)', async (storageFailure) => {
-  const bridge: SessionBridge = {
-    beginSessionCheck: async () => 'ticket',
-    keepAlive: async () => {},
-    sessionView: async () => ({
       connection: {
         hostRunId: host,
         revision: 1,
@@ -3155,37 +3184,94 @@ it.each([false, true])('keeps the first unresolved Stop when a later Stop attemp
       linkValidForMs: 6000,
     }),
   };
-  api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
-  api.stop
-    .mockRejectedValueOnce(new Error('first response lost'))
-    .mockResolvedValueOnce({ delivery: 'conflict', command: null });
+  let finish: (value: {
+    outcome: string;
+    command: { commandId: string; testId: string; status: string };
+  }) => void = () => {};
+  const held = new Promise<{
+    outcome: string;
+    command: { commandId: string; testId: string; status: string };
+  }>((resolve) => {
+    finish = resolve;
+  });
+  api.exact.mockReturnValue(held);
   render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
-  const user = userEvent.setup();
-  await user.click(await screen.findByRole('button', { name: 'Остановить испытание' }));
-  await screen.findByText(/Исход остановки неизвестен/);
-  await user.click(screen.getByRole('button', { name: 'Повторить запрос остановки' }));
-  await screen.findByText(/Запрос остановки отклонён/);
-  const stored = JSON.parse(sessionStorage.getItem(pendingKey) ?? '[]');
-  expect(stored).toContainEqual(
-    expect.objectContaining({
-      id: stopId,
-      kind: 'stop',
-      testId,
-      originalJSON: JSON.stringify({ commandId: stopId }),
-    }),
-  );
-  expect(api.stop).toHaveBeenCalledTimes(2);
-  const failure = storageFailure
-    ? vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('unavailable'); })
-    : null;
-  await user.click(screen.getByRole('button', { name: 'Прекратить наблюдение' }));
-  if (failure) {
-    expect(screen.queryByText(/Запрос остановки отклонён/)).not.toBeNull();
-    failure.mockRestore();
-    await user.click(await screen.findByRole('button', { name: 'Повторить чтение команд' }));
-  }
-  await waitFor(() => expect(screen.queryByText(/Запрос остановки отклонён/)).toBeNull());
+  await waitFor(() => expect(api.exact).toHaveBeenCalled());
+  const summary = within(pendingRow(stopId)).getByText('Сведения о команде');
+  summary.focus();
+  expect(document.activeElement).toBe(summary);
+  await act(async () => {
+    finish({ outcome: 'match', command: { commandId: stopId, testId, status: 'completed' } });
+    await held;
+  });
+  await waitFor(() => expect(summary.isConnected).toBe(false));
+  expect(document.activeElement).toBe(screen.getByRole('main'));
 });
+
+it.each([false, true])(
+  'keeps the first unresolved Stop when a later Stop attempt is rejected (storage failure: %s)',
+  async (storageFailure) => {
+    const bridge: SessionBridge = {
+      beginSessionCheck: async () => 'ticket',
+      keepAlive: async () => {},
+      sessionView: async () => ({
+        connection: {
+          hostRunId: host,
+          revision: 1,
+          status: ConnectionStateStatus.Live,
+          linkValid: true,
+          leaseAcquireUnknown: false,
+          streamGeneration: 0,
+        },
+        snapshot: {
+          apiVersion: 'v1',
+          backendRunId: backend,
+          revision: 2,
+          lastEventSequence: 2,
+          measurementBatch: null,
+          activeTest: { ...record, stage: TestRecordStage.Running },
+          pendingAction: null,
+          measurementTiming: null,
+          measurements: [],
+        },
+        validForMs: 6000,
+        linkValidForMs: 6000,
+      }),
+    };
+    api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
+    api.stop
+      .mockRejectedValueOnce(new Error('first response lost'))
+      .mockResolvedValueOnce({ delivery: 'conflict', command: null });
+    render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Остановить испытание' }));
+    await screen.findByText(/Исход остановки неизвестен/);
+    await user.click(screen.getByRole('button', { name: 'Повторить запрос остановки' }));
+    await screen.findByText(/Запрос остановки отклонён/);
+    const stored = JSON.parse(sessionStorage.getItem(pendingKey) ?? '[]');
+    expect(stored).toContainEqual(
+      expect.objectContaining({
+        id: stopId,
+        kind: 'stop',
+        testId,
+        originalJSON: JSON.stringify({ commandId: stopId }),
+      }),
+    );
+    expect(api.stop).toHaveBeenCalledTimes(2);
+    const failure = storageFailure
+      ? vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+          throw new Error('unavailable');
+        })
+      : null;
+    await user.click(screen.getByRole('button', { name: 'Прекратить наблюдение' }));
+    if (failure) {
+      expect(screen.queryByText(/Запрос остановки отклонён/)).not.toBeNull();
+      failure.mockRestore();
+      await user.click(await screen.findByRole('button', { name: 'Повторить чтение команд' }));
+    }
+    await waitFor(() => expect(screen.queryByText(/Запрос остановки отклонён/)).toBeNull());
+  },
+);
 
 it('shows the restored terminal Stop status when the operator requests it again', async () => {
   sessionStorage.setItem(pendingKey, JSON.stringify([savedAttempt(stopId, 'stop', testId, false)]));
@@ -3940,9 +4026,7 @@ it('keeps another command unknown when an earlier command fails', async () => {
     });
     await stop;
   });
-  expect(
-    await screen.findByText(/Другое испытание: Остановка не выполнена/),
-  ).toBeTruthy();
+  expect(await screen.findByText(/Другое испытание: Остановка не выполнена/)).toBeTruthy();
   expect(screen.getByText(/Исход команды пока неизвестен/)).toBeTruthy();
   expect(api.create).not.toHaveBeenCalled();
 });
@@ -4012,8 +4096,7 @@ it('keeps separate failed stop results visible until the operator hides them', a
   if (!first) throw new Error('First stop observation missing');
   await user.click(within(first).getByRole('button', { name: 'Скрыть наблюдение команды' }));
   expect(screen.queryByText(firstId)).toBeNull();
-  for (const item of stops.slice(1))
-    expect(screen.getByText(item.id)).toBeTruthy();
+  for (const item of stops.slice(1)) expect(screen.getByText(item.id)).toBeTruthy();
   view.unmount();
   api.command.mockRejectedValue(new Error('core unavailable'));
   render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);

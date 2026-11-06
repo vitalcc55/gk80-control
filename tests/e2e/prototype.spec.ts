@@ -234,9 +234,7 @@ for (const viewport of [
           .getByRole('textbox', { name: 'Обозначение или наименование клапана' })
           .fill('Клапан для проверки осей');
         await page.getByRole('textbox', { name: 'Pmax производителя, Па' }).fill(example.pressure);
-        await page
-          .getByRole('textbox', { name: 'Длительность измерения, с' })
-          .fill(example.period);
+        await page.getByRole('textbox', { name: 'Длительность измерения, с' }).fill(example.period);
         await page.getByRole('button', { name: 'Проверить готовность' }).click();
         await page.getByRole('checkbox', { name: /Клапан закрыт/ }).check();
         await page.getByRole('checkbox', { name: /Подключение соответствует направлению/ }).check();

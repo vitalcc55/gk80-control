@@ -54,26 +54,26 @@ export function LiveRun({
     : startsMeasurement
       ? undefined
       : (snapshot.pendingAction?.instruction ??
-        (timing ? 'Ожидайте обновления состояния измерения ядра.' : 'Ожидаем данные измерения ядра.'));
+        (timing
+          ? 'Ожидайте обновления состояния измерения ядра.'
+          : 'Ожидаем данные измерения ядра.'));
   return (
     <RunScreen
       subtitle={<>{record.parameters.valve} · Нагнетание · Без привода</>}
-      stages={['Ожидание подтверждения', 'Измерение', 'Остановка'].map(
-        (label, index) => ({
-          id: String(index),
-          label,
-          state:
-            index === phase
-              ? phase === 1 && !timing
-                ? 'next'
-                : 'current'
-              : stopping
-                ? 'inactive'
-                : index < phase
-                  ? 'done'
-                  : 'next',
-        }),
-      )}
+      stages={['Ожидание подтверждения', 'Измерение', 'Остановка'].map((label, index) => ({
+        id: String(index),
+        label,
+        state:
+          index === phase
+            ? phase === 1 && !timing
+              ? 'next'
+              : 'current'
+            : stopping
+              ? 'inactive'
+              : index < phase
+                ? 'done'
+                : 'next',
+      }))}
       stageNote={<p>Этап по последнему полученному снимку</p>}
       pressure={shown(pressure)}
       differential={shown(differential)}

@@ -101,5 +101,9 @@ export function eventReasonLabels(value: string): string[] {
 }
 
 export function eventActorLabel(value: string): string {
-  return value === 'demo-operator' ? 'Оператор' : value === 'system' ? 'Система' : 'Неизвестный участник';
+  return value === 'demo-operator'
+    ? 'Оператор'
+    : value === 'system'
+      ? 'Система'
+      : 'Неизвестный участник';
 }

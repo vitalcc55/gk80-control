@@ -95,7 +95,10 @@ export function createCommandCoordinator({
   let commandFailure: CommandFailure | null = null;
   let latestNotice: 'message' | 'commandFailure' = 'message';
   let storageMessage = '';
-  let commandMessages = new Map<string, { id: string; text: string; startAcceptedFor?: string; attention?: true }>();
+  let commandMessages = new Map<
+    string,
+    { id: string; text: string; startAcceptedFor?: string; attention?: true }
+  >();
   let stopMessage = '';
   let volatileStopTracking = false;
   let stopRequestedFor: string | null = null;
@@ -205,12 +208,29 @@ export function createCommandCoordinator({
     latestNotice = 'commandFailure';
     changed();
   }
-  function setCommandMessage(id: string, text: string, key = id, startAcceptedFor?: string, attention = false) {
+  function setCommandMessage(
+    id: string,
+    text: string,
+    key = id,
+    startAcceptedFor?: string,
+    attention = false,
+  ) {
     const previous = commandMessages.get(key);
     if (startAcceptedFor && previous?.attention) return;
-    if ((previous?.text ?? '') === text && previous?.startAcceptedFor === startAcceptedFor && !!previous?.attention === attention) return;
+    if (
+      (previous?.text ?? '') === text &&
+      previous?.startAcceptedFor === startAcceptedFor &&
+      !!previous?.attention === attention
+    )
+      return;
     commandMessages = new Map(commandMessages);
-    if (text) commandMessages.set(key, { id, text, ...(startAcceptedFor ? { startAcceptedFor } : {}), ...(attention ? { attention: true as const } : {}) });
+    if (text)
+      commandMessages.set(key, {
+        id,
+        text,
+        ...(startAcceptedFor ? { startAcceptedFor } : {}),
+        ...(attention ? { attention: true as const } : {}),
+      });
     else commandMessages.delete(key);
     changed();
   }
@@ -280,7 +300,11 @@ export function createCommandCoordinator({
       setPending(values);
       for (const removed of [...requestedRemovals, ...memory.removals]) {
         if (removed.kind === 'stop' && !values.some((item) => samePending(item, removed))) {
-          setCommandMessage(removed.id, '', stopAttemptNoticeKey(removed.id, removed.testId, removed.originalJSON));
+          setCommandMessage(
+            removed.id,
+            '',
+            stopAttemptNoticeKey(removed.id, removed.testId, removed.originalJSON),
+          );
         }
       }
       memory.volatile = null;
@@ -465,7 +489,12 @@ export function createCommandCoordinator({
       if (item.kind !== 'stop' && merged.status === 'completed')
         setCommandMessage(item.id, 'Действие подтверждено ядром; ожидаем состояние.');
       else if (item.kind !== 'stop' && merged.status === 'accepted')
-        setCommandMessage(item.id, 'Команда принята или её исход ещё не подтверждён.', item.id, item.kind === 'start' ? item.testId ?? undefined : undefined);
+        setCommandMessage(
+          item.id,
+          'Команда принята или её исход ещё не подтверждён.',
+          item.id,
+          item.kind === 'start' ? (item.testId ?? undefined) : undefined,
+        );
       if (merged.status === 'rejected' || merged.status === 'failed') {
         if (item.kind === 'stop') {
           const failure =
@@ -730,7 +759,9 @@ export function createCommandCoordinator({
             ? 'Действие подтверждено ядром; ожидаем состояние.'
             : 'Команда принята или её исход ещё не подтверждён.',
           item.id,
-          merged.status === 'accepted' && item.kind === 'start' ? item.testId ?? undefined : undefined,
+          merged.status === 'accepted' && item.kind === 'start'
+            ? (item.testId ?? undefined)
+            : undefined,
         );
     } catch (error) {
       const current = pending.find((pendingItem) => samePending(pendingItem, item));

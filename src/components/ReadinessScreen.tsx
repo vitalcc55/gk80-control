@@ -67,18 +67,24 @@ export function ReadinessScreen({
               const preparation =
                 check.code === 'demo' && check.label === 'Демонстрационный режим ядра';
               const source = check.code === 'simulator' && check.label === 'Симулятор готов';
-              const label = preparation ? 'Подготовка разрешена' : source ? 'Источник свободен' : check.label;
+              const label = preparation
+                ? 'Подготовка разрешена'
+                : source
+                  ? 'Источник свободен'
+                  : check.label;
               const result = stale
                 ? 'Не подтверждено'
                 : preparation || source
-                  ? check.ready ? 'Да' : 'Нет'
-                  : check.ready ? 'Готово' : 'Не готово';
+                  ? check.ready
+                    ? 'Да'
+                    : 'Нет'
+                  : check.ready
+                    ? 'Готово'
+                    : 'Не готово';
               return (
                 <li key={check.code}>
                   <span>{label}</span>
-                  <strong className={check.ready ? undefined : 'error-text'}>
-                    {result}
-                  </strong>
+                  <strong className={check.ready ? undefined : 'error-text'}>{result}</strong>
                 </li>
               );
             })
