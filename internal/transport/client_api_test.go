@@ -375,6 +375,7 @@ func TestNativeClientBoundsAndValidatesPages(t *testing.T) {
 func TestNativeClientRejectsMismatchedCommandAndCursors(t *testing.T) {
 	testID, commandID, leaseID := uuid.New(), uuid.New(), uuid.New()
 	next := int64(100)
+	one := int64(1)
 	other := uuid.New()
 	record := contract.TestRecord{TestId: testID, StopCommandId: uuid.New(), Demo: true, OperatorId: "demo", Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1, MeasurementSeconds: 1, Direction: "pressure"}, Stage: "preparing", Outcome: "pending", DataQuality: "pending", SaveStatus: "saved", CreatedAt: time.Now().UTC()}
 	for _, tc := range []struct {
@@ -392,6 +393,14 @@ func TestNativeClientRejectsMismatchedCommandAndCursors(t *testing.T) {
 		}},
 		{"audit owner", contract.AuditPage{Items: []contract.AuditEvent{{Sequence: 1, TestId: other, OccurredAt: time.Now().UTC(), OperatorId: "demo", Action: "stop", Outcome: "completed"}}}, func(c *Client) error { _, err := c.Audit(context.Background(), leaseID, testID, 0, 1); return err }},
 		{"list cursor", contract.TestList{Items: []contract.TestRecord{record}, NextAfter: &other}, func(c *Client) error {
+			_, err := c.ListTests(context.Background(), leaseID, contract.ListTestsParams{})
+			return err
+		}},
+		{"list total", contract.TestList{Items: []contract.TestRecord{record}, Total: new(int64)}, func(c *Client) error {
+			_, err := c.ListTests(context.Background(), leaseID, contract.ListTestsParams{})
+			return err
+		}},
+		{"list total with next", contract.TestList{Items: []contract.TestRecord{record}, NextAfter: &testID, Total: &one}, func(c *Client) error {
 			_, err := c.ListTests(context.Background(), leaseID, contract.ListTestsParams{})
 			return err
 		}},

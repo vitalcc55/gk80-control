@@ -97,6 +97,8 @@ export function FixtureTests({
       ].slice(page * pageSize, (page + 1) * pageSize)}
       filters={filters}
       pageSize={pageSize}
+      pageNumber={page + 1}
+      total={rangeError ? undefined : (activeMatches ? 1 : 0) + matches.length}
       onPageSize={(value) => {
         setPage(0);
         onPageSize(value);

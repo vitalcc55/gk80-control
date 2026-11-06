@@ -409,11 +409,14 @@ function auditPage(value: unknown): value is Contract.AuditPage {
 
 function testList(value: unknown): value is Contract.TestList {
   return (
-    fields(value, ['items', 'nextAfter']) &&
+    fields(value, ['items', 'nextAfter', 'total']) &&
     Array.isArray(value['items']) &&
     value['items'].length <= 500 &&
     value['items'].every(testRecord) &&
-    (value['nextAfter'] === null || uuid(value['nextAfter']))
+    (value['nextAfter'] === null || uuid(value['nextAfter'])) &&
+    (value['total'] === null ||
+      (counter(value['total']) &&
+        value['total'] >= value['items'].length + (value['nextAfter'] === null ? 0 : 1)))
   );
 }
 

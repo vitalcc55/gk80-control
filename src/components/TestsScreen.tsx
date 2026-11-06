@@ -50,6 +50,10 @@ export function TestsScreen({
   onNext,
   onFirst,
   pageSize,
+  pageNumber,
+  total,
+  pageChanged = false,
+  onRefreshCount,
   onPageSize,
   active,
   children,
@@ -71,6 +75,10 @@ export function TestsScreen({
   onNext?: (() => void) | undefined;
   onFirst?: () => void;
   pageSize: number;
+  pageNumber: number;
+  total: number | null | undefined;
+  pageChanged?: boolean;
+  onRefreshCount?: (() => void) | undefined;
   onPageSize: (value: number) => void;
   active?: ReactNode;
   children?: ReactNode;
@@ -243,11 +251,36 @@ export function TestsScreen({
             </div>
           ) : (
             <div className="empty-example">
-              <p>{filtered ? 'По заданным условиям записей нет' : 'История пуста'}</p>
+              <p>
+                {pageChanged || pageNumber > 1
+                  ? 'На этой странице записей нет'
+                  : filtered
+                    ? 'По заданным условиям записей нет'
+                    : 'История пуста'}
+              </p>
             </div>
           ))
         )}
         <div className="history-pages">
+          {total !== undefined && (
+            <span>
+              {(total === null || total > 0) && <>Страница {pageNumber}. </>}
+              {total === null
+                ? 'Количество записей недоступно.'
+                : `На момент обновления: записей ${total}, страниц ${Math.ceil(total / pageSize)}.`}
+              {pageChanged && ' Список мог измениться. Вернитесь к началу.'}
+            </span>
+          )}
+          {total === null && onRefreshCount && (
+            <button
+              className="table-action"
+              type="button"
+              disabled={loading}
+              onClick={onRefreshCount}
+            >
+              Обновить количество
+            </button>
+          )}
           <label className="history-page-size">
             Записей на странице
             <select value={pageSize} onChange={(event) => onPageSize(Number(event.target.value))}>

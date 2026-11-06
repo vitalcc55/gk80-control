@@ -732,6 +732,9 @@ type StreamReadyType string
 type TestList struct {
 	Items     []TestRecord        `json:"items"`
 	NextAfter *openapi_types.UUID `json:"nextAfter"`
+
+	// Total Число записей по фильтрам без ограничения курсором; null, если история изменилась при чтении.
+	Total *int64 `json:"total"`
 }
 
 // TestParameters defines model for TestParameters.

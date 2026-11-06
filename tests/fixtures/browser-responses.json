@@ -562,9 +562,25 @@
   {
     "name": "complete TestList",
     "schema": "TestList",
-    "json": "{\"items\":[],\"nextAfter\":null}",
+    "json": "{\"items\":[],\"nextAfter\":null,\"total\":0}",
     "valid": true,
     "browserValid": true,
+    "kind": "schema"
+  },
+  {
+    "name": "history count unavailable",
+    "schema": "TestList",
+    "json": "{\"items\":[],\"nextAfter\":null,\"total\":null}",
+    "valid": true,
+    "browserValid": true,
+    "kind": "schema"
+  },
+  {
+    "name": "history count negative",
+    "schema": "TestList",
+    "json": "{\"items\":[],\"nextAfter\":null,\"total\":-1}",
+    "valid": false,
+    "browserValid": false,
     "kind": "schema"
   },
   {
@@ -578,7 +594,7 @@
   {
     "name": "additional property TestList",
     "schema": "TestList",
-    "json": "{\"items\":[],\"nextAfter\":null,\"extra\":true}",
+    "json": "{\"items\":[],\"nextAfter\":null,\"extra\":true,\"total\":0}",
     "valid": false,
     "browserValid": false,
     "kind": "schema"
@@ -1506,7 +1522,7 @@
   {
     "name": "empty page with UUID cursor is schema-valid",
     "schema": "TestList",
-    "json": "{\"items\":[],\"nextAfter\":\"10000000-0000-4000-8000-000000000001\"}",
+    "json": "{\"items\":[],\"nextAfter\":\"10000000-0000-4000-8000-000000000001\",\"total\":null}",
     "valid": true,
     "browserValid": true,
     "kind": "schema"
@@ -1514,7 +1530,7 @@
   {
     "name": "nonempty history",
     "schema": "TestList",
-    "json": "{\"items\":[{\"testId\":\"10000000-0000-4000-8000-000000000001\",\"demo\":true,\"operatorId\":\"demo\",\"parameters\":{\"valve\":\"V\",\"areaM2\":0.1,\"pmaxPa\":1000,\"measurementSeconds\":1.5,\"direction\":\"pressure\",\"actuator\":false},\"stopCommandId\":\"10000000-0000-4000-8000-000000000002\",\"stage\":\"running\",\"outcome\":\"pending\",\"dataQuality\":\"pending\",\"saveStatus\":\"saved\",\"createdAt\":\"2026-11-05T10:00:00.123456789Z\"}],\"nextAfter\":null}",
+    "json": "{\"items\":[{\"testId\":\"10000000-0000-4000-8000-000000000001\",\"demo\":true,\"operatorId\":\"demo\",\"parameters\":{\"valve\":\"V\",\"areaM2\":0.1,\"pmaxPa\":1000,\"measurementSeconds\":1.5,\"direction\":\"pressure\",\"actuator\":false},\"stopCommandId\":\"10000000-0000-4000-8000-000000000002\",\"stage\":\"running\",\"outcome\":\"pending\",\"dataQuality\":\"pending\",\"saveStatus\":\"saved\",\"createdAt\":\"2026-11-05T10:00:00.123456789Z\"}],\"nextAfter\":null,\"total\":1}",
     "valid": true,
     "browserValid": true,
     "kind": "schema"
@@ -1522,7 +1538,7 @@
   {
     "name": "null history items",
     "schema": "TestList",
-    "json": "{\"items\":null,\"nextAfter\":null}",
+    "json": "{\"items\":null,\"nextAfter\":null,\"total\":0}",
     "valid": false,
     "browserValid": false,
     "kind": "schema"
@@ -1530,7 +1546,7 @@
   {
     "name": "bad history cursor",
     "schema": "TestList",
-    "json": "{\"items\":[],\"nextAfter\":\"id\"}",
+    "json": "{\"items\":[],\"nextAfter\":\"id\",\"total\":0}",
     "valid": false,
     "browserValid": false,
     "kind": "schema"

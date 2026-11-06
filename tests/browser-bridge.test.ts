@@ -58,7 +58,7 @@ it.each(['outcome', 'createdFrom', 'createdBefore'] as const)(
 it('passes history filters and cursor together to the bounded read operation', async () => {
   const fetcher = vi
     .fn<typeof fetch>()
-    .mockResolvedValue(Response.json({ items: [], nextAfter: null }));
+    .mockResolvedValue(Response.json({ items: [], nextAfter: null, total: 0 }));
   const service = createBrowserBridge(channel, fetcher).service;
   await service.listTests({
     q: 'Клапан 100%_',

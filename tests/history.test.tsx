@@ -113,7 +113,7 @@ it('не принимает старый список после потери с
   const view = render(draw(true));
   await waitFor(() => expect(listTests).toHaveBeenCalledTimes(1));
   view.rerender(draw(false));
-  await act(async () => finish({ items: [record], nextAfter: null }));
+  await act(async () => finish({ items: [record], total: null, nextAfter: null }));
   expect(screen.queryByRole('button', { name: /Открыть Первая/ })).toBeNull();
   view.rerender(draw(true));
   await waitFor(() => expect(listTests).toHaveBeenCalledTimes(2));
@@ -151,7 +151,7 @@ it('после восстановления повторяет страницу 
   view.rerender(draw(true));
   await waitFor(() => expect(listTests).toHaveBeenCalledTimes(4));
   expect(listTests).toHaveBeenLastCalledWith({ q: 'Клапан', limit: 20, after: record.testId });
-  await act(async () => finish({ items: [record], nextAfter: null }));
+  await act(async () => finish({ items: [record], total: null, nextAfter: null }));
   expect(screen.queryByRole('button', { name: /Открыть Первая/ })).toBeNull();
 });
 
@@ -163,10 +163,12 @@ it('limits the prepared history page including the active record', async () => {
   }));
   render(<PreparedHistory entries={entries} />);
   expect(screen.getAllByRole('row')).toHaveLength(21);
+  expect(screen.getByText(/Страница 1.*записей 22.*страниц 2/)).toBeTruthy();
   expect(screen.getByRole('button', { name: /Вернуться:.*Активный клапан/ })).toBeTruthy();
   const user = userEvent.setup();
   await user.click(screen.getByRole('button', { name: 'Следующая страница' }));
   expect(screen.getAllByRole('row')).toHaveLength(3);
+  expect(screen.getByText(/Страница 2.*записей 22.*страниц 2/)).toBeTruthy();
   await user.selectOptions(screen.getByLabelText('Записей на странице'), '10');
   expect(screen.getAllByRole('row')).toHaveLength(11);
   expect(screen.getByRole('button', { name: /Вернуться:.*Активный клапан/ })).toBeTruthy();
@@ -175,6 +177,166 @@ it('limits the prepared history page including the active record', async () => {
   await user.click(screen.getByRole('button', { name: 'Найти' }));
   expect(screen.getByRole('alert').textContent).toMatch(/Начало диапазона/);
   expect(screen.queryByRole('button', { name: 'Следующая страница' })).toBeNull();
+});
+
+it('показывает номер принятой страницы и число найденных записей', async () => {
+  const listTests = vi
+    .fn()
+    .mockResolvedValueOnce({ items: [record], nextAfter: record.testId, total: 21 })
+    .mockResolvedValueOnce({ items: [], nextAfter: null, total: 21 });
+  render(
+    <History
+      {...callbacks}
+      service={{ ...desktopDemoService, listTests }}
+      available
+      disabled={false}
+      draftAvailable={false}
+    />,
+  );
+  await screen.findByText(/Страница 1.*записей 21.*страниц 2/);
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Следующая страница' }));
+  await screen.findByText(/Страница 2.*записей 21.*страниц 2/);
+});
+
+it('сохраняет номер страницы при недоступном подсчёте и позволяет обновить его', async () => {
+  const listTests = vi
+    .fn()
+    .mockResolvedValueOnce({ items: [record], nextAfter: record.testId, total: 21 })
+    .mockResolvedValueOnce({ items: [], nextAfter: null, total: null })
+    .mockResolvedValueOnce({ items: [], nextAfter: null, total: 21 });
+  render(
+    <History
+      {...callbacks}
+      service={{ ...desktopDemoService, listTests }}
+      available
+      disabled={false}
+      draftAvailable={false}
+    />,
+  );
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('button', { name: 'Следующая страница' }));
+  await screen.findByText(/Страница 2.*Количество записей недоступно/);
+  expect(screen.getByText('На этой странице записей нет')).toBeTruthy();
+  await user.click(screen.getByRole('button', { name: 'Обновить количество' }));
+  await screen.findByText(/Страница 2.*записей 21/);
+  expect(listTests).toHaveBeenLastCalledWith({ limit: 20, after: record.testId });
+});
+
+it.each([null, 50])(
+  'предлагает начать заново при неподтверждённом начальном числе (%s)',
+  async (total) => {
+    const records = Array.from({ length: 40 }, (_, index) => ({
+      ...record,
+      testId: `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+    }));
+    const firstCursor = records[19]?.testId;
+    const secondCursor = records[39]?.testId;
+    if (!firstCursor || !secondCursor) throw new Error('Missing cursors');
+    const listTests = vi
+      .fn()
+      .mockResolvedValueOnce({ items: records.slice(0, 20), nextAfter: firstCursor, total: null })
+      .mockResolvedValueOnce({ items: records.slice(20), nextAfter: secondCursor, total });
+    render(
+      <History
+        {...callbacks}
+        service={{ ...desktopDemoService, listTests }}
+        available
+        disabled={false}
+        draftAvailable={false}
+      />,
+    );
+    await userEvent
+      .setup()
+      .click(await screen.findByRole('button', { name: 'Следующая страница' }));
+    expect(await screen.findByText(/Список мог измениться\. Вернитесь к началу/)).toBeTruthy();
+  },
+);
+
+it('предлагает вернуться к началу, если история изменилась перед курсором', async () => {
+  const records = Array.from({ length: 36 }, (_, index) => ({
+    ...record,
+    testId: `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+  }));
+  const cursor = records[19]?.testId;
+  if (!cursor) throw new Error('Missing cursor');
+  const inserted = { ...record, testId: '00000000-0000-4000-8000-000000000000' };
+  const listTests = vi
+    .fn()
+    .mockResolvedValueOnce({ items: records.slice(0, 20), nextAfter: cursor, total: 35 })
+    .mockResolvedValueOnce({ items: records.slice(20, 35), nextAfter: null, total: 36 })
+    .mockResolvedValueOnce({
+      items: [inserted, ...records.slice(0, 19)],
+      nextAfter: records[18]?.testId,
+      total: 36,
+    });
+  render(
+    <History
+      {...callbacks}
+      service={{ ...desktopDemoService, listTests }}
+      available
+      disabled={false}
+      draftAvailable={false}
+    />,
+  );
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('button', { name: 'Следующая страница' }));
+  await screen.findByText(/Список мог измениться\. Вернитесь к началу/);
+  await user.click(screen.getByRole('button', { name: 'К началу списка' }));
+  await screen.findByText(/Страница 1.*записей 36/);
+  expect(listTests).toHaveBeenLastCalledWith({ limit: 20, after: null });
+});
+
+it('предупреждает, когда новая запись добавила страницу перед текущим курсором', async () => {
+  const records = Array.from({ length: 40 }, (_, index) => ({
+    ...record,
+    testId: `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+  }));
+  const cursor = records[19]?.testId;
+  if (!cursor) throw new Error('Missing cursor');
+  const listTests = vi
+    .fn()
+    .mockResolvedValueOnce({ items: records.slice(0, 20), nextAfter: cursor, total: 40 })
+    .mockResolvedValueOnce({ items: records.slice(20), nextAfter: null, total: 41 });
+  render(
+    <History
+      {...callbacks}
+      service={{ ...desktopDemoService, listTests }}
+      available
+      disabled={false}
+      draftAvailable={false}
+    />,
+  );
+  await userEvent.setup().click(await screen.findByRole('button', { name: 'Следующая страница' }));
+  expect(await screen.findByText(/Список мог измениться\. Вернитесь к началу/)).toBeTruthy();
+});
+
+it('предупреждает об изменении количества на полной промежуточной странице', async () => {
+  const records = Array.from({ length: 50 }, (_, index) => ({
+    ...record,
+    testId: `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+  }));
+  const firstCursor = records[19]?.testId;
+  const secondCursor = records[39]?.testId;
+  if (!firstCursor || !secondCursor) throw new Error('Missing cursors');
+  const listTests = vi
+    .fn()
+    .mockResolvedValueOnce({ items: records.slice(0, 20), nextAfter: firstCursor, total: 50 })
+    .mockResolvedValueOnce({ items: records.slice(20, 40), nextAfter: secondCursor, total: 51 })
+    .mockResolvedValueOnce({ items: records.slice(40), nextAfter: null, total: null });
+  render(
+    <History
+      {...callbacks}
+      service={{ ...desktopDemoService, listTests }}
+      available
+      disabled={false}
+      draftAvailable={false}
+    />,
+  );
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('button', { name: 'Следующая страница' }));
+  expect(await screen.findByText(/Список мог измениться\. Вернитесь к началу/)).toBeTruthy();
+  await user.click(screen.getByRole('button', { name: 'Следующая страница' }));
+  await screen.findByText(/Страница 3.*Количество записей недоступно.*Список мог измениться/);
 });
 
 it('keeps the applied search when page size changes offline while an old page is pending', async () => {
@@ -209,7 +371,7 @@ it('keeps the applied search when page size changes offline while an old page is
   await user.clear(search);
   await user.type(search, 'Черновик');
   await user.selectOptions(screen.getByLabelText('Записей на странице'), '50');
-  await act(async () => finishOld({ items: [record], nextAfter: null }));
+  await act(async () => finishOld({ items: [record], total: null, nextAfter: null }));
   expect(screen.queryByRole('button', { name: /Открыть Первая/ })).toBeNull();
   expect(listTests).toHaveBeenCalledTimes(3);
   view.rerender(draw(true));
@@ -248,7 +410,7 @@ it('changes page size without applying an unfinished search or accepting an old 
   await waitFor(() =>
     expect(listTests).toHaveBeenLastCalledWith({ q: 'Применено', limit: 10, after: null }),
   );
-  await act(async () => finishOld({ items: [record], nextAfter: null }));
+  await act(async () => finishOld({ items: [record], total: null, nextAfter: null }));
   expect(screen.queryByRole('button', { name: /Открыть Первая/ })).toBeNull();
   expect(search).toHaveProperty('value', 'Не отправлено');
 });
@@ -668,7 +830,7 @@ it('does not publish a page requested before the active identity changed while o
     />,
   );
   await act(async () => {
-    finish({ items: [], nextAfter: null });
+    finish({ items: [], total: null, nextAfter: null });
     await old;
   });
   expect(screen.queryByText('История пуста')).toBeNull();
@@ -1107,7 +1269,7 @@ it('ends the canceled loading state when a new query is submitted offline', asyn
   await user.click(screen.getByRole('button', { name: 'Найти' }));
   expect(screen.queryByText('Чтение истории…')).toBeNull();
   await act(async () => {
-    finish({ items: [record], nextAfter: null });
+    finish({ items: [record], total: null, nextAfter: null });
     await delayed;
   });
   expect(screen.queryByRole('button', { name: /Открыть Первая/ })).toBeNull();
@@ -2388,7 +2550,7 @@ it('queries the whole source with calendar/outcome filters, resets the cursor an
     createdBefore: end.toISOString(),
   });
   await act(async () => {
-    finish({ items: [record], nextAfter: record.testId });
+    finish({ items: [record], total: null, nextAfter: record.testId });
     await oldPage;
   });
   expect(screen.queryByRole('button', { name: /Открыть Первая запись/ })).toBeNull();

@@ -177,6 +177,13 @@ func (c *Client) ListTests(ctx context.Context, lease uuid.UUID, params contract
 		if len(result.Items) > limit {
 			return contract.TestList{}, &RequestError{Code: "invalid_response"}
 		}
+		minimumTotal := int64(len(result.Items))
+		if result.NextAfter != nil {
+			minimumTotal++
+		}
+		if result.Total != nil && *result.Total < minimumTotal {
+			return contract.TestList{}, &RequestError{Code: "invalid_response"}
+		}
 		for _, item := range result.Items {
 			if item.TestId == uuid.Nil || item.StopCommandId == uuid.Nil || strings.Compare(item.TestId.String(), previous) <= 0 {
 				return contract.TestList{}, &RequestError{Code: "invalid_response"}

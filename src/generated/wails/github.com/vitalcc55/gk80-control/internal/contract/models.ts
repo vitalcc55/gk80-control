@@ -462,6 +462,11 @@ export interface Snapshot {
 export interface TestList {
     "items": TestRecord[] | null;
     "nextAfter": types$0.UUID | null;
+
+    /**
+     * Total Число записей по фильтрам без ограничения курсором; null, если история изменилась при чтении.
+     */
+    "total": number | null;
 }
 
 /**

@@ -53,36 +53,42 @@ func TestHistoryFiltersSearchBeyondFirstPortionAndSurviveReopen(t *testing.T) {
 	from, before := anchor.Add(128*time.Hour).Format(time.RFC3339Nano), anchor.Add(131*time.Hour).Format(time.RFC3339Nano)
 	outcome := contract.TestRecordOutcome("completed")
 	params := contract.ListTestsParams{Q: &query, CreatedFrom: &from, CreatedBefore: &before, Outcome: &outcome, Limit: new(1)}
-	first, next, err := store.ListTests(ctx, params)
+	first, next, total, err := store.ListTests(ctx, params)
 	if err != nil || len(first) != 1 || next == nil || first[0].TestId.String() != "00000000-0000-4000-8000-000000000129" {
 		t.Fatalf("first filtered page: %+v %v %v", first, next, err)
 	}
+	if total == nil || *total != 2 {
+		t.Fatalf("total on first page: %v", total)
+	}
 	params.After = next
-	second, next, err := store.ListTests(ctx, params)
+	second, next, total, err := store.ListTests(ctx, params)
 	if err != nil || len(second) != 1 || next != nil || second[0].TestId.String() != "00000000-0000-4000-8000-000000000130" {
 		t.Fatalf("second filtered page: %+v %v %v", second, next, err)
+	}
+	if total == nil || *total != 2 {
+		t.Fatalf("total after cursor: %v", total)
 	}
 	if !second[0].CreatedAt.Equal(anchor.Add(129 * time.Hour)) {
 		t.Fatal("timestamp precision lost")
 	}
 	query = "%_"
-	all, _, err := store.ListTests(ctx, contract.ListTestsParams{Q: &query})
+	all, _, _, err := store.ListTests(ctx, contract.ListTestsParams{Q: &query})
 	if err != nil || len(all) != 4 {
 		t.Fatalf("literal pattern: %d %v", len(all), err)
 	}
 	query = "ος"
-	folded, _, err := store.ListTests(ctx, contract.ListTestsParams{Q: &query})
+	folded, _, _, err := store.ListTests(ctx, contract.ListTestsParams{Q: &query})
 	if err != nil || len(folded) != 4 {
 		t.Fatalf("Unicode simple fold: %d %v", len(folded), err)
 	}
 	query = second[0].TestId.String()
-	byID, _, err := store.ListTests(ctx, contract.ListTestsParams{Q: &query})
+	byID, _, _, err := store.ListTests(ctx, contract.ListTestsParams{Q: &query})
 	if err != nil || len(byID) != 1 || byID[0].TestId != second[0].TestId {
 		t.Fatalf("ID search: %+v %v", byID, err)
 	}
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
-	if _, _, err := store.ListTests(canceled, contract.ListTestsParams{}); !errors.Is(err, context.Canceled) {
+	if _, _, _, err := store.ListTests(canceled, contract.ListTestsParams{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancellation: %v", err)
 	}
 	if err := store.Close(); err != nil {
@@ -94,7 +100,7 @@ func TestHistoryFiltersSearchBeyondFirstPortionAndSurviveReopen(t *testing.T) {
 	}
 	defer func() { _ = store.Close() }()
 	query = "%_"
-	reopened, _, err := store.ListTests(ctx, contract.ListTestsParams{Q: &query})
+	reopened, _, _, err := store.ListTests(ctx, contract.ListTestsParams{Q: &query})
 	if err != nil || len(reopened) != 4 {
 		t.Fatalf("reopen: %d %v", len(reopened), err)
 	}
@@ -206,7 +212,7 @@ func TestHistoryAndCommandReadsSurviveReopen(t *testing.T) {
 	var after *uuid.UUID
 	seen := make(map[uuid.UUID]bool)
 	for {
-		items, next, err := store.ListTests(ctx, contract.ListTestsParams{After: after, Limit: new(1)})
+		items, next, _, err := store.ListTests(ctx, contract.ListTestsParams{After: after, Limit: new(1)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -224,7 +230,7 @@ func TestHistoryAndCommandReadsSurviveReopen(t *testing.T) {
 	if len(seen) != len(ids) {
 		t.Fatalf("history missing records: %d/%d", len(seen), len(ids))
 	}
-	if _, _, err := store.ListTests(ctx, contract.ListTestsParams{After: nil, Limit: new(0)}); err == nil {
+	if _, _, _, err := store.ListTests(ctx, contract.ListTestsParams{After: nil, Limit: new(0)}); err == nil {
 		t.Fatal("zero page size accepted")
 	}
 }

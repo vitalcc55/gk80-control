@@ -15,7 +15,7 @@ import (
 )
 
 type historyReader interface {
-	ListTests(context.Context, contract.ListTestsParams) ([]contract.TestRecord, *uuid.UUID, error)
+	ListTests(context.Context, contract.ListTestsParams) ([]contract.TestRecord, *uuid.UUID, *int64, error)
 	Test(context.Context, uuid.UUID) (contract.TestRecord, error)
 	MeasurementsPage(context.Context, uuid.UUID, int64, int) (contract.MeasurementPage, error)
 	AuditPage(context.Context, uuid.UUID, int64, int) (contract.AuditPage, error)
@@ -123,8 +123,8 @@ func (h *coreHTTP) historyList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.readHistory(w, r, owner, func(ctx context.Context) (any, error) {
-		items, next, err := h.history.ListTests(ctx, params)
-		return contract.TestList{Items: items, NextAfter: next}, err
+		items, next, total, err := h.history.ListTests(ctx, params)
+		return contract.TestList{Items: items, NextAfter: next, Total: total}, err
 	})
 }
 

@@ -85,6 +85,10 @@ export function History({
   const [selected, setSelected] = useState<TestRecord | null>(null);
   const [filters, setFilters] = useState(emptyHistoryFilters);
   const [pageSize, setPageSize] = useState(20);
+  const [pageNumber, setPageNumber] = useState(1);
+  const requestedPage = useRef(1);
+  const [totalChanged, setTotalChanged] = useState(false);
+  const firstPageTotal = useRef<number | null>(null);
   const currentPageSize = useRef(20);
   const [validationError, setValidationError] = useState('');
   const [listError, setListError] = useState('');
@@ -142,29 +146,48 @@ export function History({
     },
     [],
   );
-  const load = useCallback(async (after: string | null = null) => {
-    const params = applied.current;
-    if (params === null) return;
-    needsRead.current = false;
-    const generation = ++listGeneration.current;
-    cursor.current = after;
-    setList(null);
-    setLoading(true);
-    setListError('');
-    try {
-      const page = await currentService.current.listTests({
-        ...params,
-        limit: currentPageSize.current,
-        after,
-      });
-      if (generation === listGeneration.current) setList(page);
-    } catch {
-      if (generation === listGeneration.current)
-        setListError('Не удалось прочитать список испытаний из ядра.');
-    } finally {
-      if (generation === listGeneration.current) setLoading(false);
-    }
-  }, []);
+  const load = useCallback(
+    async (after: string | null = null, pageNumber = requestedPage.current) => {
+      const params = applied.current;
+      if (params === null) return;
+      needsRead.current = false;
+      const generation = ++listGeneration.current;
+      cursor.current = after;
+      requestedPage.current = pageNumber;
+      setList(null);
+      setLoading(true);
+      setListError('');
+      try {
+        const page = await currentService.current.listTests({
+          ...params,
+          limit: currentPageSize.current,
+          after,
+        });
+        if (generation === listGeneration.current) {
+          if (requestedPage.current === 1) {
+            firstPageTotal.current = page.total;
+            setTotalChanged(false);
+          } else if (page.total === null || typeof page.total === 'number') {
+            setTotalChanged(
+              (previous) =>
+                previous ||
+                page.total === null ||
+                typeof firstPageTotal.current !== 'number' ||
+                page.total !== firstPageTotal.current,
+            );
+          }
+          setList(page);
+          setPageNumber(requestedPage.current);
+        }
+      } catch {
+        if (generation === listGeneration.current)
+          setListError('Не удалось прочитать список испытаний из ядра.');
+      } finally {
+        if (generation === listGeneration.current) setLoading(false);
+      }
+    },
+    [],
+  );
   useLayoutEffect(() => {
     const previous = readTriggers.current;
     const reset = previous.resetVersion !== resetVersion;
@@ -246,6 +269,7 @@ export function History({
     listGeneration.current++;
     cancelSelected(false);
     cursor.current = null;
+    requestedPage.current = 1;
     setOpening(false);
     setLoading(false);
     setList(null);
@@ -338,12 +362,25 @@ export function History({
       }))}
       filters={filters}
       pageSize={pageSize}
+      pageNumber={pageNumber}
+      total={list?.total}
+      pageChanged={
+        !!list &&
+        (totalChanged ||
+          (list.total !== null &&
+            list.total !== undefined &&
+            ((list.items?.length ?? 0) !==
+              Math.min(pageSize, Math.max(0, list.total - (pageNumber - 1) * pageSize)) ||
+              (!list.nextAfter && pageNumber < Math.ceil(list.total / pageSize)))))
+      }
+      onRefreshCount={available ? () => void load(cursor.current) : undefined}
       onPageSize={(value) => {
         currentPageSize.current = value;
         setPageSize(value);
         listGeneration.current++;
         cancelSelected(false);
         cursor.current = null;
+        requestedPage.current = 1;
         needsRead.current = true;
         setList(null);
         setListError('');
@@ -374,12 +411,12 @@ export function History({
       onRetry={retry}
       retryLabel={retryLabel}
       onFirst={() => {
-        if (available) void load();
+        if (available) void load(null, 1);
       }}
       onNext={
         list?.nextAfter
           ? () => {
-              if (list.nextAfter && available) void load(list.nextAfter);
+              if (list.nextAfter && available) void load(list.nextAfter, pageNumber + 1);
             }
           : undefined
       }

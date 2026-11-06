@@ -14,29 +14,37 @@ import (
 )
 
 // ListTests returns a bounded page in stable UUID order; it is not a chronological sort.
-func (s *Store) ListTests(ctx context.Context, params contract.ListTestsParams) ([]contract.TestRecord, *uuid.UUID, error) {
+func (s *Store) ListTests(ctx context.Context, params contract.ListTestsParams) ([]contract.TestRecord, *uuid.UUID, *int64, error) {
 	params, err := contract.NormalizeTestListParams(params)
 	if err != nil {
-		return nil, nil, ErrInvalidCommand
+		return nil, nil, nil, ErrInvalidCommand
 	}
 	limit := *params.Limit
 	var createdFrom, createdBefore time.Time
 	if params.CreatedFrom != nil {
 		createdFrom, err = contract.ParseHistoryTime(*params.CreatedFrom)
 		if err != nil {
-			return nil, nil, ErrInvalidCommand
+			return nil, nil, nil, ErrInvalidCommand
 		}
 	}
 	if params.CreatedBefore != nil {
 		createdBefore, err = contract.ParseHistoryTime(*params.CreatedBefore)
 		if err != nil {
-			return nil, nil, ErrInvalidCommand
+			return nil, nil, nil, ErrInvalidCommand
 		}
 	}
-	cursor := ""
+	after := ""
 	if params.After != nil {
-		cursor = params.After.String()
+		after = params.After.String()
 	}
+	// Record changes and revision are committed together; a changed revision means
+	// the count from these independent chunks is not a single confirmed total.
+	startRevision, err := s.Revision(ctx)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	cursor := ""
+	var total int64
 	query := ""
 	if params.Q != nil {
 		query = foldHistoryText(*params.Q)
@@ -45,13 +53,13 @@ func (s *Store) ListTests(ctx context.Context, params contract.ListTestsParams) 
 	// Decode bounded portions for Unicode matching and exact timestamp comparisons.
 	// Close each cursor before scanning again so history does not retain the single connection.
 	const chunkSize = 128
-	for len(items) <= limit {
+	for {
 		if err := ctx.Err(); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		rows, err := s.db.QueryContext(ctx, `SELECT id, record FROM tests WHERE id > ? ORDER BY id LIMIT ?`, cursor, chunkSize)
 		if err != nil {
-			return nil, nil, readError(ctx, err)
+			return nil, nil, nil, readError(ctx, err)
 		}
 		count := 0
 		err = func() error {
@@ -80,29 +88,37 @@ func (s *Store) ListTests(ctx context.Context, params contract.ListTestsParams) 
 				if params.Outcome != nil && record.Outcome != *params.Outcome {
 					continue
 				}
-				items = append(items, record)
-				if len(items) > limit {
-					break
+				total++
+				if id > after && len(items) <= limit {
+					items = append(items, record)
 				}
 			}
 			return rows.Err()
 		}()
 		if err != nil {
-			return nil, nil, readError(ctx, err)
+			return nil, nil, nil, readError(ctx, err)
 		}
 		if err := ctx.Err(); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		if count < chunkSize || len(items) > limit {
+		if count < chunkSize {
 			break
 		}
 	}
+	endRevision, err := s.Revision(ctx)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	var stableTotal *int64
+	if startRevision == endRevision {
+		stableTotal = &total
+	}
 	if len(items) <= limit {
-		return items, nil, nil
+		return items, nil, stableTotal, nil
 	}
 	items = items[:limit]
 	next := items[len(items)-1].TestId
-	return items, &next, nil
+	return items, &next, stableTotal, nil
 }
 
 // SimpleFold also unifies case variants such as Greek final sigma; lowercase alone does not.
