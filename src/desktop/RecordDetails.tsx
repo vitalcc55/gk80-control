@@ -110,6 +110,10 @@ export function RecordDetails({
   const wasVisible = useRef(visible);
   const wasAvailable = useRef(available);
   useLayoutEffect(() => {
+    if (wasAvailable.current && !available && auditInFlight.current) {
+      auditGeneration.current++;
+      needAudit.current = true;
+    }
     if (
       (wasVisible.current && !visible) ||
       (wasAvailable.current &&
