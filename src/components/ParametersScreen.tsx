@@ -33,7 +33,10 @@ type Errors = Partial<
 function RequiredLabel({ id, children }: { id?: string; children: ReactNode }) {
   return (
     <span>
-      <span id={id}>{children}</span> <span className="required-marker" aria-hidden="true">*</span>
+      <span id={id}>{children}</span>{' '}
+      <span className="required-marker" aria-hidden="true">
+        *
+      </span>
     </span>
   );
 }
@@ -447,13 +450,7 @@ export function ParametersScreen({
   );
 }
 
-export function ActiveParametersScreen({
-  parameters,
-  live = false,
-}: {
-  parameters: TestParameters;
-  live?: boolean;
-}) {
+export function ActiveParametersScreen({ parameters }: { parameters: TestParameters }) {
   return (
     <section className="workpage workpage-narrow" aria-labelledby="active-parameters-title">
       <div className="workpage-heading">

@@ -36,7 +36,11 @@ import type { DemoService } from './demo-service';
 import { History } from './History';
 import { LiveRun } from './LiveRun';
 import { MeasurementSeriesContext } from './measurement-series';
-import { isStartMeasurementInstruction, measurementLabel, parametersForDisplay } from './presentation';
+import {
+  isStartMeasurementInstruction,
+  measurementLabel,
+  parametersForDisplay,
+} from './presentation';
 import { RecordDetails } from './RecordDetails';
 import { observeReadiness } from './readiness-observation';
 import { SessionStatus } from './SessionStatus';
@@ -81,17 +85,37 @@ function commandStatusLabel(status: CommandStatus['status'] | undefined): string
   }
 }
 
-function CommandDetails({ id, testId }: { id?: string | undefined; testId?: string | null | undefined }) {
+function CommandDetails({
+  id,
+  testId,
+}: {
+  id?: string | undefined;
+  testId?: string | null | undefined;
+}) {
   return (
     <details>
       <summary>Сведения о команде</summary>
-      {id && <p>Идентификатор команды: <span>{id}</span></p>}
-      {testId && <p>Идентификатор испытания: <span>{testId}</span></p>}
+      {id && (
+        <p>
+          Идентификатор команды: <span>{id}</span>
+        </p>
+      )}
+      {testId && (
+        <p>
+          Идентификатор испытания: <span>{testId}</span>
+        </p>
+      )}
     </details>
   );
 }
 
-function CommandNotice({ id, text, prefix, suppressed, focusTarget }: {
+function CommandNotice({
+  id,
+  text,
+  prefix,
+  suppressed,
+  focusTarget,
+}: {
   id: string;
   text: string;
   prefix: string;
@@ -100,9 +124,12 @@ function CommandNotice({ id, text, prefix, suppressed, focusTarget }: {
 }) {
   const [focused, setFocused] = useState(false);
   const container = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => () => {
-    if (container.current?.contains(document.activeElement)) focusTarget.current?.focus();
-  }, [focusTarget]);
+  useLayoutEffect(
+    () => () => {
+      if (container.current?.contains(document.activeElement)) focusTarget.current?.focus();
+    },
+    [focusTarget],
+  );
   if (suppressed && !focused) return null;
   return (
     <div
@@ -113,7 +140,10 @@ function CommandNotice({ id, text, prefix, suppressed, focusTarget }: {
         if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false);
       }}
     >
-      <p>{prefix}{text}</p>
+      <p>
+        {prefix}
+        {text}
+      </p>
       <CommandDetails id={id} />
     </div>
   );
@@ -329,10 +359,19 @@ function ActiveLiveApp({
   const isExpectedStart = (key: string, notice: { id: string; startAcceptedFor?: string }) => {
     const sameId = pending.filter((item) => item.id === notice.id);
     const item = sameId[0];
-    return key === notice.id && sameId.length === 1 && !!item && !item.retired &&
-      item.kind === 'start' && item.status?.status === 'accepted' &&
-      fresh && record?.stage === 'running' && item.testId === record.testId &&
-      notice.startAcceptedFor === record.testId && snapshot?.pendingAction?.testId === record.testId;
+    return (
+      key === notice.id &&
+      sameId.length === 1 &&
+      !!item &&
+      !item.retired &&
+      item.kind === 'start' &&
+      item.status?.status === 'accepted' &&
+      fresh &&
+      record?.stage === 'running' &&
+      item.testId === record.testId &&
+      notice.startAcceptedFor === record.testId &&
+      snapshot?.pendingAction?.testId === record.testId
+    );
   };
   const visibleCommandMessages = [...commandMessages].filter(
     ([key, notice]) => !isExpectedStart(key, notice),
@@ -483,7 +522,10 @@ function ActiveLiveApp({
           >
             {stopMessage && (
               <div role="status">
-                <p>{stopRequestedFor && stopRequestedFor !== activeId ? 'Другое испытание: ' : ''}{stopMessage}</p>
+                <p>
+                  {stopRequestedFor && stopRequestedFor !== activeId ? 'Другое испытание: ' : ''}
+                  {stopMessage}
+                </p>
                 {stopRequestedFor && <CommandDetails testId={stopRequestedFor} />}
               </div>
             )}
@@ -491,7 +533,9 @@ function ActiveLiveApp({
           <div
             className="demo-command-message"
             ref={commandMessageRegion}
-            tabIndex={message || commandFailure || storageMessage || visibleCommandMessages.length ? 0 : -1}
+            tabIndex={
+              message || commandFailure || storageMessage || visibleCommandMessages.length ? 0 : -1
+            }
           >
             {storageMessage && <p role="alert">{storageMessage}</p>}
             {message && latestNotice === 'message' && <p role="status">{message}</p>}
@@ -508,7 +552,11 @@ function ActiveLiveApp({
                 id={notice.id}
                 focusTarget={mainRef}
                 text={notice.text}
-                prefix={visibleCommandMessages.length > 1 ? `${key === notice.id ? 'Команда' : 'Остановка'}: ` : ''}
+                prefix={
+                  visibleCommandMessages.length > 1
+                    ? `${key === notice.id ? 'Команда' : 'Остановка'}: `
+                    : ''
+                }
                 suppressed={isExpectedStart(key, notice)}
               />
             ))}
@@ -549,7 +597,8 @@ function ActiveLiveApp({
           )}
           {legacy.items.map((item) => (
             <div key={item.id}>
-              <p>Прежняя команда: {legacyCommandLabels[item.kind]}.
+              <p>
+                Прежняя команда: {legacyCommandLabels[item.kind]}.
                 {item.kind === 'stop' && ' Безопасное давление не подтверждено.'}
               </p>
               <CommandDetails id={item.id} testId={item.testId} />
@@ -597,48 +646,50 @@ function ActiveLiveApp({
           {pending.map((item) => (
             <div key={pendingKey(item)}>
               <p>
-              Команда: {commandStatusLabel(item.status?.status)}.{' '}
-              {item.kind === 'stop'
-                ? item.testId ? 'Остановка испытания. ' : 'Испытание для остановки неизвестно. '
-                : `${legacyCommandLabels[item.kind]}. `}
-              {item.kind === 'stop' && 'Безопасное давление не подтверждено. '}
-              {item.legacyUnverifiable &&
-                'Исходное содержимое команды не сохранилось; её исход нельзя установить по идентификатору. Подтверждение проверки не устанавливает исход. '}
-              <button
-                type="button"
-                onClick={() => {
-                  void lookup(item, true);
-                }}
-              >
-                Проверить состояние
-              </button>
-              {item.legacyUnverifiable && !item.retired && (
+                Команда: {commandStatusLabel(item.status?.status)}.{' '}
+                {item.kind === 'stop'
+                  ? item.testId
+                    ? 'Остановка испытания. '
+                    : 'Испытание для остановки неизвестно. '
+                  : `${legacyCommandLabels[item.kind]}. `}
+                {item.kind === 'stop' && 'Безопасное давление не подтверждено. '}
+                {item.legacyUnverifiable &&
+                  'Исходное содержимое команды не сохранилось; её исход нельзя установить по идентификатору. Подтверждение проверки не устанавливает исход. '}
                 <button
                   type="button"
                   onClick={() => {
-                    coordinator.reviewAttempt(item);
+                    void lookup(item, true);
                   }}
                 >
-                  Я проверил эту команду
+                  Проверить состояние
                 </button>
-              )}
-              {item.retired && (
-                <button
-                  type="button"
-                  disabled={!coordinator.canForget(item)}
-                  onClick={() => forget(item)}
-                >
-                  {item.legacyUnverifiable
-                    ? 'Удалить запись наблюдения'
-                    : !terminalStatus(item.status)
-                      ? 'Прекратить наблюдение'
-                      : 'Скрыть наблюдение команды'}
-                </button>
-              )}
-              {item.retired &&
-                item.kind === 'stop' &&
-                !terminalStatus(item.status) &&
-                ' После удаления автоматическая сверка этой попытки невозможна.'}
+                {item.legacyUnverifiable && !item.retired && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      coordinator.reviewAttempt(item);
+                    }}
+                  >
+                    Я проверил эту команду
+                  </button>
+                )}
+                {item.retired && (
+                  <button
+                    type="button"
+                    disabled={!coordinator.canForget(item)}
+                    onClick={() => forget(item)}
+                  >
+                    {item.legacyUnverifiable
+                      ? 'Удалить запись наблюдения'
+                      : !terminalStatus(item.status)
+                        ? 'Прекратить наблюдение'
+                        : 'Скрыть наблюдение команды'}
+                  </button>
+                )}
+                {item.retired &&
+                  item.kind === 'stop' &&
+                  !terminalStatus(item.status) &&
+                  ' После удаления автоматическая сверка этой попытки невозможна.'}
               </p>
               <CommandDetails id={item.id} testId={item.testId} />
             </div>
@@ -722,7 +773,7 @@ function ActiveLiveApp({
             />
           )}
           {!showHistory && showSavedParameters && record && record.stage !== 'finished' && (
-            <ActiveParametersScreen live parameters={formParameters} />
+            <ActiveParametersScreen parameters={formParameters} />
           )}
           {!showHistory &&
             !showSavedParameters &&

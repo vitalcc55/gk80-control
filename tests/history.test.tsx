@@ -7,8 +7,8 @@ vi.mock('../src/components/MeasurementChart', () => ({ MeasurementChart: () => n
 import { type ReactNode, useState } from 'react';
 import { AppShell } from '../src/components/AppShell';
 import type { SessionBridge } from '../src/desktop/bridge';
-import { History } from '../src/desktop/History';
 import { eventActionLabel, eventOutcomeLabel, eventReasonLabels } from '../src/desktop/display';
+import { History } from '../src/desktop/History';
 import { LiveApp } from '../src/desktop/LiveApp';
 import { RecordDetails } from '../src/desktop/RecordDetails';
 import { desktopDemoService } from '../src/desktop/wails-bridge';
@@ -55,19 +55,40 @@ const callbacks = { onNew: vi.fn(), onCopy: vi.fn(), onDiscard: vi.fn() };
 function measurementPage(nextAfter: number | null): MeasurementPage {
   const sequence = nextAfter ?? 201;
   return {
-    items: [{
-      sequence,
-      channel: MeasurementChannel.Dd1,
-      measuredAt: record.createdAt,
-      observedAt: record.createdAt,
-      quality: MeasurementQuality.MeasurementQualityValid,
-      quantity: MeasurementQuantity.MeasurementQuantityPressure,
-      source: MeasurementSource.MeasurementSourceSimulator,
-      unit: MeasurementUnit.Pa,
-      value: sequence,
-    }],
+    items: [
+      {
+        sequence,
+        channel: MeasurementChannel.Dd1,
+        measuredAt: record.createdAt,
+        observedAt: record.createdAt,
+        quality: MeasurementQuality.MeasurementQualityValid,
+        quantity: MeasurementQuantity.MeasurementQuantityPressure,
+        source: MeasurementSource.MeasurementSourceSimulator,
+        unit: MeasurementUnit.Pa,
+        value: sequence,
+      },
+    ],
     nextAfter,
   };
+}
+
+function PreparedHistory({ entries }: { entries: Array<typeof fixtureSource.initial> }) {
+  const [size, setSize] = useState(20);
+  return (
+    <FixtureTests
+      pageSize={size}
+      onPageSize={setSize}
+      empty={false}
+      showExample={false}
+      draftAvailable={false}
+      activeParameters={{ ...fixtureSource.initial, id: 'active', valve: 'Активный клапан' }}
+      history={entries}
+      example={fixtureSource.initial}
+      onNew={() => {}}
+      onHistory={() => {}}
+      onCurrent={() => {}}
+    />
+  );
 }
 
 it('limits the prepared history page including the active record', async () => {
@@ -76,25 +97,7 @@ it('limits the prepared history page including the active record', async () => {
     id: `record-${index}`,
     valve: `Клапан ${index}`,
   }));
-  function PreparedHistory() {
-    const [size, setSize] = useState(20);
-    return (
-      <FixtureTests
-        pageSize={size}
-        onPageSize={setSize}
-        empty={false}
-        showExample={false}
-        draftAvailable={false}
-        activeParameters={{ ...fixtureSource.initial, id: 'active', valve: 'Активный клапан' }}
-        history={entries}
-        example={fixtureSource.initial}
-        onNew={() => {}}
-        onHistory={() => {}}
-        onCurrent={() => {}}
-      />
-    );
-  }
-  render(<PreparedHistory />);
+  render(<PreparedHistory entries={entries} />);
   expect(screen.getAllByRole('row')).toHaveLength(21);
   expect(screen.getByRole('button', { name: /Вернуться:.*Активный клапан/ })).toBeTruthy();
   const user = userEvent.setup();
@@ -1059,11 +1062,14 @@ it('возвращает список измерений к началу тол�
   const delayed = new Promise<MeasurementPage>((resolve) => {
     finish = resolve;
   });
-  const measurements = vi.fn()
+  const measurements = vi
+    .fn()
     .mockResolvedValueOnce(measurementPage(100))
     .mockResolvedValueOnce(measurementPage(200))
     .mockReturnValueOnce(delayed);
-  render(<RecordDetails record={record} service={{ ...desktopDemoService, measurements }} available />);
+  render(
+    <RecordDetails record={record} service={{ ...desktopDemoService, measurements }} available />,
+  );
   const user = userEvent.setup();
   await user.click(screen.getByText('Измерения', { selector: 'summary' }));
   await user.click(await screen.findByRole('button', { name: 'Следующая страница измерений' }));
@@ -1086,7 +1092,10 @@ it('возвращает список измерений к началу тол�
   await user.click(first);
   expect(table.scrollTop).toBe(120);
   expect(document.activeElement).toBe(first);
-  await act(async () => { finish(measurementPage(100)); await delayed; });
+  await act(async () => {
+    finish(measurementPage(100));
+    await delayed;
+  });
   await waitFor(() => expect(table.scrollTop).toBe(0));
   expect(rowsAtScroll).toContain('100');
   expect(rowsAtScroll).not.toContain('200');
@@ -1098,7 +1107,8 @@ it('не сбрасывает страницу и прокрутку при об
   const delayed = new Promise<MeasurementPage>((resolve) => {
     finish = resolve;
   });
-  const measurements = vi.fn()
+  const measurements = vi
+    .fn()
     .mockResolvedValueOnce(measurementPage(100))
     .mockResolvedValueOnce(measurementPage(200))
     .mockReturnValueOnce(delayed);
@@ -1116,27 +1126,39 @@ it('не сбрасывает страницу и прокрутку при об
   await waitFor(() => expect(measurements).toHaveBeenLastCalledWith(record.testId, 100, 100));
   expect(document.querySelector('.table-scroll')).toBe(table);
   expect(table.scrollTop).toBe(120);
-  await act(async () => { finish(measurementPage(200)); await delayed; });
+  await act(async () => {
+    finish(measurementPage(200));
+    await delayed;
+  });
   expect(table.scrollTop).toBe(120);
 });
 
 it('повторно загружает начальную страницу после обновления версии во время чтения', async () => {
   let finish: (page: MeasurementPage) => void = () => {};
-  const delayed = new Promise<MeasurementPage>((resolve) => { finish = resolve; });
-  const measurements = vi.fn().mockReturnValueOnce(delayed).mockResolvedValueOnce(measurementPage(null));
+  const delayed = new Promise<MeasurementPage>((resolve) => {
+    finish = resolve;
+  });
+  const measurements = vi
+    .fn()
+    .mockReturnValueOnce(delayed)
+    .mockResolvedValueOnce(measurementPage(null));
   const pending = { ...record, saveStatus: TestRecordSaveStatus.TestRecordSaveStatusPending };
   const service = { ...desktopDemoService, measurements };
   const view = render(<RecordDetails record={pending} service={service} available />);
   await userEvent.setup().click(screen.getByText('Измерения', { selector: 'summary' }));
   await waitFor(() => expect(measurements).toHaveBeenCalledTimes(1));
   view.rerender(<RecordDetails record={record} service={service} available />);
-  await act(async () => { finish(measurementPage(null)); await delayed; });
+  await act(async () => {
+    finish(measurementPage(null));
+    await delayed;
+  });
   await waitFor(() => expect(measurements).toHaveBeenCalledTimes(2));
   expect(await screen.findByText(/201\s+Pa/)).toBeTruthy();
 });
 
 it('сохраняет неудавшийся возврат при подтверждении сохранения', async () => {
-  const measurements = vi.fn()
+  const measurements = vi
+    .fn()
     .mockResolvedValueOnce(measurementPage(100))
     .mockResolvedValueOnce(measurementPage(200))
     .mockRejectedValueOnce(new Error('read failed'))
@@ -1164,8 +1186,11 @@ it('сохраняет неудавшийся возврат при подтве
 
 it('сохраняет фокус при повторном чтении после ошибки обновления', async () => {
   let finish: (page: MeasurementPage) => void = () => {};
-  const delayed = new Promise<MeasurementPage>((resolve) => { finish = resolve; });
-  const measurements = vi.fn()
+  const delayed = new Promise<MeasurementPage>((resolve) => {
+    finish = resolve;
+  });
+  const measurements = vi
+    .fn()
     .mockResolvedValueOnce(measurementPage(null))
     .mockRejectedValueOnce(new Error('read failed'))
     .mockReturnValueOnce(delayed);
@@ -1179,29 +1204,40 @@ it('сохраняет фокус при повторном чтении пос�
   const retry = await screen.findByRole('button', { name: 'Повторить чтение измерений' });
   await user.click(retry);
   expect(document.activeElement).toBe(retry);
-  await act(async () => { finish(measurementPage(null)); await delayed; });
+  await act(async () => {
+    finish(measurementPage(null));
+    await delayed;
+  });
   expect(document.activeElement).toBe(retry);
   await user.tab();
   expect(screen.queryByRole('button', { name: 'Повторить чтение измерений' })).toBeNull();
 });
 
 it('повторяет именно неудавшийся переход на следующую страницу', async () => {
-  const measurements = vi.fn()
+  const measurements = vi
+    .fn()
     .mockResolvedValueOnce(measurementPage(100))
     .mockRejectedValueOnce(new Error('read failed'))
     .mockResolvedValueOnce(measurementPage(null));
-  render(<RecordDetails record={record} service={{ ...desktopDemoService, measurements }} available />);
+  render(
+    <RecordDetails record={record} service={{ ...desktopDemoService, measurements }} available />,
+  );
   const user = userEvent.setup();
   await user.click(screen.getByText('Измерения', { selector: 'summary' }));
   await user.click(await screen.findByRole('button', { name: 'Следующая страница измерений' }));
   await user.click(await screen.findByRole('button', { name: 'Повторить чтение измерений' }));
   await waitFor(() => expect(measurements).toHaveBeenCalledTimes(3));
   expect(measurements).toHaveBeenLastCalledWith(record.testId, 100, 100);
-  expect(screen.getByRole('button', { name: 'Повторить чтение измерений' }).getAttribute('aria-disabled')).toBe('true');
+  expect(
+    screen
+      .getByRole('button', { name: 'Повторить чтение измерений' })
+      .getAttribute('aria-disabled'),
+  ).toBe('true');
 });
 
 it('при отсутствии связи запоминает последнюю попытку чтения', async () => {
-  const measurements = vi.fn()
+  const measurements = vi
+    .fn()
     .mockResolvedValueOnce(measurementPage(100))
     .mockRejectedValueOnce(new Error('read failed'))
     .mockResolvedValueOnce(measurementPage(100));
@@ -1221,7 +1257,8 @@ it('при отсутствии связи запоминает последню
 });
 
 it('не заменяет офлайн-переход фоновым обновлением после восстановления связи', async () => {
-  const measurements = vi.fn()
+  const measurements = vi
+    .fn()
     .mockResolvedValueOnce(measurementPage(100))
     .mockResolvedValueOnce(measurementPage(200))
     .mockResolvedValueOnce(measurementPage(100));
@@ -1242,7 +1279,8 @@ it('не заменяет офлайн-переход фоновым обнов�
 });
 
 it('сохраняет офлайн-переход при последующей смене версии записи', async () => {
-  const measurements = vi.fn()
+  const measurements = vi
+    .fn()
     .mockResolvedValueOnce(measurementPage(100))
     .mockResolvedValueOnce(measurementPage(200))
     .mockResolvedValueOnce(measurementPage(100));
@@ -1264,12 +1302,17 @@ it('сохраняет офлайн-переход при последующей
 
 it('не применяет поздний возврат после закрытия измерений', async () => {
   let finish: (page: MeasurementPage) => void = () => {};
-  const delayed = new Promise<MeasurementPage>((resolve) => { finish = resolve; });
-  const measurements = vi.fn()
+  const delayed = new Promise<MeasurementPage>((resolve) => {
+    finish = resolve;
+  });
+  const measurements = vi
+    .fn()
     .mockResolvedValueOnce(measurementPage(100))
     .mockReturnValueOnce(delayed)
     .mockResolvedValue(measurementPage(100));
-  render(<RecordDetails record={record} service={{ ...desktopDemoService, measurements }} available />);
+  render(
+    <RecordDetails record={record} service={{ ...desktopDemoService, measurements }} available />,
+  );
   const user = userEvent.setup();
   const summary = screen.getByText('Измерения', { selector: 'summary' });
   await user.click(summary);
@@ -1278,15 +1321,21 @@ it('не применяет поздний возврат после закры�
   await user.click(summary);
   await user.click(summary);
   expect(measurements).toHaveBeenCalledTimes(2);
-  await act(async () => { finish(measurementPage(null)); await delayed; });
+  await act(async () => {
+    finish(measurementPage(null));
+    await delayed;
+  });
   await waitFor(() => expect(measurements).toHaveBeenCalledTimes(3));
   expect(await screen.findByRole('button', { name: 'Следующая страница измерений' })).toBeTruthy();
 });
 
 it('не восстанавливает отменённый переход после закрытия и смены версии', async () => {
   let finish: (page: MeasurementPage) => void = () => {};
-  const delayed = new Promise<MeasurementPage>((resolve) => { finish = resolve; });
-  const measurements = vi.fn()
+  const delayed = new Promise<MeasurementPage>((resolve) => {
+    finish = resolve;
+  });
+  const measurements = vi
+    .fn()
     .mockResolvedValueOnce(measurementPage(100))
     .mockReturnValueOnce(delayed)
     .mockResolvedValueOnce(measurementPage(100));
@@ -1299,7 +1348,10 @@ it('не восстанавливает отменённый переход по
   await user.click(await screen.findByRole('button', { name: 'Следующая страница измерений' }));
   await user.click(summary);
   view.rerender(<RecordDetails record={record} service={service} available />);
-  await act(async () => { finish(measurementPage(200)); await delayed; });
+  await act(async () => {
+    finish(measurementPage(200));
+    await delayed;
+  });
   await user.click(summary);
   await waitFor(() => expect(measurements).toHaveBeenCalledTimes(3));
   expect(measurements).toHaveBeenLastCalledWith(record.testId, 0, 100);
@@ -1308,8 +1360,11 @@ it('не восстанавливает отменённый переход по
 
 it('не предлагает отменённый повтор после потери связи и закрытия измерений', async () => {
   let finish: (page: MeasurementPage) => void = () => {};
-  const delayed = new Promise<MeasurementPage>((resolve) => { finish = resolve; });
-  const measurements = vi.fn()
+  const delayed = new Promise<MeasurementPage>((resolve) => {
+    finish = resolve;
+  });
+  const measurements = vi
+    .fn()
     .mockResolvedValueOnce(measurementPage(100))
     .mockReturnValueOnce(delayed)
     .mockResolvedValueOnce(measurementPage(100));
@@ -1321,7 +1376,10 @@ it('не предлагает отменённый повтор после по�
   await user.click(await screen.findByRole('button', { name: 'Следующая страница измерений' }));
   view.rerender(<RecordDetails record={record} service={service} available={false} />);
   await user.click(summary);
-  await act(async () => { finish(measurementPage(200)); await delayed; });
+  await act(async () => {
+    finish(measurementPage(200));
+    await delayed;
+  });
   view.rerender(<RecordDetails record={record} service={service} available />);
   await user.click(summary);
   await waitFor(() => expect(measurements).toHaveBeenCalledTimes(3));
@@ -1329,10 +1387,13 @@ it('не предлагает отменённый повтор после по�
 });
 
 it('сохраняет фокус на переходе к последней странице измерений', async () => {
-  const measurements = vi.fn()
+  const measurements = vi
+    .fn()
     .mockResolvedValueOnce(measurementPage(100))
     .mockResolvedValueOnce(measurementPage(null));
-  render(<RecordDetails record={record} service={{ ...desktopDemoService, measurements }} available />);
+  render(
+    <RecordDetails record={record} service={{ ...desktopDemoService, measurements }} available />,
+  );
   const user = userEvent.setup();
   await user.click(screen.getByText('Измерения', { selector: 'summary' }));
   const next = await screen.findByRole('button', { name: 'Следующая страница измерений' });
@@ -1345,8 +1406,11 @@ it('сохраняет фокус на переходе к последней с
 
 it('не применяет ответ измерений после потери актуальности сессии', async () => {
   let finish: (page: MeasurementPage) => void = () => {};
-  const delayed = new Promise<MeasurementPage>((resolve) => { finish = resolve; });
-  const measurements = vi.fn()
+  const delayed = new Promise<MeasurementPage>((resolve) => {
+    finish = resolve;
+  });
+  const measurements = vi
+    .fn()
     .mockResolvedValueOnce(measurementPage(100))
     .mockReturnValueOnce(delayed)
     .mockResolvedValue(measurementPage(100));
@@ -1360,38 +1424,112 @@ it('не применяет ответ измерений после потер�
   table.scrollTop = 80;
   await user.click(screen.getByRole('button', { name: 'К началу измерений' }));
   view.rerender(<RecordDetails record={record} service={service} available={false} />);
-  await act(async () => { finish(measurementPage(null)); await delayed; });
+  await act(async () => {
+    finish(measurementPage(null));
+    await delayed;
+  });
   expect(table.scrollTop).toBe(80);
-  expect(screen.getByRole('button', { name: 'Следующая страница измерений' }).getAttribute('aria-disabled')).toBe('false');
+  expect(
+    screen
+      .getByRole('button', { name: 'Следующая страница измерений' })
+      .getAttribute('aria-disabled'),
+  ).toBe('false');
   view.rerender(<RecordDetails record={record} service={service} available />);
   await user.click(screen.getByRole('button', { name: 'Повторить чтение измерений' }));
   await waitFor(() => expect(measurements).toHaveBeenCalledTimes(3));
 });
 
+it('не прокручивает измерения при потере связи до применения ответа', async () => {
+  let finish: (page: MeasurementPage) => void = () => {};
+  const delayed = new Promise<MeasurementPage>((resolve) => {
+    finish = resolve;
+  });
+  const measurements = vi
+    .fn()
+    .mockResolvedValueOnce(measurementPage(100))
+    .mockReturnValueOnce(delayed);
+  const service = { ...desktopDemoService, measurements };
+  const view = render(<RecordDetails record={record} service={service} available />);
+  const user = userEvent.setup();
+  await user.click(screen.getByText('Измерения', { selector: 'summary' }));
+  await screen.findByRole('button', { name: 'Следующая страница измерений' });
+  const table = document.querySelector<HTMLElement>('.table-scroll');
+  if (!table) throw new Error('Measurement list missing');
+  table.scrollTop = 80;
+  await user.click(screen.getByRole('button', { name: 'К началу измерений' }));
+  await act(async () => {
+    finish(measurementPage(null));
+    await delayed;
+    view.rerender(<RecordDetails record={record} service={service} available={false} />);
+  });
+  expect(table.scrollTop).toBe(80);
+});
+
+it('не прокручивает измерения после смены версии до применения ответа', async () => {
+  let finish: (page: MeasurementPage) => void = () => {};
+  const delayed = new Promise<MeasurementPage>((resolve) => {
+    finish = resolve;
+  });
+  let finishRefresh: (page: MeasurementPage) => void = () => {};
+  const refresh = new Promise<MeasurementPage>((resolve) => {
+    finishRefresh = resolve;
+  });
+  const measurements = vi
+    .fn()
+    .mockResolvedValueOnce(measurementPage(100))
+    .mockReturnValueOnce(delayed)
+    .mockReturnValue(refresh);
+  const service = { ...desktopDemoService, measurements };
+  const pending = { ...record, saveStatus: TestRecordSaveStatus.TestRecordSaveStatusPending };
+  const view = render(<RecordDetails record={pending} service={service} available />);
+  const user = userEvent.setup();
+  await user.click(screen.getByText('Измерения', { selector: 'summary' }));
+  await screen.findByRole('button', { name: 'Следующая страница измерений' });
+  const table = document.querySelector<HTMLElement>('.table-scroll');
+  if (!table) throw new Error('Measurement list missing');
+  table.scrollTop = 80;
+  await user.click(screen.getByRole('button', { name: 'К началу измерений' }));
+  await act(async () => {
+    finish(measurementPage(null));
+    await delayed;
+    view.rerender(<RecordDetails record={record} service={service} available />);
+  });
+  try {
+    expect(table.scrollTop).toBe(80);
+  } finally {
+    view.unmount();
+    finishRefresh(measurementPage(null));
+    await refresh;
+  }
+});
+
 it('показывает журнал событий понятным языком и сохраняет исходные сведения', async () => {
   const audit = vi.fn().mockResolvedValue({
-    items: [{
-      sequence: 1,
-      testId: record.testId,
-      revision: 2,
-      occurredAt: '2026-11-05T12:34:56.123456Z',
-      action: 'stop',
-      outcome: 'accepted',
-      operatorId: 'demo-operator',
-      commandId: record.stopCommandId,
-      actionId: '44444444-4444-4444-8444-444444444444',
-      reason: 'measurement_write_timeout;future_reason',
-      instruction: 'Откройте клапан',
-    }, {
-      sequence: 2,
-      testId: record.testId,
-      revision: 3,
-      occurredAt: 'not-a-date',
-      action: 'future_action',
-      outcome: 'future_outcome',
-      operatorId: 'future_actor',
-      reason: null,
-    }],
+    items: [
+      {
+        sequence: 1,
+        testId: record.testId,
+        revision: 2,
+        occurredAt: '2026-11-05T12:34:56.123456Z',
+        action: 'stop',
+        outcome: 'accepted',
+        operatorId: 'demo-operator',
+        commandId: record.stopCommandId,
+        actionId: '44444444-4444-4444-8444-444444444444',
+        reason: 'measurement_write_timeout;future_reason',
+        instruction: 'Откройте клапан',
+      },
+      {
+        sequence: 2,
+        testId: record.testId,
+        revision: 3,
+        occurredAt: 'not-a-date',
+        action: 'future_action',
+        outcome: 'future_outcome',
+        operatorId: 'future_actor',
+        reason: null,
+      },
+    ],
     nextAfter: null,
   });
   render(<RecordDetails record={record} service={{ ...desktopDemoService, audit }} available />);
@@ -1404,7 +1542,13 @@ it('показывает журнал событий понятным языко
   expect(screen.getByText('Неизвестное событие — Неизвестный результат')).toBeTruthy();
   expect(screen.getByText('Время неизвестно')).toBeTruthy();
   expect(screen.getAllByText(/Неизвестный участник/).length).toBeGreaterThan(0);
-  expect(screen.getByText(new Intl.DateTimeFormat('ru-RU', { dateStyle: 'short', timeStyle: 'medium' }).format(new Date('2026-11-05T12:34:56.123456Z')))).toBeTruthy();
+  expect(
+    screen.getByText(
+      new Intl.DateTimeFormat('ru-RU', { dateStyle: 'short', timeStyle: 'medium' }).format(
+        new Date('2026-11-05T12:34:56.123456Z'),
+      ),
+    ),
+  ).toBeTruthy();
   expect(audit).toHaveBeenCalledTimes(1);
   const details = screen.getAllByText('Подробности события', { selector: 'summary' });
   if (!details[0]) throw new Error('Event details missing');
@@ -1431,17 +1575,24 @@ it('не объявляет принятую или неудачную оста�
 
 it('сохраняет раскрытие события и фокус при обновлении журнала', async () => {
   let finish: (page: { items: typeof events; nextAfter: null }) => void = () => {};
-  const events = [{
-    sequence: 1,
-    testId: record.testId,
-    revision: 1,
-    occurredAt: record.createdAt,
-    action: 'start',
-    outcome: 'accepted',
-    operatorId: 'demo-operator',
-  }];
-  const delayed = new Promise<{ items: typeof events; nextAfter: null }>((resolve) => { finish = resolve; });
-  const audit = vi.fn().mockResolvedValueOnce({ items: events, nextAfter: null }).mockReturnValueOnce(delayed);
+  const events = [
+    {
+      sequence: 1,
+      testId: record.testId,
+      revision: 1,
+      occurredAt: record.createdAt,
+      action: 'start',
+      outcome: 'accepted',
+      operatorId: 'demo-operator',
+    },
+  ];
+  const delayed = new Promise<{ items: typeof events; nextAfter: null }>((resolve) => {
+    finish = resolve;
+  });
+  const audit = vi
+    .fn()
+    .mockResolvedValueOnce({ items: events, nextAfter: null })
+    .mockReturnValueOnce(delayed);
   const service = { ...desktopDemoService, audit };
   const pending = { ...record, saveStatus: TestRecordSaveStatus.TestRecordSaveStatusPending };
   const view = render(<RecordDetails record={pending} service={service} available />);
@@ -1455,22 +1606,36 @@ it('сохраняет раскрытие события и фокус при о
   expect(summary.isConnected).toBe(true);
   expect(document.activeElement).toBe(summary);
   expect(summary.closest('details')?.open).toBe(true);
-  await act(async () => { finish({ items: events, nextAfter: null }); await delayed; });
+  await act(async () => {
+    finish({ items: events, nextAfter: null });
+    await delayed;
+  });
   expect(document.activeElement).toBe(summary);
   expect(summary.closest('details')?.open).toBe(true);
 });
 
 it('сохраняет выбранную страницу журнала при обновлении версии', async () => {
   let finish: (page: { items: never[]; nextAfter: null }) => void = () => {};
-  const delayed = new Promise<{ items: never[]; nextAfter: null }>((resolve) => { finish = resolve; });
+  const delayed = new Promise<{ items: never[]; nextAfter: null }>((resolve) => {
+    finish = resolve;
+  });
   const first = {
-    sequence: 100, testId: record.testId, revision: 1, occurredAt: record.createdAt,
-    action: 'start', outcome: 'accepted', operatorId: 'demo-operator',
+    sequence: 100,
+    testId: record.testId,
+    revision: 1,
+    occurredAt: record.createdAt,
+    action: 'start',
+    outcome: 'accepted',
+    operatorId: 'demo-operator',
   };
-  const audit = vi.fn()
+  const audit = vi
+    .fn()
     .mockResolvedValueOnce({ items: [first], nextAfter: 100 })
     .mockReturnValueOnce(delayed)
-    .mockResolvedValueOnce({ items: [{ ...first, sequence: 101, action: 'complete' }], nextAfter: null });
+    .mockResolvedValueOnce({
+      items: [{ ...first, sequence: 101, action: 'complete' }],
+      nextAfter: null,
+    });
   const service = { ...desktopDemoService, audit };
   const pending = { ...record, saveStatus: TestRecordSaveStatus.TestRecordSaveStatusPending };
   const view = render(<RecordDetails record={pending} service={service} available />);
@@ -1479,19 +1644,146 @@ it('сохраняет выбранную страницу журнала при
   await user.click(await screen.findByRole('button', { name: 'Следующая страница журнала' }));
   view.rerender(<RecordDetails record={record} service={service} available />);
   expect(audit).toHaveBeenCalledTimes(2);
-  await act(async () => { finish({ items: [], nextAfter: null }); await delayed; });
+  await act(async () => {
+    finish({ items: [], nextAfter: null });
+    await delayed;
+  });
   await waitFor(() => expect(audit).toHaveBeenCalledTimes(3));
   expect(audit).toHaveBeenLastCalledWith(record.testId, 100, 100);
   expect(await screen.findByText('Завершение испытания — Принято')).toBeTruthy();
 });
 
+it('после ошибки обновляет запрошенную страницу журнала при смене версии', async () => {
+  const event = {
+    sequence: 100,
+    testId: record.testId,
+    revision: 1,
+    occurredAt: record.createdAt,
+    action: 'start',
+    outcome: 'accepted',
+    operatorId: 'demo-operator',
+  };
+  const audit = vi
+    .fn()
+    .mockResolvedValueOnce({ items: [event], nextAfter: 100 })
+    .mockRejectedValueOnce(new Error('read failed'))
+    .mockResolvedValueOnce({ items: [], nextAfter: null });
+  const service = { ...desktopDemoService, audit };
+  const pending = { ...record, saveStatus: TestRecordSaveStatus.TestRecordSaveStatusPending };
+  const view = render(<RecordDetails record={pending} service={service} available />);
+  const user = userEvent.setup();
+  await user.click(screen.getByText('Журнал событий', { selector: 'summary' }));
+  await user.click(await screen.findByRole('button', { name: 'Следующая страница журнала' }));
+  await screen.findByText('Не удалось прочитать журнал.');
+  view.rerender(<RecordDetails record={record} service={service} available />);
+  await waitFor(() => expect(audit).toHaveBeenCalledTimes(3));
+  expect(audit).toHaveBeenLastCalledWith(record.testId, 100, 100);
+});
+
+it.each(['closed', 'hidden'] as const)(
+  'сохраняет сообщение об ошибке журнала после %s',
+  async (change) => {
+    const event = {
+      sequence: 100,
+      testId: record.testId,
+      revision: 1,
+      occurredAt: record.createdAt,
+      action: 'start',
+      outcome: 'accepted',
+      operatorId: 'demo-operator',
+    };
+    const audit = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [event], nextAfter: 100 })
+      .mockRejectedValueOnce(new Error('read failed'));
+    const service = { ...desktopDemoService, audit };
+    const view = render(<RecordDetails record={record} service={service} available />);
+    const user = userEvent.setup();
+    const summary = screen.getByText('Журнал событий', { selector: 'summary' });
+    await user.click(summary);
+    await user.click(await screen.findByRole('button', { name: 'Следующая страница журнала' }));
+    await screen.findByText('Не удалось прочитать журнал.');
+    if (change === 'closed') {
+      await user.click(summary);
+      await user.click(summary);
+    } else {
+      view.rerender(<RecordDetails record={record} service={service} available visible={false} />);
+      view.rerender(<RecordDetails record={record} service={service} available />);
+    }
+    expect(screen.getByText('Не удалось прочитать журнал.')).toBeTruthy();
+    expect(audit).toHaveBeenCalledTimes(2);
+  },
+);
+
+it.each(['Измерения', 'Журнал событий'] as const)(
+  'не перечитывает актуальный раздел %s при закрытии и открытии',
+  async (label) => {
+    const measurements = vi.fn().mockResolvedValue(measurementPage(null));
+    const audit = vi.fn().mockResolvedValue({ items: [], nextAfter: null });
+    render(
+      <RecordDetails
+        record={record}
+        service={{ ...desktopDemoService, measurements, audit }}
+        available
+      />,
+    );
+    const user = userEvent.setup();
+    const summary = screen.getByText(label, { selector: 'summary' });
+    const read = label === 'Измерения' ? measurements : audit;
+    await user.click(summary);
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+    await user.click(summary);
+    await user.click(summary);
+    expect(read).toHaveBeenCalledTimes(1);
+  },
+);
+
+it('сохраняет запрошенную офлайн страницу журнала при скрытии', async () => {
+  const event = {
+    sequence: 100,
+    testId: record.testId,
+    revision: 1,
+    occurredAt: record.createdAt,
+    action: 'start',
+    outcome: 'accepted',
+    operatorId: 'demo-operator',
+  };
+  const audit = vi
+    .fn()
+    .mockResolvedValueOnce({ items: [event], nextAfter: 100 })
+    .mockResolvedValueOnce({ items: [], nextAfter: null });
+  const service = { ...desktopDemoService, audit };
+  const view = render(<RecordDetails record={record} service={service} available />);
+  const user = userEvent.setup();
+  await user.click(screen.getByText('Журнал событий', { selector: 'summary' }));
+  const next = await screen.findByRole('button', { name: 'Следующая страница журнала' });
+  view.rerender(<RecordDetails record={record} service={service} available={false} />);
+  await user.click(next);
+  view.rerender(
+    <RecordDetails record={record} service={service} available={false} visible={false} />,
+  );
+  view.rerender(<RecordDetails record={record} service={service} available />);
+  await waitFor(() => expect(audit).toHaveBeenCalledTimes(2));
+  expect(audit).toHaveBeenLastCalledWith(record.testId, 100, 100);
+});
+
 it('не принимает поздний ответ журнала при потере связи и продолжает запрошенную страницу', async () => {
-  const first = { sequence: 100, testId: record.testId, revision: 1, occurredAt: record.createdAt,
-    action: 'start', outcome: 'accepted', operatorId: 'demo-operator' };
-  let finish: (page: { items: typeof first[]; nextAfter: null }) => void = () => {};
-  const delayed = new Promise<{ items: typeof first[]; nextAfter: null }>((resolve) => { finish = resolve; });
+  const first = {
+    sequence: 100,
+    testId: record.testId,
+    revision: 1,
+    occurredAt: record.createdAt,
+    action: 'start',
+    outcome: 'accepted',
+    operatorId: 'demo-operator',
+  };
+  let finish: (page: { items: (typeof first)[]; nextAfter: null }) => void = () => {};
+  const delayed = new Promise<{ items: (typeof first)[]; nextAfter: null }>((resolve) => {
+    finish = resolve;
+  });
   const next = { ...first, sequence: 101, action: 'complete' };
-  const audit = vi.fn()
+  const audit = vi
+    .fn()
     .mockResolvedValueOnce({ items: [first], nextAfter: 100 })
     .mockReturnValueOnce(delayed)
     .mockResolvedValueOnce({ items: [next], nextAfter: null });
@@ -1501,7 +1793,10 @@ it('не принимает поздний ответ журнала при по
   await user.click(screen.getByText('Журнал событий', { selector: 'summary' }));
   await user.click(await screen.findByRole('button', { name: 'Следующая страница журнала' }));
   view.rerender(<RecordDetails record={record} service={service} available={false} />);
-  await act(async () => { finish({ items: [next], nextAfter: null }); await delayed; });
+  await act(async () => {
+    finish({ items: [next], nextAfter: null });
+    await delayed;
+  });
   expect(screen.getByText('Запуск испытания — Принято')).toBeTruthy();
   expect(screen.queryByText('Завершение испытания — Принято')).toBeNull();
   view.rerender(<RecordDetails record={record} service={service} available />);
@@ -1510,8 +1805,164 @@ it('не принимает поздний ответ журнала при по
   expect(await screen.findByText('Завершение испытания — Принято')).toBeTruthy();
 });
 
+it('дожидается завершения прежнего чтения журнала перед повтором после восстановления связи', async () => {
+  const event = {
+    sequence: 100,
+    testId: record.testId,
+    revision: 1,
+    occurredAt: record.createdAt,
+    action: 'start',
+    outcome: 'accepted',
+    operatorId: 'demo-operator',
+  };
+  let finish: (page: { items: (typeof event)[]; nextAfter: null }) => void = () => {};
+  const delayed = new Promise<{ items: (typeof event)[]; nextAfter: null }>((resolve) => {
+    finish = resolve;
+  });
+  const audit = vi
+    .fn()
+    .mockResolvedValueOnce({ items: [event], nextAfter: 100 })
+    .mockReturnValueOnce(delayed)
+    .mockResolvedValueOnce({ items: [], nextAfter: null });
+  const service = { ...desktopDemoService, audit };
+  const view = render(<RecordDetails record={record} service={service} available />);
+  const user = userEvent.setup();
+  await user.click(screen.getByText('Журнал событий', { selector: 'summary' }));
+  await user.click(await screen.findByRole('button', { name: 'Следующая страница журнала' }));
+  view.rerender(<RecordDetails record={record} service={service} available={false} />);
+  view.rerender(<RecordDetails record={record} service={service} available />);
+  expect(audit).toHaveBeenCalledTimes(2);
+  await act(async () => {
+    finish({ items: [], nextAfter: null });
+    await delayed;
+  });
+  await waitFor(() => expect(audit).toHaveBeenCalledTimes(3));
+  expect(audit).toHaveBeenLastCalledWith(record.testId, 100, 100);
+});
+
+it.each(['closed', 'hidden', 'record'] as const)(
+  'не применяет ответ журнала после изменения просмотра: %s',
+  async (change) => {
+    const first = {
+      sequence: 100,
+      testId: record.testId,
+      revision: 1,
+      occurredAt: record.createdAt,
+      action: 'start',
+      outcome: 'accepted',
+      operatorId: 'demo-operator',
+    };
+    const late = { ...first, sequence: 101, action: 'complete' };
+    let finish: (page: { items: (typeof first)[]; nextAfter: null }) => void = () => {};
+    const delayed = new Promise<{ items: (typeof first)[]; nextAfter: null }>((resolve) => {
+      finish = resolve;
+    });
+    let finishCurrent: (page: { items: (typeof first)[]; nextAfter: null }) => void = () => {};
+    const current = new Promise<{ items: (typeof first)[]; nextAfter: null }>((resolve) => {
+      finishCurrent = resolve;
+    });
+    const audit = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [first], nextAfter: 100 })
+      .mockReturnValueOnce(delayed)
+      .mockReturnValue(current);
+    const service = { ...desktopDemoService, audit };
+    const view = render(<RecordDetails record={record} service={service} available />);
+    const user = userEvent.setup();
+    const summary = screen.getByText('Журнал событий', { selector: 'summary' });
+    await user.click(summary);
+    await user.click(await screen.findByRole('button', { name: 'Следующая страница журнала' }));
+    if (change === 'closed') await user.click(summary);
+    else if (change === 'hidden')
+      view.rerender(<RecordDetails record={record} service={service} available visible={false} />);
+    else
+      view.rerender(
+        <RecordDetails
+          record={{ ...record, testId: '77777777-7777-4777-8777-777777777777' }}
+          service={service}
+          available
+        />,
+      );
+    await act(async () => {
+      finish({ items: [late], nextAfter: null });
+      await delayed;
+    });
+    if (change === 'closed') await user.click(summary);
+    else if (change === 'hidden')
+      view.rerender(<RecordDetails record={record} service={service} available />);
+    await waitFor(() => expect(audit).toHaveBeenCalledTimes(3));
+    expect(screen.queryByText('Завершение испытания — Принято')).toBeNull();
+    if (change === 'record') expect(screen.queryByText('Запуск испытания — Принято')).toBeNull();
+    else expect(screen.getByText('Запуск испытания — Принято')).toBeTruthy();
+    expect(audit).toHaveBeenLastCalledWith(
+      change === 'record' ? '77777777-7777-4777-8777-777777777777' : record.testId,
+      change === 'record' ? 0 : 100,
+      100,
+    );
+    await act(async () => {
+      finishCurrent({ items: [], nextAfter: null });
+      await current;
+    });
+  },
+);
+
+it('не публикует ответ журнала после размонтирования и повторного открытия', async () => {
+  const event = {
+    sequence: 101,
+    testId: record.testId,
+    revision: 1,
+    occurredAt: record.createdAt,
+    action: 'complete',
+    outcome: 'accepted',
+    operatorId: 'demo-operator',
+  };
+  let finish: (page: { items: (typeof event)[]; nextAfter: null }) => void = () => {};
+  const delayed = new Promise<{ items: (typeof event)[]; nextAfter: null }>((resolve) => {
+    finish = resolve;
+  });
+  const audit = vi
+    .fn()
+    .mockReturnValueOnce(delayed)
+    .mockResolvedValue({ items: [], nextAfter: null });
+  const service = { ...desktopDemoService, audit };
+  const first = render(<RecordDetails record={record} service={service} available />);
+  const user = userEvent.setup();
+  await user.click(screen.getByText('Журнал событий', { selector: 'summary' }));
+  await waitFor(() => expect(audit).toHaveBeenCalledTimes(1));
+  first.unmount();
+  render(<RecordDetails record={record} service={service} available />);
+  await user.click(screen.getByText('Журнал событий', { selector: 'summary' }));
+  await waitFor(() => expect(audit).toHaveBeenCalledTimes(2));
+  await act(async () => {
+    finish({ items: [event], nextAfter: null });
+    await delayed;
+  });
+  expect(screen.queryByText('Завершение испытания — Принято')).toBeNull();
+});
+
+it('не запускает ожидающее обновление журнала после размонтирования', async () => {
+  let finish: (page: { items: never[]; nextAfter: null }) => void = () => {};
+  const delayed = new Promise<{ items: never[]; nextAfter: null }>((resolve) => {
+    finish = resolve;
+  });
+  const audit = vi.fn().mockReturnValue(delayed);
+  const service = { ...desktopDemoService, audit };
+  const pending = { ...record, saveStatus: TestRecordSaveStatus.TestRecordSaveStatusPending };
+  const view = render(<RecordDetails record={pending} service={service} available />);
+  await userEvent.setup().click(screen.getByText('Журнал событий', { selector: 'summary' }));
+  await waitFor(() => expect(audit).toHaveBeenCalledTimes(1));
+  view.rerender(<RecordDetails record={record} service={service} available />);
+  view.unmount();
+  await act(async () => {
+    finish({ items: [], nextAfter: null });
+    await delayed;
+  });
+  expect(audit).toHaveBeenCalledTimes(1);
+});
+
 it('повторно читает устаревшую страницу журнала после ошибки и открытия', async () => {
-  const audit = vi.fn()
+  const audit = vi
+    .fn()
     .mockResolvedValueOnce({ items: [], nextAfter: null })
     .mockRejectedValueOnce(new Error('read failed'))
     .mockResolvedValueOnce({ items: [], nextAfter: null });
@@ -1531,13 +1982,22 @@ it('повторно читает устаревшую страницу журн
 
 it('сохраняет неудавшийся переход журнала при обновлении и потере связи', async () => {
   const event = {
-    sequence: 100, testId: record.testId, revision: 1, occurredAt: record.createdAt,
-    action: 'start', outcome: 'accepted', operatorId: 'demo-operator',
+    sequence: 100,
+    testId: record.testId,
+    revision: 1,
+    occurredAt: record.createdAt,
+    action: 'start',
+    outcome: 'accepted',
+    operatorId: 'demo-operator',
   };
-  const audit = vi.fn()
+  const audit = vi
+    .fn()
     .mockResolvedValueOnce({ items: [event], nextAfter: 100 })
     .mockRejectedValueOnce(new Error('read failed'))
-    .mockResolvedValueOnce({ items: [{ ...event, sequence: 101, action: 'complete' }], nextAfter: null });
+    .mockResolvedValueOnce({
+      items: [{ ...event, sequence: 101, action: 'complete' }],
+      nextAfter: null,
+    });
   const service = { ...desktopDemoService, audit };
   const pending = { ...record, saveStatus: TestRecordSaveStatus.TestRecordSaveStatusPending };
   const view = render(<RecordDetails record={pending} service={service} available />);
@@ -1555,10 +2015,16 @@ it('сохраняет неудавшийся переход журнала пр
 
 it('не перечитывает журнал при раскрытии подробностей события', async () => {
   const event = {
-    sequence: 1, testId: record.testId, revision: 1, occurredAt: record.createdAt,
-    action: 'start', outcome: 'accepted', operatorId: 'demo-operator',
+    sequence: 1,
+    testId: record.testId,
+    revision: 1,
+    occurredAt: record.createdAt,
+    action: 'start',
+    outcome: 'accepted',
+    operatorId: 'demo-operator',
   };
-  const audit = vi.fn()
+  const audit = vi
+    .fn()
     .mockResolvedValueOnce({ items: [event], nextAfter: null })
     .mockRejectedValueOnce(new Error('read failed'));
   const service = { ...desktopDemoService, audit };
@@ -1578,12 +2044,21 @@ it('не перечитывает журнал при раскрытии под�
 
 it('сохраняет фокус при переходе на последнюю страницу журнала', async () => {
   const event = {
-    sequence: 100, testId: record.testId, revision: 1, occurredAt: record.createdAt,
-    action: 'start', outcome: 'accepted', operatorId: 'demo-operator',
+    sequence: 100,
+    testId: record.testId,
+    revision: 1,
+    occurredAt: record.createdAt,
+    action: 'start',
+    outcome: 'accepted',
+    operatorId: 'demo-operator',
   };
-  const audit = vi.fn()
+  const audit = vi
+    .fn()
     .mockResolvedValueOnce({ items: [event], nextAfter: 100 })
-    .mockResolvedValueOnce({ items: [{ ...event, sequence: 101, action: 'complete' }], nextAfter: null });
+    .mockResolvedValueOnce({
+      items: [{ ...event, sequence: 101, action: 'complete' }],
+      nextAfter: null,
+    });
   render(<RecordDetails record={record} service={{ ...desktopDemoService, audit }} available />);
   const user = userEvent.setup();
   await user.click(screen.getByText('Журнал событий', { selector: 'summary' }));
