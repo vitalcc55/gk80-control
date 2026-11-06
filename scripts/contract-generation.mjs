@@ -3,6 +3,7 @@ import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync,
 import { dirname, join, relative, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { goEnv } from './quality-process.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 if (process.platform !== 'win32') throw new Error('Wails contract generation requires the Windows native toolchain');
@@ -21,7 +22,7 @@ const goModel = join(scratch, 'internal', 'contract', 'models.gen.go');
 const wailsOutput = join(scratch, 'wails');
 
 function run(command, args) {
-  const result = spawnSync(command, args, { cwd: scratch, encoding: 'utf8' });
+  const result = spawnSync(command, args, { cwd: scratch, env: goEnv(), encoding: 'utf8' });
   if (result.error || result.status !== 0) {
     throw new Error(`${command} failed: ${result.error ?? result.stderr ?? result.stdout}`);
   }

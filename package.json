@@ -20,7 +20,11 @@
     "check:host:native": "node scripts/check-host.mjs --native",
     "check:host:runner": "node --test scripts/verify-host-checks.mjs",
     "check:quick": "npm run typecheck && npm run lint && npm test",
-    "check:pr": "npm run check:quick && npm run build && npm run test:e2e"
+    "check:pr": "npm run check:quick && npm run build && npm run test:e2e",
+    "check:go": "node scripts/check-go.mjs",
+    "check:portable": "npm run check:pr && npm run check:go && npm run check:host && npm run check:host:runner",
+    "check:full": "npm run check:windows && npm run check:portable",
+    "check:windows": "npm run check:host:native && node scripts/check-go.mjs --native && npm run contract:check && npm run contract:test"
   },
   "dependencies": {
     "@wailsio/runtime": "3.1.0",
