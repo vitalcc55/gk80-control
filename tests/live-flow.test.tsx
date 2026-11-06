@@ -1524,9 +1524,14 @@ it.each([
   ['lookup', 'summary'],
   ['receipt', 'summary'],
   ['receipt', 'region'],
+  ['receipt', 'storage'],
 ] as const)(
   'uses core confirmation and measurements for the operator path (%s, %s)',
   async (source, focusTarget) => {
+    const scenarioDatabase =
+      focusTarget === 'storage' ? 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' : database;
+    const scenarioKey = `gk80.demo.pending-command.v1:${scenarioDatabase}`;
+    let failedStorage: ReturnType<typeof vi.spyOn> | undefined;
     let snapshot: Snapshot = {
       apiVersion: 'v1',
       backendRunId: backend,
@@ -1571,7 +1576,7 @@ it.each([
     api.list.mockResolvedValue({ items: [], nextAfter: null });
     api.command.mockImplementation(async (id: string) => commands.get(id));
     api.create.mockImplementation(async (input: CreateCommandInput) => {
-      expect(JSON.parse(sessionStorage.getItem(pendingKey) ?? '[]')).toEqual(
+      expect(JSON.parse(sessionStorage.getItem(scenarioKey) ?? '[]')).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             id: input.commandId,
@@ -1606,7 +1611,7 @@ it.each([
       ],
     });
     api.start.mockImplementation(async (_id: string, input: { commandId: string }) => {
-      expect(JSON.parse(sessionStorage.getItem(pendingKey) ?? '[]')).toEqual(
+      expect(JSON.parse(sessionStorage.getItem(scenarioKey) ?? '[]')).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             id: input.commandId,
@@ -1619,6 +1624,11 @@ it.each([
         ]),
       );
       startId = input.commandId;
+      if (focusTarget === 'storage') {
+        failedStorage = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+          throw new Error('storage unavailable');
+        });
+      }
       lastCommand = {
         commandId: input.commandId,
         status: CommandStatusStatus.CommandStatusStatusAccepted,
@@ -1684,7 +1694,14 @@ it.each([
       },
     );
     if (source === 'receipt') api.exact.mockResolvedValue({ outcome: 'unknown', command: null });
-    render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
+    render(
+      <LiveApp
+        session={bridge}
+        hostRunId={host}
+        backendRunId={backend}
+        databaseId={scenarioDatabase}
+      />,
+    );
     const user = userEvent.setup();
     const newTest = await screen.findByRole('button', { name: 'Новое испытание' });
     await waitFor(() => expect(newTest.hasAttribute('disabled')).toBe(false));
@@ -1711,8 +1728,27 @@ it.each([
     await user.click(screen.getByRole('button', { name: 'Вернуться к испытанию' }));
     await user.click(screen.getByLabelText(/Клапан закрыт/));
     await user.click(screen.getByLabelText(/Подключение соответствует направлению/));
-    await user.click(screen.getByRole('button', { name: /Перейти к проведению/ }));
-    expect(api.start).toHaveBeenCalledTimes(1);
+    try {
+      await user.click(screen.getByRole('button', { name: /Перейти к проведению/ }));
+      expect(api.start).toHaveBeenCalledTimes(1);
+      if (focusTarget === 'storage') {
+        await screen.findByText(/Не удалось обновить список команд/);
+        snapshot = {
+          ...snapshot,
+          revision: 3,
+          lastEventSequence: 3,
+          pendingAction: { testId, actionId, instruction: 'Подтвердите измерение' },
+        };
+        await screen.findByRole('button', { name: 'Подтвердить действие' }, { timeout: 8000 });
+        expect(pendingRow(startId).classList.contains('quiet-start')).toBe(false);
+        expect(
+          within(pendingRow(startId)).getByRole('button', { name: 'Проверить состояние' }),
+        ).toBeTruthy();
+        return;
+      }
+    } finally {
+      failedStorage?.mockRestore();
+    }
     let noticeSummary: HTMLElement | null = null;
     let noticeRegion: HTMLElement | null = null;
     if (source === 'receipt') {

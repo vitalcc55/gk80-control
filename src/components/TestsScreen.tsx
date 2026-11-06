@@ -252,7 +252,7 @@ export function TestsScreen({
           ) : (
             <div className="empty-example">
               <p>
-                {pageChanged || pageNumber > 1
+                {pageChanged || pageNumber > 1 || total === null
                   ? 'На этой странице записей нет'
                   : filtered
                     ? 'По заданным условиям записей нет'

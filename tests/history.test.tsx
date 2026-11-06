@@ -226,6 +226,22 @@ it('сохраняет номер страницы при недоступном
   expect(listTests).toHaveBeenLastCalledWith({ limit: 20, after: record.testId });
 });
 
+it('не утверждает, что история пуста, если количество не подтверждено', async () => {
+  const listTests = vi.fn().mockResolvedValue({ items: [], nextAfter: null, total: null });
+  render(
+    <History
+      {...callbacks}
+      service={{ ...desktopDemoService, listTests }}
+      available
+      disabled={false}
+      draftAvailable={false}
+    />,
+  );
+  await screen.findByText(/Количество записей недоступно/);
+  expect(screen.queryByText('История пуста')).toBeNull();
+  expect(screen.getByText('На этой странице записей нет')).toBeTruthy();
+});
+
 it.each([null, 50])(
   'предлагает начать заново при неподтверждённом начальном числе (%s)',
   async (total) => {

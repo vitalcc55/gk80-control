@@ -363,6 +363,7 @@ function ActiveLiveApp({
       key === notice.id &&
       sameId.length === 1 &&
       !!item &&
+      !storageUnconfirmed &&
       !item.retired &&
       !item.receiptRequired &&
       !item.legacyUnverifiable &&
