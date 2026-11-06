@@ -29,7 +29,7 @@ npm run check:host -- --race
 npm run check:host:runner
 ```
 
-Обычный и race-профиль выбирают одни и те же три пакета. Сначала отдельно проверяются `go list -deps` и `go list -deps -test` с теми же флагами native/race, затем запускается весь набор `go test -count=1 -timeout=240s` без фильтров. Timeout относится к каждому тестовому процессу Go, а не к длительности всего npm-профиля. Профиль задаёт `GOPROXY=off`, `GONOPROXY=none`, `GOWORK=off`, `GOTOOLCHAIN=local`, `GOFLAGS=-mod=readonly`: не устанавливает инструменты/модули, не изменяет модульные файлы, не наследует внешний workspace или скрытый `-run`/`-skip`/build tag. Ошибка запуска, сигнал или ненулевой код Go дают неуспех профиля. Новые флаги, кроме `--race`/`--native`, отклоняются.
+Обычный и race-профиль выбирают одни и те же три пакета. Сначала отдельно проверяются `go list -deps` и `go list -deps -test` с теми же флагами native/race, затем запускается весь набор `go test -count=1 -shuffle=on -timeout=240s` без фильтров. Timeout относится к каждому тестовому процессу Go, а не к длительности всего npm-профиля. Профиль задаёт `GOPROXY=off`, `GONOPROXY=none`, `GOWORK=off`, `GOTOOLCHAIN=local`, `GOFLAGS=-mod=readonly` и `GOENV=off`. Он использует подготовленный кэш и исключает внешний workspace, скрытый `-run`/`-skip` и build tag. Ошибка запуска, сигнал или ненулевой код Go дают неуспех профиля. Допустимые флаги — `--race` и `--native`.
 
 Отрицательная проверка создаёт временную копию только открытых исходников, добавляет настоящий падающий Go-тест и задаёт наследуемые `GOFLAGS=-run=^$` и `GOWORK` с другим каталогом модуля. Тот же профиль обязан вернуть ненулевой код с уникальным текстом именно этого теста. Вторая проверка использует пустой модульный кеш и разрешающие прямую загрузку внешние настройки: ожидается адресный отказ offline без скачанных архивов. Go и Wails не подменяются; оригиналы и private-sources не копируются и не изменяются.
 
@@ -41,7 +41,7 @@ npm run contract:check
 npm run contract:test
 ```
 
-Native-профиль требует Wails `application` в обоих графах и запускает весь `internal/desktop` с `-tags=desktopapp`, включая два настоящих binding-теста. Linux получает явную ошибку. Генерация выполняется штатным Windows Wails CLI 3.1.0, проверяет оба сервиса, 24 метода и все три события, включая `BootstrapService`, и побайтовое соответствие Go DTO/TypeScript/RPC ID. Значения относятся к принятому контракту, а не к произвольному будущему набору методов.
+Native-профиль требует Wails `application` в обоих графах и запускает весь `internal/desktop` с `-tags=desktopapp`, включая два настоящих binding-теста. Linux получает явную ошибку. Корневой тест с `desktopapp` входит в `check:windows` после сборки ресурсов. Генерация выполняется штатным Windows Wails CLI 3.1.0, проверяет оба сервиса, 24 метода и все три события, включая `BootstrapService`, и побайтовое соответствие Go DTO/TypeScript/RPC ID. Значения относятся к принятому контракту, а не к произвольному будущему набору методов.
 
 `owner_failure_windows_test.go` остаётся дополнительной платформенной частью host-пакета на Windows: проверяет аварийный выход своего процесса и диагностику. Поздний Verify проверяет общий `TestDelayedVerificationCannotRestoreExitedCore` в `owner_test.go`. Общие session/ledger/exact lookup/recovery/delivery/process-тесты не помечены новым тегом и не исключены. Linux GUI, сборка Linux browser executable и весь `check:pr` не входят в этот профиль. Frontend-профиль остаётся самостоятельным.
 
