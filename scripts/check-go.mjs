@@ -1,10 +1,13 @@
 import { copyFileSync, mkdirSync, mkdtempSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { goEnv, root, run } from './quality-process.mjs';
+import { goEnv, portableGoPackages, root, run } from './quality-process.mjs';
 
 const args = process.argv.slice(2);
-const native = args[0] === '--native';
-if (args.length !== (native ? 1 : 0)) throw new Error('Usage: check-go.mjs [--native]');
+const [mode] = args;
+const native = mode === '--native';
+if (args.length > 1 || (mode && !['--native', '--race'].includes(mode))) {
+  throw new Error('Usage: check-go.mjs [--native | --race]');
+}
 if (native && process.platform !== 'win32') throw new Error('Native Go checks require Windows');
 if (!['win32', 'linux'].includes(process.platform)) throw new Error('Go checks support Windows and Linux');
 
@@ -26,6 +29,11 @@ if (native) {
   copyFileSync(join(assets, 'browser.html'), join(assets, 'index.html'));
   copyFileSync(join(root, 'bin', 'gk80-core.exe'), join(browser, 'gk80-core.exe'));
   run('go', ['build', '-o', join(browser, 'gk80-browser.exe'), './cmd/gk80-browser'], { env });
+} else if (mode === '--race') {
+  run('go', ['test', ...testFlags, '-race',
+    './internal/browser', './internal/core', './internal/demo', './internal/desktop',
+    './internal/diagnostics', './internal/storage', './internal/transport',
+  ], { env: { ...env, CGO_ENABLED: '1', GORACE: '' } });
 } else {
   const rootGoFiles = readdirSync(root, { withFileTypes: true })
     .filter(file => file.isFile() && file.name.endsWith('.go'))
@@ -33,11 +41,10 @@ if (native) {
   const unformatted = run('gofmt', ['-l', 'api', 'cmd', 'internal', ...rootGoFiles], { capture: true }).trim();
   if (unformatted) throw new Error(`Go formatting differs (gofmt -l):\n${unformatted}`);
 
-  const packages = ['./api/...', './cmd/...', './internal/...'];
   run('go', ['mod', 'tidy', '-diff'], { env });
   run('go', ['mod', 'verify'], { env });
-  run('golangci-lint', ['run', '--no-config', ...packages], { env });
-  run('go', ['test', ...testFlags, ...packages], { env });
+  run('golangci-lint', ['run', '--no-config', ...portableGoPackages], { env });
+  run('go', ['test', ...testFlags, ...portableGoPackages], { env });
   // Linux tests the shared browser code, but its executable entry point is Windows-only.
   run('go', ['build', './api/...', './internal/...', './cmd/gk80-core'], { env });
 }

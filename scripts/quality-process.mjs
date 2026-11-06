@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 export const root = fileURLToPath(new URL('..', import.meta.url));
+export const portableGoPackages = ['./api/...', './cmd/...', './internal/...'];
 
 export function goEnv() {
   const env = { ...process.env };
