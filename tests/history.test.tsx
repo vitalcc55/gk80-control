@@ -15,6 +15,12 @@ import { FixtureTests } from '../src/FixtureTests';
 import { fixtureSource } from '../src/fixtureAdapter';
 import {
   ConnectionStateStatus,
+  MeasurementChannel,
+  type MeasurementPage,
+  MeasurementQuality,
+  MeasurementQuantity,
+  MeasurementSource,
+  MeasurementUnit,
   type TestList,
   TestParametersDirection,
   type TestRecord,
@@ -44,6 +50,24 @@ const record: TestRecord = {
   },
 };
 const callbacks = { onNew: vi.fn(), onCopy: vi.fn(), onDiscard: vi.fn() };
+
+function measurementPage(nextAfter: number | null): MeasurementPage {
+  const sequence = nextAfter ?? 201;
+  return {
+    items: [{
+      sequence,
+      channel: MeasurementChannel.Dd1,
+      measuredAt: record.createdAt,
+      observedAt: record.createdAt,
+      quality: MeasurementQuality.MeasurementQualityValid,
+      quantity: MeasurementQuantity.MeasurementQuantityPressure,
+      source: MeasurementSource.MeasurementSourceSimulator,
+      unit: MeasurementUnit.Pa,
+      value: sequence,
+    }],
+    nextAfter,
+  };
+}
 
 it('limits the prepared history page including the active record', async () => {
   const entries = Array.from({ length: 21 }, (_, index) => ({
@@ -1027,6 +1051,318 @@ it('ends the canceled loading state when a new query is submitted offline', asyn
       limit: 20,
     }),
   );
+});
+
+it('возвращает список измерений к началу только после успешного ответа', async () => {
+  let finish: (page: MeasurementPage) => void = () => {};
+  const delayed = new Promise<MeasurementPage>((resolve) => {
+    finish = resolve;
+  });
+  const measurements = vi.fn()
+    .mockResolvedValueOnce(measurementPage(100))
+    .mockResolvedValueOnce(measurementPage(200))
+    .mockReturnValueOnce(delayed);
+  render(<RecordDetails record={record} service={{ ...desktopDemoService, measurements }} available />);
+  const user = userEvent.setup();
+  await user.click(screen.getByText('Измерения', { selector: 'summary' }));
+  await user.click(await screen.findByRole('button', { name: 'Следующая страница измерений' }));
+  await waitFor(() => expect(measurements).toHaveBeenCalledTimes(2));
+  const table = document.querySelector<HTMLElement>('.table-scroll');
+  if (!table) throw new Error('Measurement list missing');
+  table.scrollTop = 120;
+  let scrollPosition = 120;
+  let rowsAtScroll = '';
+  Object.defineProperty(table, 'scrollTop', {
+    configurable: true,
+    get: () => scrollPosition,
+    set: (value: number) => {
+      scrollPosition = value;
+      rowsAtScroll = table.textContent ?? '';
+    },
+  });
+  const first = screen.getByRole('button', { name: 'К началу измерений' });
+  first.focus();
+  await user.click(first);
+  expect(table.scrollTop).toBe(120);
+  expect(document.activeElement).toBe(first);
+  await act(async () => { finish(measurementPage(100)); await delayed; });
+  await waitFor(() => expect(table.scrollTop).toBe(0));
+  expect(rowsAtScroll).toContain('100');
+  expect(rowsAtScroll).not.toContain('200');
+  expect(document.activeElement).toBe(first);
+});
+
+it('не сбрасывает страницу и прокрутку при обновлении сохранения', async () => {
+  let finish: (page: MeasurementPage) => void = () => {};
+  const delayed = new Promise<MeasurementPage>((resolve) => {
+    finish = resolve;
+  });
+  const measurements = vi.fn()
+    .mockResolvedValueOnce(measurementPage(100))
+    .mockResolvedValueOnce(measurementPage(200))
+    .mockReturnValueOnce(delayed);
+  const pending = { ...record, saveStatus: TestRecordSaveStatus.TestRecordSaveStatusPending };
+  const service = { ...desktopDemoService, measurements };
+  const view = render(<RecordDetails record={pending} service={service} available />);
+  const user = userEvent.setup();
+  await user.click(screen.getByText('Измерения', { selector: 'summary' }));
+  await user.click(await screen.findByRole('button', { name: 'Следующая страница измерений' }));
+  await waitFor(() => expect(measurements).toHaveBeenCalledTimes(2));
+  const table = document.querySelector<HTMLElement>('.table-scroll');
+  if (!table) throw new Error('Measurement list missing');
+  table.scrollTop = 120;
+  view.rerender(<RecordDetails record={record} service={service} available />);
+  await waitFor(() => expect(measurements).toHaveBeenLastCalledWith(record.testId, 100, 100));
+  expect(document.querySelector('.table-scroll')).toBe(table);
+  expect(table.scrollTop).toBe(120);
+  await act(async () => { finish(measurementPage(200)); await delayed; });
+  expect(table.scrollTop).toBe(120);
+});
+
+it('повторно загружает начальную страницу после обновления версии во время чтения', async () => {
+  let finish: (page: MeasurementPage) => void = () => {};
+  const delayed = new Promise<MeasurementPage>((resolve) => { finish = resolve; });
+  const measurements = vi.fn().mockReturnValueOnce(delayed).mockResolvedValueOnce(measurementPage(null));
+  const pending = { ...record, saveStatus: TestRecordSaveStatus.TestRecordSaveStatusPending };
+  const service = { ...desktopDemoService, measurements };
+  const view = render(<RecordDetails record={pending} service={service} available />);
+  await userEvent.setup().click(screen.getByText('Измерения', { selector: 'summary' }));
+  await waitFor(() => expect(measurements).toHaveBeenCalledTimes(1));
+  view.rerender(<RecordDetails record={record} service={service} available />);
+  await act(async () => { finish(measurementPage(null)); await delayed; });
+  await waitFor(() => expect(measurements).toHaveBeenCalledTimes(2));
+  expect(await screen.findByText(/201\s+Pa/)).toBeTruthy();
+});
+
+it('сохраняет неудавшийся возврат при подтверждении сохранения', async () => {
+  const measurements = vi.fn()
+    .mockResolvedValueOnce(measurementPage(100))
+    .mockResolvedValueOnce(measurementPage(200))
+    .mockRejectedValueOnce(new Error('read failed'))
+    .mockResolvedValueOnce(measurementPage(100));
+  const pending = { ...record, saveStatus: TestRecordSaveStatus.TestRecordSaveStatusPending };
+  const service = { ...desktopDemoService, measurements };
+  const view = render(<RecordDetails record={pending} service={service} available />);
+  const user = userEvent.setup();
+  await user.click(screen.getByText('Измерения', { selector: 'summary' }));
+  await user.click(await screen.findByRole('button', { name: 'Следующая страница измерений' }));
+  await waitFor(() => expect(measurements).toHaveBeenCalledTimes(2));
+  const table = document.querySelector<HTMLElement>('.table-scroll');
+  if (!table) throw new Error('Measurement list missing');
+  table.scrollTop = 80;
+  await user.click(screen.getByRole('button', { name: 'К началу измерений' }));
+  await screen.findByText('Не удалось прочитать измерения.');
+  expect(table.scrollTop).toBe(80);
+  view.rerender(<RecordDetails record={record} service={service} available />);
+  expect(measurements).toHaveBeenCalledTimes(3);
+  await user.click(screen.getByRole('button', { name: 'Повторить чтение измерений' }));
+  await waitFor(() => expect(measurements).toHaveBeenCalledTimes(4));
+  expect(measurements).toHaveBeenLastCalledWith(record.testId, 0, 100);
+  await waitFor(() => expect(table.scrollTop).toBe(0));
+});
+
+it('сохраняет фокус при повторном чтении после ошибки обновления', async () => {
+  let finish: (page: MeasurementPage) => void = () => {};
+  const delayed = new Promise<MeasurementPage>((resolve) => { finish = resolve; });
+  const measurements = vi.fn()
+    .mockResolvedValueOnce(measurementPage(null))
+    .mockRejectedValueOnce(new Error('read failed'))
+    .mockReturnValueOnce(delayed);
+  const pending = { ...record, saveStatus: TestRecordSaveStatus.TestRecordSaveStatusPending };
+  const service = { ...desktopDemoService, measurements };
+  const view = render(<RecordDetails record={pending} service={service} available />);
+  const user = userEvent.setup();
+  await user.click(screen.getByText('Измерения', { selector: 'summary' }));
+  await waitFor(() => expect(measurements).toHaveBeenCalledTimes(1));
+  view.rerender(<RecordDetails record={record} service={service} available />);
+  const retry = await screen.findByRole('button', { name: 'Повторить чтение измерений' });
+  await user.click(retry);
+  expect(document.activeElement).toBe(retry);
+  await act(async () => { finish(measurementPage(null)); await delayed; });
+  expect(document.activeElement).toBe(retry);
+});
+
+it('повторяет именно неудавшийся переход на следующую страницу', async () => {
+  const measurements = vi.fn()
+    .mockResolvedValueOnce(measurementPage(100))
+    .mockRejectedValueOnce(new Error('read failed'))
+    .mockResolvedValueOnce(measurementPage(null));
+  render(<RecordDetails record={record} service={{ ...desktopDemoService, measurements }} available />);
+  const user = userEvent.setup();
+  await user.click(screen.getByText('Измерения', { selector: 'summary' }));
+  await user.click(await screen.findByRole('button', { name: 'Следующая страница измерений' }));
+  await user.click(await screen.findByRole('button', { name: 'Повторить чтение измерений' }));
+  await waitFor(() => expect(measurements).toHaveBeenCalledTimes(3));
+  expect(measurements).toHaveBeenLastCalledWith(record.testId, 100, 100);
+  expect(screen.getByRole('button', { name: 'Повторить чтение измерений' }).getAttribute('aria-disabled')).toBe('true');
+});
+
+it('при отсутствии связи запоминает последнюю попытку чтения', async () => {
+  const measurements = vi.fn()
+    .mockResolvedValueOnce(measurementPage(100))
+    .mockRejectedValueOnce(new Error('read failed'))
+    .mockResolvedValueOnce(measurementPage(100));
+  const service = { ...desktopDemoService, measurements };
+  const view = render(<RecordDetails record={record} service={service} available />);
+  const user = userEvent.setup();
+  await user.click(screen.getByText('Измерения', { selector: 'summary' }));
+  await user.click(await screen.findByRole('button', { name: 'Следующая страница измерений' }));
+  await screen.findByText('Не удалось прочитать измерения.');
+  view.rerender(<RecordDetails record={record} service={service} available={false} />);
+  await user.click(screen.getByRole('button', { name: 'К началу измерений' }));
+  expect(screen.getByText('Ожидание связи для чтения измерений.')).toBeTruthy();
+  view.rerender(<RecordDetails record={record} service={service} available />);
+  await user.click(screen.getByRole('button', { name: 'Повторить чтение измерений' }));
+  await waitFor(() => expect(measurements).toHaveBeenCalledTimes(3));
+  expect(measurements).toHaveBeenLastCalledWith(record.testId, 0, 100);
+});
+
+it('не заменяет офлайн-переход фоновым обновлением после восстановления связи', async () => {
+  const measurements = vi.fn()
+    .mockResolvedValueOnce(measurementPage(100))
+    .mockResolvedValueOnce(measurementPage(200))
+    .mockResolvedValueOnce(measurementPage(100));
+  const pending = { ...record, saveStatus: TestRecordSaveStatus.TestRecordSaveStatusPending };
+  const service = { ...desktopDemoService, measurements };
+  const view = render(<RecordDetails record={pending} service={service} available />);
+  const user = userEvent.setup();
+  await user.click(screen.getByText('Измерения', { selector: 'summary' }));
+  await user.click(await screen.findByRole('button', { name: 'Следующая страница измерений' }));
+  await waitFor(() => expect(measurements).toHaveBeenCalledTimes(2));
+  view.rerender(<RecordDetails record={record} service={service} available={false} />);
+  await user.click(screen.getByRole('button', { name: 'К началу измерений' }));
+  view.rerender(<RecordDetails record={record} service={service} available />);
+  expect(measurements).toHaveBeenCalledTimes(2);
+  await user.click(screen.getByRole('button', { name: 'Повторить чтение измерений' }));
+  await waitFor(() => expect(measurements).toHaveBeenCalledTimes(3));
+  expect(measurements).toHaveBeenLastCalledWith(record.testId, 0, 100);
+});
+
+it('сохраняет офлайн-переход при последующей смене версии записи', async () => {
+  const measurements = vi.fn()
+    .mockResolvedValueOnce(measurementPage(100))
+    .mockResolvedValueOnce(measurementPage(200))
+    .mockResolvedValueOnce(measurementPage(100));
+  const pending = { ...record, saveStatus: TestRecordSaveStatus.TestRecordSaveStatusPending };
+  const service = { ...desktopDemoService, measurements };
+  const view = render(<RecordDetails record={pending} service={service} available />);
+  const user = userEvent.setup();
+  await user.click(screen.getByText('Измерения', { selector: 'summary' }));
+  await user.click(await screen.findByRole('button', { name: 'Следующая страница измерений' }));
+  await waitFor(() => expect(measurements).toHaveBeenCalledTimes(2));
+  view.rerender(<RecordDetails record={pending} service={service} available={false} />);
+  await user.click(screen.getByRole('button', { name: 'К началу измерений' }));
+  view.rerender(<RecordDetails record={record} service={service} available />);
+  expect(measurements).toHaveBeenCalledTimes(2);
+  await user.click(screen.getByRole('button', { name: 'Повторить чтение измерений' }));
+  await waitFor(() => expect(measurements).toHaveBeenCalledTimes(3));
+  expect(measurements).toHaveBeenLastCalledWith(record.testId, 0, 100);
+});
+
+it('не применяет поздний возврат после закрытия измерений', async () => {
+  let finish: (page: MeasurementPage) => void = () => {};
+  const delayed = new Promise<MeasurementPage>((resolve) => { finish = resolve; });
+  const measurements = vi.fn()
+    .mockResolvedValueOnce(measurementPage(100))
+    .mockReturnValueOnce(delayed)
+    .mockResolvedValue(measurementPage(100));
+  render(<RecordDetails record={record} service={{ ...desktopDemoService, measurements }} available />);
+  const user = userEvent.setup();
+  const summary = screen.getByText('Измерения', { selector: 'summary' });
+  await user.click(summary);
+  await screen.findByRole('button', { name: 'Следующая страница измерений' });
+  await user.click(screen.getByRole('button', { name: 'К началу измерений' }));
+  await user.click(summary);
+  await user.click(summary);
+  expect(measurements).toHaveBeenCalledTimes(2);
+  await act(async () => { finish(measurementPage(null)); await delayed; });
+  await waitFor(() => expect(measurements).toHaveBeenCalledTimes(3));
+  expect(await screen.findByRole('button', { name: 'Следующая страница измерений' })).toBeTruthy();
+});
+
+it('не восстанавливает отменённый переход после закрытия и смены версии', async () => {
+  let finish: (page: MeasurementPage) => void = () => {};
+  const delayed = new Promise<MeasurementPage>((resolve) => { finish = resolve; });
+  const measurements = vi.fn()
+    .mockResolvedValueOnce(measurementPage(100))
+    .mockReturnValueOnce(delayed)
+    .mockResolvedValueOnce(measurementPage(100));
+  const pending = { ...record, saveStatus: TestRecordSaveStatus.TestRecordSaveStatusPending };
+  const service = { ...desktopDemoService, measurements };
+  const view = render(<RecordDetails record={pending} service={service} available />);
+  const user = userEvent.setup();
+  const summary = screen.getByText('Измерения', { selector: 'summary' });
+  await user.click(summary);
+  await user.click(await screen.findByRole('button', { name: 'Следующая страница измерений' }));
+  await user.click(summary);
+  view.rerender(<RecordDetails record={record} service={service} available />);
+  await act(async () => { finish(measurementPage(200)); await delayed; });
+  await user.click(summary);
+  await waitFor(() => expect(measurements).toHaveBeenCalledTimes(3));
+  expect(measurements).toHaveBeenLastCalledWith(record.testId, 0, 100);
+  expect(screen.queryByRole('button', { name: 'Повторить чтение измерений' })).toBeNull();
+});
+
+it('не предлагает отменённый повтор после потери связи и закрытия измерений', async () => {
+  let finish: (page: MeasurementPage) => void = () => {};
+  const delayed = new Promise<MeasurementPage>((resolve) => { finish = resolve; });
+  const measurements = vi.fn()
+    .mockResolvedValueOnce(measurementPage(100))
+    .mockReturnValueOnce(delayed)
+    .mockResolvedValueOnce(measurementPage(100));
+  const service = { ...desktopDemoService, measurements };
+  const view = render(<RecordDetails record={record} service={service} available />);
+  const user = userEvent.setup();
+  const summary = screen.getByText('Измерения', { selector: 'summary' });
+  await user.click(summary);
+  await user.click(await screen.findByRole('button', { name: 'Следующая страница измерений' }));
+  view.rerender(<RecordDetails record={record} service={service} available={false} />);
+  await user.click(summary);
+  await act(async () => { finish(measurementPage(200)); await delayed; });
+  view.rerender(<RecordDetails record={record} service={service} available />);
+  await user.click(summary);
+  await waitFor(() => expect(measurements).toHaveBeenCalledTimes(3));
+  expect(measurements).toHaveBeenLastCalledWith(record.testId, 0, 100);
+});
+
+it('сохраняет фокус на переходе к последней странице измерений', async () => {
+  const measurements = vi.fn()
+    .mockResolvedValueOnce(measurementPage(100))
+    .mockResolvedValueOnce(measurementPage(null));
+  render(<RecordDetails record={record} service={{ ...desktopDemoService, measurements }} available />);
+  const user = userEvent.setup();
+  await user.click(screen.getByText('Измерения', { selector: 'summary' }));
+  const next = await screen.findByRole('button', { name: 'Следующая страница измерений' });
+  await user.click(next);
+  await waitFor(() => expect(measurements).toHaveBeenCalledTimes(2));
+  expect(screen.getByRole('button', { name: 'Следующая страница измерений' })).toBe(next);
+  expect(next.getAttribute('aria-disabled')).toBe('true');
+  expect(document.activeElement).toBe(next);
+});
+
+it('не применяет ответ измерений после потери актуальности сессии', async () => {
+  let finish: (page: MeasurementPage) => void = () => {};
+  const delayed = new Promise<MeasurementPage>((resolve) => { finish = resolve; });
+  const measurements = vi.fn()
+    .mockResolvedValueOnce(measurementPage(100))
+    .mockReturnValueOnce(delayed)
+    .mockResolvedValue(measurementPage(100));
+  const service = { ...desktopDemoService, measurements };
+  const view = render(<RecordDetails record={record} service={service} available />);
+  const user = userEvent.setup();
+  await user.click(screen.getByText('Измерения', { selector: 'summary' }));
+  await screen.findByRole('button', { name: 'Следующая страница измерений' });
+  const table = document.querySelector<HTMLElement>('.table-scroll');
+  if (!table) throw new Error('Measurement list missing');
+  table.scrollTop = 80;
+  await user.click(screen.getByRole('button', { name: 'К началу измерений' }));
+  view.rerender(<RecordDetails record={record} service={service} available={false} />);
+  await act(async () => { finish(measurementPage(null)); await delayed; });
+  expect(table.scrollTop).toBe(80);
+  expect(screen.getByRole('button', { name: 'Следующая страница измерений' }).getAttribute('aria-disabled')).toBe('false');
+  view.rerender(<RecordDetails record={record} service={service} available />);
+  await user.click(screen.getByRole('button', { name: 'Повторить чтение измерений' }));
+  await waitFor(() => expect(measurements).toHaveBeenCalledTimes(3));
 });
 
 it('refreshes open detail pages when final saving is confirmed while keeping disclosures open', async () => {

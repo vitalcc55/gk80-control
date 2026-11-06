@@ -33,10 +33,27 @@ export function RecordDetails({
   const [measurements, setMeasurements] = useState<MeasurementPage | null>(null);
   const [audit, setAudit] = useState<AuditPage | null>(null);
   const [measurementError, setMeasurementError] = useState('');
+  const [measurementRetryVisible, setMeasurementRetryVisible] = useState(false);
+  const [measurementRetry, setMeasurementRetry] = useState<{
+    after: number;
+    returnToStart: boolean;
+  } | null>(null);
   const [auditError, setAuditError] = useState('');
   const [measurementLoading, setMeasurementLoading] = useState(false);
+  const [measurementStale, setMeasurementStale] = useState(false);
+  const [measurementRefresh, setMeasurementRefresh] = useState(0);
   const [auditLoading, setAuditLoading] = useState(false);
   const measurementGeneration = useRef(0);
+  const measurementInFlight = useRef(false);
+  const activeMeasurement = useRef<{
+    after: number;
+    returnToStart: boolean;
+    manual: boolean;
+  } | null>(null);
+  const scrollAfterMeasurement = useRef<number | null>(null);
+  const measurementTable = useRef<HTMLDivElement>(null);
+  const measurementDetails = useRef<HTMLDetailsElement>(null);
+  const mounted = useRef(false);
   const auditGeneration = useRef(0);
   const measurementCursor = useRef(0);
   const auditCursor = useRef(0);
@@ -44,32 +61,81 @@ export function RecordDetails({
   const needAudit = useRef(false);
   const version = resultReadVersion(record);
   const readVersion = useRef(version);
-  useEffect(
-    () => () => {
+  const wasVisible = useRef(visible);
+  const wasAvailable = useRef(available);
+  useLayoutEffect(() => {
+    if (
+      (wasVisible.current && !visible) ||
+      (wasAvailable.current &&
+        !available &&
+        (measurementInFlight.current || scrollAfterMeasurement.current !== null))
+    ) {
+      measurementGeneration.current++;
+      scrollAfterMeasurement.current = null;
+      if (measurementInFlight.current) needMeasurements.current = true;
+      if (visible && wasAvailable.current && !available && activeMeasurement.current?.manual) {
+        const { after, returnToStart } = activeMeasurement.current;
+        setMeasurementRetry({ after, returnToStart });
+        setMeasurementRetryVisible(true);
+        setMeasurementError('Связь не подтверждена. Повторите чтение измерений.');
+      }
+      if (!visible) {
+        setMeasurementLoading(false);
+        activeMeasurement.current = null;
+        setMeasurementRetry(null);
+        setMeasurementError('');
+      }
+    }
+    wasVisible.current = visible;
+    wasAvailable.current = available;
+  }, [visible, available]);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
       measurementGeneration.current++;
       auditGeneration.current++;
-    },
-    [],
-  );
+    };
+  }, []);
   const loadMeasurements = useCallback(
-    async (after = 0) => {
+    async (after = 0, returnToStart = false, manual = false) => {
+      if (measurementInFlight.current) return;
       if (!currentAvailable.current) {
         setMeasurementError('Ожидание связи для чтения измерений.');
+        setMeasurementRetryVisible(true);
+        setMeasurementRetry({ after, returnToStart });
         return;
       }
       const generation = ++measurementGeneration.current;
-      measurementCursor.current = after;
+      measurementInFlight.current = true;
+      activeMeasurement.current = { after, returnToStart, manual };
       needMeasurements.current = false;
       setMeasurementLoading(true);
       setMeasurementError('');
+      setMeasurementRetry(null);
       try {
         const page = await currentService.current.measurements(record.testId, after, 100);
-        if (generation === measurementGeneration.current) setMeasurements(page);
+        if (generation === measurementGeneration.current && measurementDetails.current?.open) {
+          measurementCursor.current = after;
+          scrollAfterMeasurement.current = returnToStart ? generation : null;
+          setMeasurements(page);
+          setMeasurementStale(false);
+          setMeasurementRetry(null);
+        } else if (generation === measurementGeneration.current) needMeasurements.current = true;
       } catch {
-        if (generation === measurementGeneration.current)
+        if (generation === measurementGeneration.current && measurementDetails.current?.open) {
           setMeasurementError('Не удалось прочитать измерения.');
+          setMeasurementRetryVisible(true);
+          setMeasurementRetry({ after, returnToStart });
+        }
       } finally {
-        if (generation === measurementGeneration.current) setMeasurementLoading(false);
+        measurementInFlight.current = false;
+        activeMeasurement.current = null;
+        if (mounted.current) {
+          setMeasurementLoading(false);
+          if (generation !== measurementGeneration.current || needMeasurements.current)
+            setMeasurementRefresh((value) => value + 1);
+        }
       }
     },
     [record.testId],
@@ -96,26 +162,61 @@ export function RecordDetails({
     },
     [record.testId],
   );
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (readVersion.current !== version) {
       readVersion.current = version;
       measurementGeneration.current++;
+      scrollAfterMeasurement.current = null;
       auditGeneration.current++;
-      setMeasurements(null);
+      setMeasurementStale(true);
       setAudit(null);
-      setMeasurementError('');
+      if (activeMeasurement.current?.manual) {
+        const { after, returnToStart } = activeMeasurement.current;
+        setMeasurementRetry({ after, returnToStart });
+        setMeasurementRetryVisible(true);
+        setMeasurementError('Данные обновились. Повторите чтение измерений.');
+      }
       setAuditError('');
-      setMeasurementLoading(false);
+      setMeasurementLoading(measurementInFlight.current);
       setAuditLoading(false);
       needMeasurements.current = true;
       needAudit.current = true;
     }
     if (visible && available) {
-      if (measurementOpen && needMeasurements.current)
+      if (
+        measurementOpen &&
+        measurementDetails.current?.open &&
+        needMeasurements.current &&
+        !measurementInFlight.current &&
+        measurementRetry === null
+      )
         void loadMeasurements(measurementCursor.current);
       if (auditOpen && needAudit.current) void loadAudit(auditCursor.current);
     }
-  }, [version, visible, available, measurementOpen, auditOpen, loadMeasurements, loadAudit]);
+  }, [
+    version,
+    visible,
+    available,
+    measurementOpen,
+    auditOpen,
+    loadMeasurements,
+    loadAudit,
+    measurementRefresh,
+    measurementRetry,
+  ]);
+  useLayoutEffect(() => {
+    if (
+      scrollAfterMeasurement.current !== null &&
+      scrollAfterMeasurement.current === measurementGeneration.current &&
+      visible &&
+      measurementOpen &&
+      measurementDetails.current?.open &&
+      measurementTable.current
+    ) {
+      measurementTable.current.scrollTop = 0;
+      scrollAfterMeasurement.current = null;
+    }
+  }, [measurements, measurementLoading, visible, measurementOpen]);
   if (!visible) return null;
   return (
     <div className="record-disclosures">
@@ -142,21 +243,67 @@ export function RecordDetails({
       </details>
       <details
         className="work-surface result-section"
+        ref={measurementDetails}
         open={measurementOpen}
         onToggle={(e) => {
-          setMeasurementOpen(e.currentTarget.open);
-          if (e.currentTarget.open && !measurements && !measurementLoading)
-            needMeasurements.current = true;
+          const open = e.currentTarget.open;
+          setMeasurementOpen(open);
+          if (!open) {
+            measurementGeneration.current++;
+            scrollAfterMeasurement.current = null;
+            if (measurementInFlight.current) needMeasurements.current = true;
+            activeMeasurement.current = null;
+            setMeasurementLoading(false);
+            setMeasurementRetry(null);
+            setMeasurementError('');
+          }
+          if (open) {
+            if (measurementInFlight.current) setMeasurementLoading(true);
+            if (!measurements || measurementStale) needMeasurements.current = true;
+            if (needMeasurements.current && !measurementInFlight.current)
+              setMeasurementRefresh((value) => value + 1);
+          }
         }}
       >
-        <summary>Измерения</summary>
+        <summary
+          onClick={() => {
+            if (measurementDetails.current?.open) {
+              measurementGeneration.current++;
+              scrollAfterMeasurement.current = null;
+              if (measurementInFlight.current) needMeasurements.current = true;
+              activeMeasurement.current = null;
+              setMeasurementRetry(null);
+              setMeasurementError('');
+            }
+          }}
+        >
+          Измерения
+        </summary>
         {measurementOpen && (
           <>
             <p>Страница до 100 отсчётов. Среднее, расход и класс не рассчитываются.</p>
             {measurementError && <p role="alert">{measurementError}</p>}
+            {measurementRetryVisible && (
+              <button
+                type="button"
+                className="measurement-retry"
+                aria-disabled={measurementLoading || measurementRetry === null}
+                onClick={() => {
+                  if (measurementRetry)
+                    void loadMeasurements(
+                      measurementRetry.after,
+                      measurementRetry.returnToStart,
+                      true,
+                    );
+                }}
+              >
+                Повторить чтение измерений
+              </button>
+            )}
             {measurementLoading && <p role="status">Чтение измерений…</p>}
+            {measurementStale && measurements && <p>Показана предыдущая страница измерений.</p>}
             {measurements && (
-              <div className="table-scroll">
+              <div className="table-scroll" ref={measurementTable}>
                 <table className="work-table">
                   <thead>
                     <tr>
@@ -188,16 +335,19 @@ export function RecordDetails({
             <div className="history-pages">
               <button
                 type="button"
-                disabled={measurementLoading}
-                onClick={() => void loadMeasurements()}
+                aria-disabled={measurementLoading}
+                onClick={() => void loadMeasurements(0, true, true)}
               >
                 К началу измерений
               </button>
-              {!!measurements?.nextAfter && (
+              {measurements && (
                 <button
                   type="button"
-                  disabled={measurementLoading}
-                  onClick={() => void loadMeasurements(measurements.nextAfter ?? 0)}
+                  aria-disabled={measurementLoading || !measurements.nextAfter}
+                  onClick={() => {
+                    if (measurements.nextAfter)
+                      void loadMeasurements(measurements.nextAfter, false, true);
+                  }}
                 >
                   Следующая страница измерений
                 </button>
