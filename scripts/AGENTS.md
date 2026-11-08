@@ -18,7 +18,8 @@
 | Frontend | `check:quick` при разработке, `check:pr` перед передачей frontend-изменения; реальные live-сценарии по задаче |
 | Общий host | `check:host`; при изменении конкурентности — применимый `--race`; изменения runner — `check:host:runner` |
 | Wails/генерация | Windows `check:host:native`, `contract:check`/`contract:test` по изменённой границе |
-| Go core/Engine/Store | Тесты затронутых пакетов и их интеграции, применимые vet/lint/race по [quality-workflow](../docs/engineering/quality-workflow.md) |
+| Go core/Engine/Store | Тесты затронутых пакетов и их интеграции, `check:go`, при изменении конкурентности — `check:race` |
+| Общий локальный проход | `check:portable` на Windows/Linux, `check:full` вместе с нативной границей Windows |
 | Окно и демонстрационный проход | Сборка desktop и наблюдение Windows/WebView2; IAB и аннотации проверяются отдельно |
 | Только документы/политики | Ссылки, актуальность команд, непротиворечивость и применение правил к типичным задачам |
 

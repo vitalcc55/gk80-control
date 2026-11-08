@@ -1,0 +1,43 @@
+version = 1
+name = "ГК80"
+
+[setup]
+script = '''
+set -e
+export GOENV=off GOTOOLCHAIN=local GOWORK=off GOFLAGS=-mod=readonly
+npm ci --no-audit --no-fund
+go mod download
+go mod tidy -diff
+'''
+
+[setup.win32]
+script = '''
+$ErrorActionPreference = 'Stop'
+. .\scripts\use-dev-tools.ps1
+$env:GOWORK = 'off'
+$env:GOFLAGS = '-mod=readonly'
+npm ci --no-audit --no-fund
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+go mod download
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+go mod tidy -diff
+exit $LASTEXITCODE
+'''
+
+[[actions]]
+name = "Проверить frontend"
+icon = "test"
+platform = "win32"
+command = '''& { $ErrorActionPreference = 'Stop'; . .\scripts\use-dev-tools.ps1; npm run check:quick }'''
+
+[[actions]]
+name = "Проверить Go"
+icon = "test"
+platform = "win32"
+command = '''& { $ErrorActionPreference = 'Stop'; . .\scripts\use-dev-tools.ps1; npm run check:go }'''
+
+[[actions]]
+name = "Запустить демо интерфейса"
+icon = "run"
+platform = "win32"
+command = '''& { $ErrorActionPreference = 'Stop'; . .\scripts\use-dev-tools.ps1; npm run ui:fixtures }'''
