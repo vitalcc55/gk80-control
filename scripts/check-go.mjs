@@ -17,6 +17,7 @@ const testFlags = ['-count=1', '-shuffle=on', '-timeout=240s'];
 if (native) {
   const npm = process.env.npm_execpath;
   if (!npm) throw new Error('Run the native profile with npm run check:windows');
+  run('powershell.exe', ['-NoProfile', '-File', 'scripts/verify-dev-tools.ps1'], { env });
   run('powershell.exe', ['-NoProfile', '-File', 'scripts/build-desktop.ps1'], { env });
   run('golangci-lint', ['run', '--no-config', '--build-tags=desktopapp', '.', './internal/desktop'], { env });
   run('go', ['test', ...testFlags, '-tags=desktopapp', '.'], { env });
