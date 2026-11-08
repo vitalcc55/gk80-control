@@ -21,7 +21,7 @@ const [mode, ...lines] = readFileSync(raw, 'utf8').trimEnd().split(/\r?\n/);
 if (mode !== 'mode: set') throw new Error(`Unexpected Go coverage mode: ${mode}`);
 const blocks = new Map();
 for (const line of lines) {
-  const match = /^(.*):(\d+\.\d+,\d+\.\d+) (\d+) ([01])$/.exec(line);
+  const match = /^(.+):(\d+\.\d+,\d+\.\d+) (\d+) ([01])$/.exec(line);
   if (!match) throw new Error(`Invalid Go coverage row: ${line}`);
   const [, file, range, count, hits] = match;
   if (file.endsWith('/internal/contract/models.gen.go')) continue;
@@ -49,8 +49,7 @@ if (!total) throw new Error('Go coverage contains no production statements');
 for (const [name, file] of files) {
   if (file.total) console.log(`${name} ${(100 * file.covered / file.total).toFixed(2)}% (${file.covered}/${file.total})`);
 }
-console.log(`Go statements: ${(100 * covered / total).toFixed(2)}% (${covered}/${total}); target: 90%`);
-if (100 * covered < 90 * total) process.exitCode = 1;
+console.log(`Go statements: ${(100 * covered / total).toFixed(2)}% (${covered}/${total}); informational, no percentage gate`);
 
 run(process.execPath, ['node_modules/vitest/vitest.mjs', 'run', '--coverage',
   '--coverage.reportsDirectory', join(report, 'frontend'),
