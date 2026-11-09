@@ -544,12 +544,14 @@ type CreateTestLookupInput struct {
 	CommandId        openapi_types.UUID `json:"commandId"`
 	ExpectedRevision int64              `json:"expectedRevision"`
 	Parameters       struct {
-		Actuator           bool    `json:"actuator"`
-		AreaM2             float64 `json:"areaM2"`
-		Direction          string  `json:"direction"`
-		MeasurementSeconds float64 `json:"measurementSeconds"`
-		PmaxPa             float64 `json:"pmaxPa"`
-		Valve              string  `json:"valve"`
+		Actuator                      bool    `json:"actuator"`
+		AreaM2                        float64 `json:"areaM2"`
+		Direction                     string  `json:"direction"`
+		MeasurementSeconds            float64 `json:"measurementSeconds"`
+		PmaxPa                        float64 `json:"pmaxPa"`
+		PostCloseStabilizationSeconds float64 `json:"postCloseStabilizationSeconds"`
+		PreOpenStabilizationSeconds   float64 `json:"preOpenStabilizationSeconds"`
+		Valve                         string  `json:"valve"`
 	} `json:"parameters"`
 }
 
@@ -746,7 +748,13 @@ type TestParameters struct {
 	// MeasurementSeconds Для нового demo-испытания максимум 3600 секунд; точный повтор ранее принятой команды сохраняет прежний результат.
 	MeasurementSeconds float64 `json:"measurementSeconds"`
 	PmaxPa             float64 `json:"pmaxPa"`
-	Valve              string  `json:"valve"`
+
+	// PostCloseStabilizationSeconds Длительность стабилизации после закрытия клапана, с.
+	PostCloseStabilizationSeconds float64 `json:"postCloseStabilizationSeconds"`
+
+	// PreOpenStabilizationSeconds Длительность стабилизации перед открытием клапана, с.
+	PreOpenStabilizationSeconds float64 `json:"preOpenStabilizationSeconds"`
+	Valve                       string  `json:"valve"`
 }
 
 // TestParametersDirection defines model for TestParameters.Direction.

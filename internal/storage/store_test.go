@@ -17,7 +17,7 @@ import (
 )
 
 func createCommand() contract.CreateTestCommand {
-	return contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: 0, Parameters: contract.TestParameters{
+	return contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: 0, Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10,
 		Valve: "Демо клапан", AreaM2: 0.01, PmaxPa: 1000, MeasurementSeconds: 1, Direction: "pressure", Actuator: false,
 	}}
 }
@@ -33,7 +33,7 @@ func TestCreatePreservesExactInputIdentityAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	base := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`
+	base := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":13,"postCloseStabilizationSeconds":17,"direction":"pressure","actuator":false}}`
 	var command contract.CreateTestCommand
 	first, err := validator.Inspect("CreateTestCommand", []byte(base), &command)
 	if err != nil || !first.Valid {
@@ -67,6 +67,10 @@ func TestCreatePreservesExactInputIdentityAcrossReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = store.Close() }()
+	record, err := store.Test(ctx, *created.TestId)
+	if err != nil || record.Parameters.PreOpenStabilizationSeconds != 13 || record.Parameters.PostCloseStabilizationSeconds != 17 {
+		t.Fatalf("reopened stabilization parameters: %+v %v", record.Parameters, err)
+	}
 	if _, err := store.CreateExact(ctx, changed, different.Identity); !errors.Is(err, ErrCommandConflict) {
 		t.Fatalf("conflict after reopen: %v", err)
 	}
@@ -82,7 +86,7 @@ func TestExactMeasurementDurationAboveLimitIsRejectedBeforeRounding(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":3600.0000000000001,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":3600.0000000000001,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
 	var command contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &command)
 	if err != nil || !input.Valid || command.Parameters.MeasurementSeconds != 3600 {
@@ -108,7 +112,7 @@ func TestCanonicalIdentityMayExceedInputLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"` + strings.Repeat("<", 200) + `","areaM2":1.` + strings.Repeat("0", 7400) + `1,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"` + strings.Repeat("<", 200) + `","areaM2":1.` + strings.Repeat("0", 7400) + `1,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
 	if len(body) >= 8192 {
 		t.Fatalf("input unexpectedly large: %d", len(body))
 	}

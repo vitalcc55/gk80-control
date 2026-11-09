@@ -1061,7 +1061,7 @@ func TestDemoSessionShutdownWithoutLeaseReportsCreateBeforeSnapshot(t *testing.T
 	defer session.close()
 	session.snapshot = &contract.Snapshot{BackendRunId: run, Revision: 5}
 	session.commands[commandID] = contract.CommandStatus{CommandId: commandID, TestId: &testID, Status: contract.CommandStatusStatusCompleted}
-	identity, err := commandIdentity("create", contract.CreateTestCommand{CommandId: commandID, ExpectedRevision: 5, Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
+	identity, err := commandIdentity("create", contract.CreateTestCommand{CommandId: commandID, ExpectedRevision: 5, Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1075,7 +1075,7 @@ func TestDemoSessionCreateCoverageUsesSnapshotRevisionAndBackend(t *testing.T) {
 	run, otherRun, testID, commandID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	session := newDemoSession(context.Background(), &testSessionClient{}, uuid.New(), run)
 	defer session.close()
-	identity, err := commandIdentity("create", contract.CreateTestCommand{CommandId: commandID, ExpectedRevision: 5, Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
+	identity, err := commandIdentity("create", contract.CreateTestCommand{CommandId: commandID, ExpectedRevision: 5, Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1121,7 +1121,7 @@ func TestOwnerSavedRecordConfirmsTestWithOlderSnapshot(t *testing.T) {
 			}
 			session := newDemoSession(context.Background(), client, uuid.New(), run)
 			defer session.close()
-			identity, err := commandIdentity("create", contract.CreateTestCommand{CommandId: createID, ExpectedRevision: 5, Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
+			identity, err := commandIdentity("create", contract.CreateTestCommand{CommandId: createID, ExpectedRevision: 5, Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1203,7 +1203,7 @@ func TestOwnerHistoryReadDoesNotReplaceCurrentSavedProof(t *testing.T) {
 	session.snapshot = &contract.Snapshot{BackendRunId: run, Revision: 10, ActiveTest: &contract.TestRecord{TestId: currentID, StopCommandId: currentStop, Stage: "finished", SaveStatus: "pending"}}
 	historicalCommand := uuid.New()
 	session.commands[historicalCommand] = contract.CommandStatus{CommandId: historicalCommand, TestId: &historicalID, Status: contract.CommandStatusStatusCompleted}
-	identity, err := commandIdentity("create", contract.CreateTestCommand{CommandId: historicalCommand, ExpectedRevision: 1, Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
+	identity, err := commandIdentity("create", contract.CreateTestCommand{CommandId: historicalCommand, ExpectedRevision: 1, Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1254,7 +1254,7 @@ func TestOwnerLateHistoryReadDoesNotPreventStoppingCurrentTest(t *testing.T) {
 	session.snapshot = &contract.Snapshot{BackendRunId: run, Revision: 5, ActiveTest: &contract.TestRecord{TestId: oldID, StopCommandId: oldStop, Stage: "running"}}
 	session.rememberStopLocked(*session.snapshot.ActiveTest)
 	createID := uuid.New()
-	identity, err := commandIdentity("create", contract.CreateTestCommand{CommandId: createID, ExpectedRevision: 1, Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
+	identity, err := commandIdentity("create", contract.CreateTestCommand{CommandId: createID, ExpectedRevision: 1, Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1298,7 +1298,7 @@ func TestDemoSessionRetainsUncoveredCreateAndReservesStop(t *testing.T) {
 	}
 	session := newDemoSession(context.Background(), client, uuid.New(), run)
 	defer session.close()
-	identity, err := commandIdentity("create", contract.CreateTestCommand{CommandId: createID, ExpectedRevision: 5, Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
+	identity, err := commandIdentity("create", contract.CreateTestCommand{CommandId: createID, ExpectedRevision: 5, Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1344,7 +1344,7 @@ func TestDemoSessionShutdownRechecksCreateAfterPendingLookup(t *testing.T) {
 	client.release = func(context.Context, uuid.UUID) error { return nil }
 	session := newDemoSession(context.Background(), client, uuid.New(), run)
 	defer session.close()
-	identity, err := commandIdentity("create", contract.CreateTestCommand{CommandId: commandID, ExpectedRevision: 5, Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
+	identity, err := commandIdentity("create", contract.CreateTestCommand{CommandId: commandID, ExpectedRevision: 5, Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2529,7 +2529,7 @@ func TestOwnerSessionRunsAndReopensCore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	create := contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: snapshot.Revision, Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}}
+	create := contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: snapshot.Revision, Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}}
 	service := NewService(owner)
 	body, err := json.Marshal(create)
 	if err != nil {
@@ -2644,7 +2644,7 @@ func TestOwnerSessionRunsAndReopensCore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lost := contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: snapshot.Revision, Parameters: contract.TestParameters{Valve: "lost", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}}
+	lost := contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: snapshot.Revision, Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "lost", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}}
 	bytes, err := json.Marshal(lost)
 	if err != nil {
 		t.Fatal(err)

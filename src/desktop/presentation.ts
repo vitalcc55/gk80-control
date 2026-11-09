@@ -25,6 +25,8 @@ export function parametersForDisplay(record: TestRecord): TestParameters {
     area: record.parameters.areaM2,
     pmax: record.parameters.pmaxPa,
     measurementSeconds: record.parameters.measurementSeconds,
+    preOpenStabilizationSeconds: record.parameters.preOpenStabilizationSeconds,
+    postCloseStabilizationSeconds: record.parameters.postCloseStabilizationSeconds,
     direction: 'pressure',
     actuator: false,
     voltage: 24,

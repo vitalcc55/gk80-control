@@ -27,7 +27,7 @@ func newTestEngine(t *testing.T, store Repository, equipment Equipment, runID uu
 }
 
 func command(seconds float64) contract.CreateTestCommand {
-	return contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{Valve: "Демо клапан", AreaM2: 0.01, PmaxPa: 1000, MeasurementSeconds: seconds, Direction: "pressure"}}
+	return contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "Демо клапан", AreaM2: 0.01, PmaxPa: 1000, MeasurementSeconds: seconds, Direction: "pressure"}}
 }
 
 func waitFor(t *testing.T, engine *Engine, predicate func(State) bool) State {
@@ -517,7 +517,7 @@ func TestRefreshPreservesExactCreateIdentityAfterLostResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
 	var command contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &command)
 	if err != nil || !input.Valid {
@@ -1331,7 +1331,7 @@ func TestRevocationStopsCreateCommittedBeforeResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
 	var cmd contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &cmd)
 	if err != nil || !input.Valid {
@@ -1394,7 +1394,7 @@ func TestRevocationResolvesCreateAfterUnknownResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
 	var cmd contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &cmd)
 	if err != nil || !input.Valid {
@@ -1607,7 +1607,7 @@ func TestShutdownRetriesLookupUntilRecoveryOrDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
 	var cmd contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &cmd)
 	if err != nil || !input.Valid {
@@ -1648,7 +1648,7 @@ func TestRevocationResolverStopsAtShutdown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
 	var cmd contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &cmd)
 	if err != nil || !input.Valid {
@@ -1693,7 +1693,7 @@ func TestRevocationResolvesAfterTransientLookupFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
 	var cmd contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &cmd)
 	if err != nil || !input.Valid {
@@ -1743,7 +1743,7 @@ func TestShutdownDeadlineIncludesUnresponsiveCreateLookup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
 	var cmd contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &cmd)
 	if err != nil || !input.Valid {
@@ -1820,7 +1820,7 @@ func TestShutdownCancelsRevocationLookup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
 	var cmd contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &cmd)
 	if err != nil || !input.Valid {
@@ -1874,7 +1874,7 @@ func TestShutdownCancelsPostCreateLookup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
 	var cmd contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &cmd)
 	if err != nil || !input.Valid {

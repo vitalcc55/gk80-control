@@ -59,6 +59,8 @@ const empty: FormParameters = {
   openSeconds: 3,
   closeSeconds: 3,
   measurementSeconds: 60,
+  preOpenStabilizationSeconds: 10,
+  postCloseStabilizationSeconds: 10,
 };
 function newDraft() {
   return { ...draftFrom(empty), area: '', pmax: '' };
@@ -751,6 +753,8 @@ function ActiveLiveApp({
                     area: value.areaM2,
                     pmax: value.pmaxPa,
                     measurementSeconds: value.measurementSeconds,
+                    preOpenStabilizationSeconds: value.preOpenStabilizationSeconds,
+                    postCloseStabilizationSeconds: value.postCloseStabilizationSeconds,
                   }),
                 );
                 setDraftAvailable(true);

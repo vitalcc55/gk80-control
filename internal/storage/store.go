@@ -229,7 +229,7 @@ func (s *Store) Close() error { return s.db.Close() }
 func valid(command contract.CreateTestCommand) bool {
 	p := command.Parameters
 	number := func(v float64) bool { return v > 0 && !math.IsInf(v, 0) && !math.IsNaN(v) }
-	return command.CommandId != uuid.Nil && command.ExpectedRevision >= 0 && strings.TrimSpace(p.Valve) != "" && utf8.RuneCountInString(p.Valve) <= 200 && p.Direction == "pressure" && !p.Actuator && number(p.AreaM2) && number(p.PmaxPa) && number(p.MeasurementSeconds) && p.MeasurementSeconds <= 3600
+	return command.CommandId != uuid.Nil && command.ExpectedRevision >= 0 && strings.TrimSpace(p.Valve) != "" && utf8.RuneCountInString(p.Valve) <= 200 && p.Direction == "pressure" && !p.Actuator && number(p.AreaM2) && number(p.PmaxPa) && number(p.MeasurementSeconds) && p.MeasurementSeconds <= 3600 && number(p.PreOpenStabilizationSeconds) && number(p.PostCloseStabilizationSeconds)
 }
 
 // LookupCreate resolves an uncertain response without re-executing the command.

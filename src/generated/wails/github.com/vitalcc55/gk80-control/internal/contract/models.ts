@@ -482,6 +482,16 @@ export interface TestParameters {
      */
     "measurementSeconds": number;
     "pmaxPa": number;
+
+    /**
+     * PostCloseStabilizationSeconds Длительность стабилизации после закрытия клапана, с.
+     */
+    "postCloseStabilizationSeconds": number;
+
+    /**
+     * PreOpenStabilizationSeconds Длительность стабилизации перед открытием клапана, с.
+     */
+    "preOpenStabilizationSeconds": number;
     "valve": string;
 }
 

@@ -300,7 +300,7 @@ func TestBrowserRoutesRunAndReopenCore(t *testing.T) {
 	}
 	handshake := *status.Handshake
 	view := waitProcessView(t, p, "initial live", func(v contract.SessionView) bool { return v.Connection.Status == contract.Live && v.Snapshot != nil })
-	create := contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: view.Snapshot.Revision, Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}}
+	create := contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: view.Snapshot.Revision, Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}}
 	createBody, err := json.Marshal(create)
 	if err != nil {
 		t.Fatal(err)

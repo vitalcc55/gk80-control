@@ -12,6 +12,8 @@ export interface TestParameters {
   openSeconds: number;
   closeSeconds: number;
   measurementSeconds: number;
+  preOpenStabilizationSeconds: number;
+  postCloseStabilizationSeconds: number;
 }
 
 export type FixtureId =

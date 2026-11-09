@@ -25,9 +25,21 @@ export interface Draft {
   openSeconds: string;
   closeSeconds: string;
   measurementSeconds: string;
+  preOpenStabilizationSeconds: string;
+  postCloseStabilizationSeconds: string;
 }
 type Errors = Partial<
-  Record<'valve' | 'area' | 'pmax' | 'openSeconds' | 'closeSeconds' | 'measurementSeconds', string>
+  Record<
+    | 'valve'
+    | 'area'
+    | 'pmax'
+    | 'openSeconds'
+    | 'closeSeconds'
+    | 'measurementSeconds'
+    | 'preOpenStabilizationSeconds'
+    | 'postCloseStabilizationSeconds',
+    string
+  >
 >;
 
 function RequiredLabel({ id, children }: { id?: string; children: ReactNode }) {
@@ -49,7 +61,13 @@ function positiveNumber(value: string): number | null {
 }
 
 function liveFieldError(
-  name: 'valve' | 'area' | 'pmax' | 'measurementSeconds',
+  name:
+    | 'valve'
+    | 'area'
+    | 'pmax'
+    | 'measurementSeconds'
+    | 'preOpenStabilizationSeconds'
+    | 'postCloseStabilizationSeconds',
   value: string,
 ): string | undefined {
   if (name === 'valve') {
@@ -89,6 +107,8 @@ export function draftFrom(parameters: TestParameters): Draft {
     openSeconds: draftNumber(parameters.openSeconds),
     closeSeconds: draftNumber(parameters.closeSeconds),
     measurementSeconds: draftNumber(parameters.measurementSeconds),
+    preOpenStabilizationSeconds: draftNumber(parameters.preOpenStabilizationSeconds),
+    postCloseStabilizationSeconds: draftNumber(parameters.postCloseStabilizationSeconds),
   };
 }
 
@@ -133,6 +153,12 @@ export function ParametersScreen({
     const measurementSeconds = live
       ? (durationResult?.value ?? null)
       : positiveNumber(draft.measurementSeconds);
+    const preOpenStabilizationSeconds = live
+      ? (exactPositiveDecimal(draft.preOpenStabilizationSeconds).value ?? null)
+      : positiveNumber(draft.preOpenStabilizationSeconds);
+    const postCloseStabilizationSeconds = live
+      ? (exactPositiveDecimal(draft.postCloseStabilizationSeconds).value ?? null)
+      : positiveNumber(draft.postCloseStabilizationSeconds);
     const openSeconds = positiveNumber(draft.openSeconds);
     const closeSeconds = positiveNumber(draft.closeSeconds);
     const nextErrors: Errors = {};
@@ -142,6 +168,10 @@ export function ParametersScreen({
     if (pmax === null) nextErrors.pmax = 'Введите максимальное давление больше нуля, Па.';
     if (measurementSeconds === null)
       nextErrors.measurementSeconds = 'Введите длительность больше нуля, с.';
+    if (preOpenStabilizationSeconds === null)
+      nextErrors.preOpenStabilizationSeconds = 'Введите длительность больше нуля, с.';
+    if (postCloseStabilizationSeconds === null)
+      nextErrors.postCloseStabilizationSeconds = 'Введите длительность больше нуля, с.';
     if (areaResult?.error === 'precision')
       nextErrors.area = 'Число нельзя передать без потери точности.';
     if (pressureResult?.error === 'precision')
@@ -151,7 +181,14 @@ export function ParametersScreen({
     if (durationResult?.error === 'range')
       nextErrors.measurementSeconds = 'Введите длительность не более 3600 с.';
     if (live) {
-      for (const field of ['valve', 'area', 'pmax', 'measurementSeconds'] as const) {
+      for (const field of [
+        'valve',
+        'area',
+        'pmax',
+        'measurementSeconds',
+        'preOpenStabilizationSeconds',
+        'postCloseStabilizationSeconds',
+      ] as const) {
         const error = liveFieldError(field, draft[field]);
         if (error) nextErrors[field] = error;
         else delete nextErrors[field];
@@ -163,7 +200,16 @@ export function ParametersScreen({
       nextErrors.closeSeconds = 'Введите длительность команды больше нуля, с.';
     setErrors(nextErrors);
     const firstInvalid = (
-      ['valve', 'area', 'pmax', 'measurementSeconds', 'openSeconds', 'closeSeconds'] as const
+      [
+        'valve',
+        'area',
+        'pmax',
+        'measurementSeconds',
+        'preOpenStabilizationSeconds',
+        'postCloseStabilizationSeconds',
+        'openSeconds',
+        'closeSeconds',
+      ] as const
     ).find((name) => nextErrors[name] !== undefined);
     if (firstInvalid !== undefined) {
       setFocusRequest({ field: firstInvalid });
@@ -172,6 +218,8 @@ export function ParametersScreen({
       area === null ||
       pmax === null ||
       measurementSeconds === null ||
+      preOpenStabilizationSeconds === null ||
+      postCloseStabilizationSeconds === null ||
       nextErrors.valve !== undefined ||
       (live && (draft.direction !== 'pressure' || draft.actuator)) ||
       (draft.actuator && (openSeconds === null || closeSeconds === null))
@@ -183,6 +231,8 @@ export function ParametersScreen({
       area,
       pmax,
       measurementSeconds,
+      preOpenStabilizationSeconds,
+      postCloseStabilizationSeconds,
       direction: draft.direction,
       actuator: draft.actuator,
       voltage: draft.voltage === '24' ? 24 : 220,
@@ -206,7 +256,12 @@ export function ParametersScreen({
     setDraft({ ...draft, [name]: value });
     if (
       live &&
-      (name === 'valve' || name === 'area' || name === 'pmax' || name === 'measurementSeconds')
+      (name === 'valve' ||
+        name === 'area' ||
+        name === 'pmax' ||
+        name === 'measurementSeconds' ||
+        name === 'preOpenStabilizationSeconds' ||
+        name === 'postCloseStabilizationSeconds')
     ) {
       setErrors((current) =>
         current[name] ? { ...current, [name]: liveFieldError(name, value) } : current,
@@ -314,6 +369,46 @@ export function ParametersScreen({
                 {errors.measurementSeconds && (
                   <small className="field-error" id="measurementSeconds-error">
                     {errors.measurementSeconds}
+                  </small>
+                )}
+              </label>
+              <label className="form-field">
+                <RequiredLabel id="preOpenStabilizationSeconds-label">
+                  Стабилизация перед открытием клапана, с
+                </RequiredLabel>
+                <input
+                  className="work-input"
+                  aria-labelledby="preOpenStabilizationSeconds-label"
+                  inputMode="decimal"
+                  value={draft.preOpenStabilizationSeconds}
+                  {...inputError('preOpenStabilizationSeconds')}
+                  onChange={(event) =>
+                    updateInput('preOpenStabilizationSeconds', event.target.value)
+                  }
+                />
+                {errors.preOpenStabilizationSeconds && (
+                  <small className="field-error" id="preOpenStabilizationSeconds-error">
+                    {errors.preOpenStabilizationSeconds}
+                  </small>
+                )}
+              </label>
+              <label className="form-field">
+                <RequiredLabel id="postCloseStabilizationSeconds-label">
+                  Стабилизация после закрытия клапана, с
+                </RequiredLabel>
+                <input
+                  className="work-input"
+                  aria-labelledby="postCloseStabilizationSeconds-label"
+                  inputMode="decimal"
+                  value={draft.postCloseStabilizationSeconds}
+                  {...inputError('postCloseStabilizationSeconds')}
+                  onChange={(event) =>
+                    updateInput('postCloseStabilizationSeconds', event.target.value)
+                  }
+                />
+                {errors.postCloseStabilizationSeconds && (
+                  <small className="field-error" id="postCloseStabilizationSeconds-error">
+                    {errors.postCloseStabilizationSeconds}
                   </small>
                 )}
               </label>
@@ -484,6 +579,14 @@ export function ActiveParametersScreen({ parameters }: { parameters: TestParamet
           <div>
             <dt>Длительность измерения</dt>
             <dd>{formatNumber(parameters.measurementSeconds)} с</dd>
+          </div>
+          <div>
+            <dt>Стабилизация перед открытием клапана</dt>
+            <dd>{formatNumber(parameters.preOpenStabilizationSeconds)} с</dd>
+          </div>
+          <div>
+            <dt>Стабилизация после закрытия клапана</dt>
+            <dd>{formatNumber(parameters.postCloseStabilizationSeconds)} с</dd>
           </div>
           <div>
             <dt>Направление</dt>

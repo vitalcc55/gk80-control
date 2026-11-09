@@ -1016,7 +1016,15 @@ export function createCommandCoordinator({
   }
 
   function create(
-    parameters: Pick<FormParameters, 'valve' | 'area' | 'pmax' | 'measurementSeconds'>,
+    parameters: Pick<
+      FormParameters,
+      | 'valve'
+      | 'area'
+      | 'pmax'
+      | 'measurementSeconds'
+      | 'preOpenStabilizationSeconds'
+      | 'postCloseStabilizationSeconds'
+    >,
   ) {
     if (!active) return Promise.resolve();
     const { snapshot } = currentView();
@@ -1031,6 +1039,8 @@ export function createCommandCoordinator({
           areaM2: parameters.area,
           pmaxPa: parameters.pmax,
           measurementSeconds: parameters.measurementSeconds,
+          preOpenStabilizationSeconds: parameters.preOpenStabilizationSeconds,
+          postCloseStabilizationSeconds: parameters.postCloseStabilizationSeconds,
           direction: TestParametersDirection.TestParametersDirectionPressure,
           actuator: false,
         },

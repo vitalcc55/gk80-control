@@ -80,7 +80,7 @@ func TestNativeClientRunsAndReopensDemo(t *testing.T) {
 	if err != nil || recovered.LeaseId != lease.LeaseId {
 		t.Fatalf("recover lease: %+v %v", recovered, err)
 	}
-	command := contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: 0, Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}}
+	command := contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: 0, Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 13, PostCloseStabilizationSeconds: 17, Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}}
 	created, err := client.CreateTest(ctx, lease.LeaseId, command)
 	if err != nil || created.Status != "completed" || created.TestId == nil {
 		t.Fatalf("create: %+v %v", created, err)
@@ -235,7 +235,7 @@ func TestNativeClientRunsAndReopensDemo(t *testing.T) {
 		t.Fatal(err)
 	}
 	record, err := client.Test(ctx, lease.LeaseId, id)
-	if err != nil || record.Outcome != "interrupted" || record.SaveStatus != "saved" || record.Parameters.Valve != "V" {
+	if err != nil || record.Outcome != "interrupted" || record.SaveStatus != "saved" || record.Parameters.Valve != "V" || record.Parameters.PreOpenStabilizationSeconds != 13 || record.Parameters.PostCloseStabilizationSeconds != 17 {
 		t.Fatalf("record: %+v %v", record, err)
 	}
 	stopped, err = client.LookupStopExact(ctx, lease.LeaseId, nextHandshake.DatabaseId, id, stopID, stopBody)

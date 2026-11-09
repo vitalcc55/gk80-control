@@ -60,7 +60,7 @@ func TestLeaseMutationGateBoundsRequestsWithoutBlockingStop(t *testing.T) {
 	if lease == nil {
 		t.Fatal("lease not granted")
 	}
-	created, err := lease.controller.Create(context.Background(), contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 60, Direction: "pressure"}})
+	created, err := lease.controller.Create(context.Background(), contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 60, Direction: "pressure"}})
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %+v %v", created, err)
 	}

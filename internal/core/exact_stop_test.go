@@ -54,7 +54,7 @@ func TestExactStopRouteReadsIdentityWithoutStartingEquipment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	create := contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: 0, Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}}
+	create := contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: 0, Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}}
 	created, err := store.Create(ctx, create)
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %+v %v", created, err)
@@ -165,7 +165,7 @@ func TestExactStopLookupDoesNotStopActiveEquipment(t *testing.T) {
 			t.Errorf("shutdown engine: %v", err)
 		}
 	}()
-	created, err := lease.controller.Create(ctx, contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
+	created, err := lease.controller.Create(ctx, contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %+v %v", created, err)
 	}

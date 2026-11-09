@@ -63,6 +63,8 @@ const record: TestRecord = {
     areaM2: 0.012,
     pmaxPa: 10000,
     measurementSeconds: 60,
+    preOpenStabilizationSeconds: 10,
+    postCloseStabilizationSeconds: 10,
     direction: TestParametersDirection.TestParametersDirectionPressure,
     actuator: false,
   },

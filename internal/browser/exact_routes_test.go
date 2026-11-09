@@ -25,7 +25,7 @@ func (f *exactRouteService) LookupCommandExact(ctx context.Context, database, ki
 
 func TestExactLookupRoutePreservesAttemptsAndRejectsInvalidRequests(t *testing.T) {
 	database, command, testID, action := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
-	body := `{"commandId":"` + command + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"` + command + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
 	start := `{"commandId":"` + command + `","expectedRevision":0,"valveClosed":true,"connectionConfirmed":true}`
 	confirm := `{"commandId":"` + command + `","expectedRevision":0}`
 	stop := `{ "commandId" : "` + command + `" }`

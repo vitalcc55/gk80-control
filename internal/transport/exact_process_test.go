@@ -106,7 +106,7 @@ func TestNativeExactLookupAfterLostCreateAndReopen(t *testing.T) {
 	var posts atomic.Int32
 	drop := &droppedCreateResponse{next: client.http.Transport, posts: &posts, enabled: true}
 	client.http.Transport = drop
-	command := contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: 0, Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}}
+	command := contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: 0, Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}}
 	body, err := json.Marshal(command)
 	if err != nil {
 		t.Fatal(err)

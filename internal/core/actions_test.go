@@ -57,7 +57,7 @@ func TestLeaseExpiryAndShutdownStopSimulatorOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := lease.controller.Create(context.Background(), contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
+	created, err := lease.controller.Create(context.Background(), contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestReadinessRejectsConcurrentStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := lease.controller.Create(context.Background(), contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
+	created, err := lease.controller.Create(context.Background(), contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestStartReadsHistoricalInvalidRejectionWithoutWritingNewOne(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer func() { _ = store.Close() }()
-	created, err := store.Create(context.Background(), contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
+	created, err := store.Create(context.Background(), contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -305,7 +305,7 @@ func TestStartUnknownResponseThenConfirmedSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := lease.controller.Create(context.Background(), contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
+	created, err := lease.controller.Create(context.Background(), contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -408,7 +408,7 @@ func TestRevokedConfirmDoesNotStartSimulatorAfterCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := lease.controller.Create(context.Background(), contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
+	created, err := lease.controller.Create(context.Background(), contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -476,7 +476,7 @@ func TestActiveStopBypassesSaturatedWorkers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := lease.controller.Create(context.Background(), contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
+	created, err := lease.controller.Create(context.Background(), contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -549,7 +549,7 @@ func TestStopLookupStorageFailureInterruptsActiveRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := lease.controller.Create(context.Background(), contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
+	created, err := lease.controller.Create(context.Background(), contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}

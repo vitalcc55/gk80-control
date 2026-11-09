@@ -170,7 +170,7 @@ func TestCoreShutdownRetainsResourcesForBlockedWriter(t *testing.T) {
 	}
 	token := lease.LeaseId.String()
 	var created contract.CommandStatus
-	body := fmt.Sprintf(`{"commandId":%q,"expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":10,"direction":"pressure","actuator":false}}`, uuid.NewString())
+	body := fmt.Sprintf(`{"commandId":%q,"expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":10,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`, uuid.NewString())
 	if code := send("POST", "/v1/tests", body, token, &created); code != http.StatusOK || created.TestId == nil {
 		t.Fatalf("create: %d %+v", code, created)
 	}

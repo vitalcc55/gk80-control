@@ -59,7 +59,7 @@ func TestRevokedOwnerCannotRegisterCreateAfterDelayedBody(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := &coreHTTP{secret: "secret", validator: validator, leases: leases, feed: newEventFeed(engine), engine: engine, store: store}
-	body := `{"commandId":"` + uuid.NewString() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"` + uuid.NewString() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
 	delayed := &delayedBody{entered: make(chan struct{}), release: make(chan struct{}), reader: strings.NewReader(body)}
 	req := httptest.NewRequest(http.MethodPost, "/v1/tests", nil)
 	req.Body = delayed
@@ -123,7 +123,7 @@ func TestLostCommitIsLoggedWhenStatusIsObserved(t *testing.T) {
 	}
 	handler := &coreHTTP{secret: "secret", validator: validator, leases: leases, feed: newEventFeed(engine), engine: engine, store: store, logger: logger.Application(diagnostics.ComponentCore)}
 	id := uuid.New()
-	body := `{"commandId":"` + id.String() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"` + id.String() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
 	request := func(method, path, body string) *http.Request {
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer secret")
@@ -204,7 +204,7 @@ func TestStoredReplayWinsOverConcurrentConflictingLookup(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := uuid.New()
-	body := `{"commandId":"` + id.String() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"` + id.String() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
 	var command contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &command)
 	if err != nil || !input.Valid {
@@ -310,7 +310,7 @@ func TestConcurrentReplayLogsOneExecution(t *testing.T) {
 	}
 	handler := &coreHTTP{secret: "secret", validator: validator, leases: leases, feed: newEventFeed(engine), engine: engine, store: store, logger: logger.Application(diagnostics.ComponentCore)}
 	id := uuid.New()
-	body := `{"commandId":"` + id.String() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"` + id.String() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
 	send := func(done chan<- int) {
 		req := httptest.NewRequest(http.MethodPost, "/v1/tests", strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer secret")
@@ -437,7 +437,7 @@ func testCommandStatusAcrossCreate(t *testing.T, sameID bool) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("status read did not start")
 	}
-	body := `{"commandId":"` + createID.String() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"` + createID.String() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
 	create := httptest.NewRecorder()
 	handler.ServeHTTP(create, request(http.MethodPost, "/v1/tests", body))
 	if create.Code != http.StatusOK {
@@ -489,13 +489,13 @@ func testCanceledCreateLookup(t *testing.T, blockAt int32) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := lease.controller.Create(context.Background(), contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 1, Direction: "pressure"}})
+	created, err := lease.controller.Create(context.Background(), contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 1, Direction: "pressure"}})
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}
 	handler := &coreHTTP{secret: "secret", validator: validator, leases: leases, feed: newEventFeed(engine), engine: engine, store: store}
 	id := uuid.New()
-	body := `{"commandId":"` + id.String() + `","expectedRevision":1,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"` + id.String() + `","expectedRevision":1,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
 	request := func(method, path, body string) *http.Request {
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer secret")
@@ -586,7 +586,7 @@ func TestCreateLookupStorageFailureStopsActiveRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := lease.controller.Create(context.Background(), contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
+	created, err := lease.controller.Create(context.Background(), contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -604,7 +604,7 @@ func TestCreateLookupStorageFailureStopsActiveRun(t *testing.T) {
 	}
 	wrapped.fail.Store(true)
 	handler := &coreHTTP{secret: "secret", validator: validator, leases: leases, feed: newEventFeed(engine), engine: engine, store: store}
-	body := `{"commandId":"` + uuid.NewString() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"` + uuid.NewString() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/tests", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer secret")
 	req.Header.Set(leaseHeader, lease.id.String())
@@ -674,7 +674,7 @@ func TestUnknownCreateThenConfirmedSnapshot(t *testing.T) {
 	}
 	handler := &coreHTTP{secret: "secret", validator: validator, leases: leases, feed: newEventFeed(engine), engine: engine, store: store}
 	commandID := uuid.New()
-	body := `{"commandId":"` + commandID.String() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"` + commandID.String() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
 	request := func(method, path, body string) *http.Request {
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer secret")
@@ -748,7 +748,7 @@ func TestSnapshotPreservesKnownStopWhenRecoveryFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := lease.controller.Create(context.Background(), contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 1, Direction: "pressure"}})
+	created, err := lease.controller.Create(context.Background(), contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 1, Direction: "pressure"}})
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -823,7 +823,7 @@ func TestReadinessRecoversConfirmedCreation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := lease.controller.Create(context.Background(), contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 1, Direction: "pressure"}})
+	created, err := lease.controller.Create(context.Background(), contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 1, Direction: "pressure"}})
 	if !errors.Is(err, context.DeadlineExceeded) || created.TestId == nil {
 		t.Fatalf("create: %+v %v", created, err)
 	}

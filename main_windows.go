@@ -91,7 +91,7 @@ func run() (resultErr error) {
 		if !filepath.IsAbs(local) {
 			return errors.New("local data directory unavailable")
 		}
-		profileDir = filepath.Join(local, "GK80", profileID)
+		profileDir = filepath.Join(local, "GK80", profileID, "workpoint")
 	}
 	if !filepath.IsAbs(profileDir) {
 		return errors.New("invalid demo profile directory")

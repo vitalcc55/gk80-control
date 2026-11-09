@@ -53,7 +53,7 @@ func validateJSON(t *testing.T, schema *jsonschema.Schema, value any, valid bool
 func TestCreateLookupAcceptsHistoricalValuesButRequiresFullStructure(t *testing.T) {
 	value := map[string]any{
 		"commandId": uuid.NewString(), "expectedRevision": 0,
-		"parameters": map[string]any{"valve": "V", "areaM2": 0, "pmaxPa": 1000, "measurementSeconds": 1, "direction": "pressure", "actuator": false},
+		"parameters": map[string]any{"valve": "V", "areaM2": 0, "pmaxPa": 1000, "measurementSeconds": 1, "preOpenStabilizationSeconds": 10, "postCloseStabilizationSeconds": 10, "direction": "pressure", "actuator": false},
 	}
 	validateJSON(t, schemaFor(t, "CreateTestCommand"), value, false)
 	lookup := schemaFor(t, "CreateTestLookupInput")
@@ -220,7 +220,7 @@ func TestDesktopReadyRequiresConfirmedDemoHandshake(t *testing.T) {
 
 func TestHistoricalMeasurementDurationRemainsValid(t *testing.T) {
 	schema := schemaFor(t, "TestParameters")
-	parameters := TestParameters{Valve: "Демо", AreaM2: 0.01, PmaxPa: 1000, MeasurementSeconds: 3600, Direction: "pressure"}
+	parameters := TestParameters{Valve: "Демо", AreaM2: 0.01, PmaxPa: 1000, MeasurementSeconds: 3600, PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Direction: "pressure"}
 	validateJSON(t, schema, parameters, true)
 	parameters.MeasurementSeconds = 3601
 	validateJSON(t, schema, parameters, true)

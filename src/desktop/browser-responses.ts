@@ -141,7 +141,16 @@ function desktopStatus(value: unknown): value is Contract.DesktopStatus {
 
 function parameters(value: unknown): value is Contract.TestParameters {
   return (
-    fields(value, ['valve', 'areaM2', 'pmaxPa', 'measurementSeconds', 'direction', 'actuator']) &&
+    fields(value, [
+      'valve',
+      'areaM2',
+      'pmaxPa',
+      'measurementSeconds',
+      'preOpenStabilizationSeconds',
+      'postCloseStabilizationSeconds',
+      'direction',
+      'actuator',
+    ]) &&
     text(value['valve']) &&
     [...value['valve']].length >= 1 &&
     [...value['valve']].length <= 200 &&
@@ -151,6 +160,10 @@ function parameters(value: unknown): value is Contract.TestParameters {
     value['pmaxPa'] > 0 &&
     finite(value['measurementSeconds']) &&
     value['measurementSeconds'] > 0 &&
+    finite(value['preOpenStabilizationSeconds']) &&
+    value['preOpenStabilizationSeconds'] > 0 &&
+    finite(value['postCloseStabilizationSeconds']) &&
+    value['postCloseStabilizationSeconds'] > 0 &&
     value['direction'] === 'pressure' &&
     value['actuator'] === false
   );

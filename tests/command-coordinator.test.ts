@@ -44,7 +44,14 @@ const coordinators: CommandCoordinator[] = [];
 let databaseId = '';
 let storageKey = '';
 const commandId = '986c2358-26df-4b09-bba3-1feaa576d488';
-const parameters = { valve: 'К-1', area: 0.012, pmax: 10000, measurementSeconds: 60 };
+const parameters = {
+  valve: 'К-1',
+  area: 0.012,
+  pmax: 10000,
+  measurementSeconds: 60,
+  preOpenStabilizationSeconds: 10,
+  postCloseStabilizationSeconds: 10,
+};
 const unknown: ExactLookupResult = {
   outcome: ExactLookupResultOutcome.ExactLookupResultOutcomeUnknown,
   command: null,
@@ -144,6 +151,8 @@ function runningRecord(): NonNullable<Snapshot['activeTest']> {
       areaM2: parameters.area,
       pmaxPa: parameters.pmax,
       measurementSeconds: parameters.measurementSeconds,
+      preOpenStabilizationSeconds: 10,
+      postCloseStabilizationSeconds: 10,
       direction: TestParametersDirection.TestParametersDirectionPressure,
       actuator: false,
     },
@@ -684,6 +693,8 @@ it('retains the creation notification when its consumer is disposed during publi
         areaM2: 0.012,
         pmaxPa: 10000,
         measurementSeconds: 60,
+        preOpenStabilizationSeconds: 10,
+        postCloseStabilizationSeconds: 10,
         direction: TestParametersDirection.TestParametersDirectionPressure,
         actuator: false,
       },

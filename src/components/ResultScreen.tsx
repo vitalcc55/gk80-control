@@ -105,6 +105,14 @@ export function ResultScreen({
                   <dt>Длительность измерения</dt>
                   <dd>{formatNumber(parameters.measurementSeconds)} с</dd>
                 </div>
+                <div>
+                  <dt>Стабилизация перед открытием клапана</dt>
+                  <dd>{formatNumber(parameters.preOpenStabilizationSeconds)} с</dd>
+                </div>
+                <div>
+                  <dt>Стабилизация после закрытия клапана</dt>
+                  <dd>{formatNumber(parameters.postCloseStabilizationSeconds)} с</dd>
+                </div>
               </dl>
             </div>
             <div className="work-surface result-section">

@@ -22,6 +22,8 @@ export const defaultParameters: TestParameters = {
   openSeconds: 3,
   closeSeconds: 3,
   measurementSeconds: 60,
+  preOpenStabilizationSeconds: 10,
+  postCloseStabilizationSeconds: 10,
 };
 
 const pressure: Measurement = {
