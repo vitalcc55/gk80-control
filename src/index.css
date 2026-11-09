@@ -338,6 +338,23 @@ h2 {
   margin-top: 6px;
   color: var(--muted);
 }
+.run-heading-content {
+  min-width: 0;
+  width: 100%;
+}
+.run-heading-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 16px;
+}
+.run-heading-row p {
+  margin-top: 0;
+  margin-left: auto;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
 .text-link {
   display: inline-flex;
   gap: 6px;

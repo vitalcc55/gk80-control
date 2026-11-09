@@ -47,7 +47,6 @@ function RunScreen({
   fixture,
   parameters,
   onResult,
-  onList,
   onFixture,
   step,
   onAdvance,
@@ -55,7 +54,6 @@ function RunScreen({
   fixture: Fixture;
   parameters: TestParameters;
   onResult: () => void;
-  onList: () => void;
   onFixture: (id: FixtureId) => void;
   step: number;
   onAdvance: () => void;
@@ -98,7 +96,6 @@ function RunScreen({
 
   return (
     <SharedRunScreen
-      onList={onList}
       subtitle={
         <>
           {parameters.id} · {parameters.valve} ·{' '}
@@ -431,7 +428,6 @@ export function App() {
           )}
           {screen === 'run' && (
             <RunScreen
-              onList={openList}
               fixture={fixture}
               parameters={parameters}
               step={step}

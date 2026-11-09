@@ -204,7 +204,7 @@ describe('подготовленные состояния оператора', (
     const user = userEvent.setup();
     window.history.replaceState(null, '', '/?fixture=measuring');
     render(<App />);
-    await user.click(screen.getByRole('button', { name: 'К испытаниям' }));
+    await user.click(screen.getByRole('button', { name: 'Испытания' }));
     expect(
       within(screen.getByRole('complementary', { name: 'Активное испытание' })).getByText(
         'Текущее испытание',
@@ -235,7 +235,7 @@ describe('подготовленные состояния оператора', (
       screen.getByRole('checkbox', { name: /Подключение соответствует направлению/ }),
     );
     await user.click(screen.getByRole('button', { name: 'Перейти к проведению' }));
-    await user.click(screen.getByRole('button', { name: 'К испытаниям' }));
+    await user.click(screen.getByRole('button', { name: 'Испытания' }));
     expect(screen.getByRole('button', { name: /Вернуться к испытанию.*Клапан П/ })).toBeTruthy();
     expect(screen.queryByRole('cell', { name: 'Завершено' })).toBeNull();
     expect(screen.queryByRole('button', { name: /^Открыть / })).toBeNull();
@@ -416,7 +416,7 @@ describe('подготовленные состояния оператора', (
     expect(within(differential).getByText('Неизвестно')).toBeTruthy();
     expect(new URLSearchParams(window.location.search).get('step')).toBe('0');
     expect(screen.queryByRole('button', { name: 'Показать результат' })).toBeNull();
-    await user.click(screen.getByRole('button', { name: 'К испытаниям' }));
+    await user.click(screen.getByRole('button', { name: 'Испытания' }));
     expect(screen.getByRole('button', { name: 'Новое испытание' })).toHaveProperty(
       'disabled',
       true,
@@ -618,7 +618,7 @@ describe('подготовленные состояния оператора', (
     await user.click(screen.getByRole('button', { name: 'Перейти к проведению' }));
     await user.click(screen.getByRole('button', { name: 'Подтверждаю завершение серии' }));
     expect(screen.getByRole('heading', { name: 'Выход на рабочее давление' })).toBeTruthy();
-    await user.click(screen.getByRole('button', { name: 'К испытаниям' }));
+    await user.click(screen.getByRole('button', { name: 'Испытания' }));
     await user.click(screen.getByRole('button', { name: 'Вернуться к испытанию' }));
     expect(screen.getByRole('heading', { name: 'Выход на рабочее давление' })).toBeTruthy();
     expect(screen.getByText(/Клапан П-7/)).toBeTruthy();

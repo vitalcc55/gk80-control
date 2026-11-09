@@ -1,4 +1,4 @@
-import { ArrowLeft, Check } from 'lucide-react';
+import { Check } from 'lucide-react';
 import type { ComponentProps, ReactNode, Ref } from 'react';
 import { MeasurementChart } from './MeasurementChart';
 import { PressureNotation } from './PressureNotation';
@@ -22,7 +22,6 @@ export function RunScreen({
   action,
   stop,
   headingRef,
-  onList,
 }: {
   subtitle: ReactNode;
   stages: readonly { id: string; label: string; state: 'done' | 'current' | 'next' | 'inactive' }[];
@@ -42,19 +41,15 @@ export function RunScreen({
   action?: ReactNode;
   stop?: ReactNode;
   headingRef?: Ref<HTMLHeadingElement>;
-  onList?: () => void;
 }) {
   return (
     <section aria-labelledby="run-title">
       <div className="page-heading run-heading">
-        <div>
-          {onList && (
-            <button className="text-link" type="button" onClick={onList}>
-              <ArrowLeft aria-hidden="true" size={16} /> К испытаниям
-            </button>
-          )}
-          <h1 id="run-title">Проведение испытания</h1>
-          <p>{subtitle}</p>
+        <div className="run-heading-content">
+          <div className="run-heading-row">
+            <h1 id="run-title">Проведение испытания</h1>
+            <p>{subtitle}</p>
+          </div>
         </div>
       </div>
       <div className="run-grid">
