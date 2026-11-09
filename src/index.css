@@ -351,7 +351,11 @@ h2 {
 }
 .run-grid {
   display: grid;
-  grid-template-columns: 205px minmax(390px, 1fr) 256px;
+  grid-template-columns: minmax(0, 1fr) 256px;
+  grid-template-areas:
+    "stages action"
+    "readings action"
+    "chart chart";
   gap: 15px;
   align-items: stretch;
 }
@@ -387,24 +391,36 @@ h2 {
 .stage-list {
   list-style: none;
   padding: 0;
-  margin: 22px 0 0;
+  margin: 16px 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  row-gap: 14px;
 }
 .stage {
-  display: grid;
-  grid-template-columns: 24px 1fr;
-  gap: 10px;
   position: relative;
-  padding-bottom: 18px;
+  display: flex;
+  flex: 0 0 calc(100% / 7);
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding-inline: 4px;
   color: var(--muted);
+  text-align: center;
 }
-.stage:not(:last-child):before {
+.stage:not(:last-child)::before {
   content: "";
   position: absolute;
-  left: 11px;
-  top: 24px;
-  bottom: 0;
-  width: 1px;
+  top: 11px;
+  left: 50%;
+  width: 100%;
+  height: 1px;
   background: var(--line);
+}
+.run-stages {
+  grid-area: stages;
+  min-width: 0;
 }
 .stage-marker {
   width: 23px;
@@ -440,13 +456,14 @@ h2 {
   color: var(--muted);
 }
 .run-content {
+  grid-area: readings;
   min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 14px;
 }
 .chart-panel {
-  grid-column: 1 / -1;
+  grid-area: chart;
   min-width: 0;
 }
 .measurement-top,
@@ -632,6 +649,7 @@ h2 {
   background: var(--surface-soft);
 }
 .action-panel {
+  grid-area: action;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
@@ -767,9 +785,6 @@ h2 {
   .stage-list {
     margin-top: 12px;
   }
-  .stage {
-    padding-bottom: 10px;
-  }
   .measurement-top,
   .chart-panel {
     padding: 14px 17px;
@@ -796,8 +811,14 @@ h2 {
     padding-inline: 22px;
   }
   .run-grid {
-    grid-template-columns: 180px minmax(350px, 1fr) 235px;
+    grid-template-columns: minmax(0, 1fr) 235px;
     gap: 10px;
+  }
+  .stage {
+    flex-basis: 25%;
+  }
+  .stage:nth-child(4n)::before {
+    display: none;
   }
   .reading strong {
     font-size: var(--font-title);
@@ -821,7 +842,7 @@ h2 {
     padding-inline: 16px;
   }
   .run-grid {
-    grid-template-columns: 165px minmax(350px, 1fr) 195px;
+    grid-template-columns: minmax(0, 1fr) 225px;
   }
   .run-stages {
     padding-inline: 10px;
@@ -832,10 +853,6 @@ h2 {
   .reading strong {
     white-space: normal;
     overflow-wrap: anywhere;
-  }
-  .stage {
-    grid-template-columns: 24px minmax(0, 1fr);
-    gap: 6px;
   }
   .stage strong {
     overflow-wrap: normal;
@@ -852,13 +869,20 @@ h2 {
     gap: 6px;
   }
   .run-grid {
-    grid-template-columns: 170px minmax(250px, 1fr) 205px;
+    grid-template-columns: minmax(0, 1fr) 225px;
   }
   .run-stages {
     padding-inline: 10px;
   }
   .stage {
+    flex-basis: calc(100% / 3);
     gap: 6px;
+  }
+  .stage:nth-child(4n)::before {
+    display: block;
+  }
+  .stage:nth-child(3n)::before {
+    display: none;
   }
   .stage strong {
     overflow-wrap: normal;
@@ -878,22 +902,11 @@ h2 {
 }
 @media (max-width: 900px) {
   .run-grid {
-    grid-template-columns: minmax(0, 1fr) minmax(180px, 205px);
-  }
-  .run-stages {
-    grid-column: 1 / -1;
+    grid-template-columns: minmax(0, 1fr) 225px;
   }
   .stage-list {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 8px;
+    row-gap: 12px;
     margin-top: 12px;
-  }
-  .stage {
-    padding-bottom: 0;
-  }
-  .stage:not(:last-child):before {
-    display: none;
   }
   .active-route-layout {
     grid-template-columns: minmax(0, 1fr) minmax(180px, 205px);
@@ -903,6 +916,24 @@ h2 {
   .run-grid,
   .active-route-layout {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .run-grid {
+    grid-template-areas:
+      "stages"
+      "readings"
+      "action"
+      "chart";
+  }
+}
+@media (max-width: 500px) {
+  .stage {
+    flex-basis: 50%;
+  }
+  .stage:nth-child(3n)::before {
+    display: block;
+  }
+  .stage:nth-child(2n)::before {
+    display: none;
   }
 }
 @media (max-height: 740px) {
