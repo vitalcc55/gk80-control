@@ -1117,6 +1117,91 @@ func TestNotReadyStartIsRejectedAndKeepsCommandIdentity(t *testing.T) {
 	}
 }
 
+func TestRecoveredConfirmationCannotStartNewTest(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := storage.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	oldCommand := command(60)
+	old, err := store.Create(ctx, oldCommand)
+	if err != nil || old.TestId == nil {
+		t.Fatalf("old create: %+v %v", old, err)
+	}
+	oldID := *old.TestId
+	oldAction := contract.PendingAction{ActionId: uuid.New(), TestId: oldID, Instruction: "Подтвердите начало демонстрационного измерения"}
+	oldStart := contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: 1, ValveClosed: true, ConnectionConfirmed: true}
+	if _, err := store.Start(ctx, oldID, oldStart, oldAction); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Confirm(ctx, oldID, oldAction.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteStart(ctx, oldID, oldStart.CommandId); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := storage.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store = reopened
+	if err := store.Recover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	oldRecord, err := store.Test(ctx, oldID)
+	if err != nil || oldRecord.Stage != "finished" || oldRecord.Outcome != "unknown" || oldRecord.DataQuality != "incomplete" || oldRecord.Parameters != oldCommand.Parameters {
+		t.Fatalf("recovered history: %+v %v", oldRecord, err)
+	}
+	oldAudit, err := store.Audit(ctx, oldID, 0, 100)
+	if err != nil || len(oldAudit) < 3 || oldAudit[2].ActionId == nil || *oldAudit[2].ActionId != oldAction.ActionId {
+		t.Fatalf("old confirmation missing: %+v %v", oldAudit, err)
+	}
+	simulator := &countedSimulator{}
+	engine := newTestEngine(t, store, simulator, uuid.New())
+	if state := engine.State(); state.Record != nil || state.PendingAction != nil || simulator.starts.Load() != 0 {
+		t.Fatalf("recovery resumed equipment: %+v", state)
+	}
+	newCommand := oldCommand
+	newCommand.CommandId = uuid.New()
+	newCommand.ExpectedRevision = engine.State().Revision
+	created, err := engine.Create(ctx, newCommand)
+	if err != nil || created.TestId == nil || *created.TestId == oldID {
+		t.Fatalf("new create: %+v %v", created, err)
+	}
+	newID := *created.TestId
+	start := contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: engine.State().Revision, ValveClosed: true, ConnectionConfirmed: true}
+	if _, err := engine.Start(ctx, newID, start); err != nil {
+		t.Fatal(err)
+	}
+	state := engine.State()
+	if state.Record == nil || state.PendingAction == nil || state.PendingAction.ActionId == oldAction.ActionId {
+		t.Fatalf("new action: %+v", state)
+	}
+	if _, err := engine.Confirm(ctx, newID, oldAction.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: state.Revision}); !errors.Is(err, storage.ErrActionMismatch) {
+		t.Fatalf("old action accepted: %v", err)
+	}
+	if simulator.starts.Load() != 0 || engine.State().PendingAction == nil || engine.State().PendingAction.ActionId != state.PendingAction.ActionId {
+		t.Fatal("old confirmation started equipment or replaced the new action")
+	}
+	if _, err := engine.Confirm(ctx, newID, state.PendingAction.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: state.Revision}); err != nil {
+		t.Fatal(err)
+	}
+	if simulator.starts.Load() != 1 {
+		t.Fatalf("new confirmation start count: %d", simulator.starts.Load())
+	}
+	if _, err := engine.Stop(ctx, newID, state.Record.StopCommandId); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, engine, func(state State) bool {
+		return state.Record != nil && state.Record.SaveStatus == "saved" && state.Record.Stage == "finished"
+	})
+}
+
 func TestWrongConfirmationDoesNotStartSimulator(t *testing.T) {
 	ctx := context.Background()
 	store, err := storage.Open(t.TempDir())

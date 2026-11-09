@@ -75,27 +75,18 @@ func (blockedExactCreate) LookupStopExact(context.Context, uuid.UUID, uuid.UUID)
 }
 
 func TestExactCreateLookupMatchesStoredIdentityWithoutExecuting(t *testing.T) {
-	store, err := storage.Open(t.TempDir())
+	dir := t.TempDir()
+	store, err := storage.Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = store.Close() }()
-	engine, err := demo.NewEngine(context.Background(), store, demo.NewSimulator(), uuid.New())
-	if err != nil {
-		t.Fatal(err)
-	}
+	t.Cleanup(func() { _ = store.Close() })
 	validator, err := contract.NewInputValidator()
 	if err != nil {
 		t.Fatal(err)
 	}
-	leases := newUILeases(engine, time.Minute)
-	defer leases.close()
-	lease, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)
-	if err != nil {
-		t.Fatal(err)
-	}
 	id := uuid.New()
-	body := `{"commandId":"` + id.String() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":10,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"` + id.String() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":10,"direction":"pressure","actuator":false}}`
 	var command contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &command)
 	if err != nil {
@@ -104,6 +95,24 @@ func TestExactCreateLookupMatchesStoredIdentityWithoutExecuting(t *testing.T) {
 	created, err := store.CreateExact(context.Background(), command, input.Identity)
 	if err != nil || created.TestId == nil {
 		t.Fatalf("setup create: %+v %v", created, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := storage.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store = reopened
+	engine, err := demo.NewEngine(context.Background(), store, demo.NewSimulator(), uuid.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	leases := newUILeases(engine, time.Minute)
+	defer leases.close()
+	lease, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)
+	if err != nil {
+		t.Fatal(err)
 	}
 	beforeAudit, err := store.AuditPage(context.Background(), *created.TestId, 0, 100)
 	if err != nil {
@@ -125,11 +134,11 @@ func TestExactCreateLookupMatchesStoredIdentityWithoutExecuting(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &matched); err != nil || response.Code != http.StatusOK || matched.CommandId != id || matched.TestId == nil || *matched.TestId != *created.TestId || matched.Status != contract.CommandStatusStatusCompleted {
 		t.Fatalf("match: %d %s %v", response.Code, response.Body.String(), err)
 	}
-	equivalent := strings.Replace(body, `"areaM2":1`, `"areaM2":1.0`, 1)
+	equivalent := strings.Replace(body, `"areaM2":1.0000000000000001`, `"areaM2":1.00000000000000010`, 1)
 	if response := request(equivalent, store.DatabaseID().String(), "secret"); response.Code != http.StatusOK {
 		t.Fatalf("equivalent number: %d %s", response.Code, response.Body.String())
 	}
-	changed := strings.Replace(body, `"areaM2":1`, `"areaM2":1.0000000000000001`, 1)
+	changed := strings.Replace(body, `"areaM2":1.0000000000000001`, `"areaM2":1`, 1)
 	if response := request(changed, store.DatabaseID().String(), "secret"); response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"command_conflict"`) {
 		t.Fatalf("exact numeric conflict: %d %s", response.Code, response.Body.String())
 	}
