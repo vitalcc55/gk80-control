@@ -337,7 +337,7 @@ func TestCreateRoutePreservesInputAndDelivery(t *testing.T) {
 	router = newRoutes(s, fake, fake)
 	server.Start()
 	id := uuid.NewString()
-	body := `{"commandId":"` + id + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"vacuum","actuator":false}}`
+	body := `{"commandId":"` + id + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"vacuum","actuator":false}}`
 	var expected desktop.CreateCommandInput
 	if err := json.Unmarshal([]byte(body), &expected); err != nil {
 		t.Fatal(err)
@@ -511,12 +511,12 @@ func TestDomainRouteRevocationCancelsCallAndSuppressesLateResult(t *testing.T) {
 			method, path, body := http.MethodGet, "/api/session/wait?after=1&afterSequence=2", ""
 			if mode == "create" {
 				method, path = http.MethodPost, "/api/tests"
-				body = `{"commandId":"` + uuid.NewString() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
+				body = `{"commandId":"` + uuid.NewString() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 			}
 			if mode == "exact" {
 				id := uuid.NewString()
 				method, path = http.MethodPost, "/api/commands/"+id+"/lookup-exact"
-				body = `{"commandId":"` + id + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
+				body = `{"commandId":"` + id + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 			}
 			r, err := http.NewRequest(method, server.URL+path, strings.NewReader(body))
 			if err != nil {

@@ -549,6 +549,7 @@ type CreateTestLookupInput struct {
 		Direction                     string  `json:"direction"`
 		MeasurementSeconds            float64 `json:"measurementSeconds"`
 		PmaxPa                        float64 `json:"pmaxPa"`
+		PostCloseStabilizationRetries int     `json:"postCloseStabilizationRetries"`
 		PostCloseStabilizationSeconds float64 `json:"postCloseStabilizationSeconds"`
 		PreOpenStabilizationSeconds   float64 `json:"preOpenStabilizationSeconds"`
 		Valve                         string  `json:"valve"`
@@ -745,9 +746,12 @@ type TestParameters struct {
 	AreaM2    float64                 `json:"areaM2"`
 	Direction TestParametersDirection `json:"direction"`
 
-	// MeasurementSeconds Для нового demo-испытания максимум 3600 секунд; точный повтор ранее принятой команды сохраняет прежний результат.
+	// MeasurementSeconds Длительность измерения в целых секундах.
 	MeasurementSeconds float64 `json:"measurementSeconds"`
 	PmaxPa             float64 `json:"pmaxPa"`
+
+	// PostCloseStabilizationRetries Допустимое число повторов стабилизации после закрытия.
+	PostCloseStabilizationRetries int `json:"postCloseStabilizationRetries"`
 
 	// PostCloseStabilizationSeconds Длительность стабилизации после закрытия клапана, с.
 	PostCloseStabilizationSeconds float64 `json:"postCloseStabilizationSeconds"`

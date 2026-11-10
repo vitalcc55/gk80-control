@@ -478,10 +478,15 @@ export interface TestParameters {
     "direction": TestParametersDirection;
 
     /**
-     * MeasurementSeconds Для нового demo-испытания максимум 3600 секунд; точный повтор ранее принятой команды сохраняет прежний результат.
+     * MeasurementSeconds Длительность измерения в целых секундах.
      */
     "measurementSeconds": number;
     "pmaxPa": number;
+
+    /**
+     * PostCloseStabilizationRetries Допустимое число повторов стабилизации после закрытия.
+     */
+    "postCloseStabilizationRetries": number;
 
     /**
      * PostCloseStabilizationSeconds Длительность стабилизации после закрытия клапана, с.

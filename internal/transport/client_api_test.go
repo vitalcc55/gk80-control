@@ -80,7 +80,7 @@ func TestNativeClientRunsAndReopensDemo(t *testing.T) {
 	if err != nil || recovered.LeaseId != lease.LeaseId {
 		t.Fatalf("recover lease: %+v %v", recovered, err)
 	}
-	command := contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: 0, Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 13, PostCloseStabilizationSeconds: 17, Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}}
+	command := contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: 0, Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 13, PostCloseStabilizationSeconds: 17, PostCloseStabilizationRetries: 7, Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 60, Direction: "pressure"}}
 	created, err := client.CreateTest(ctx, lease.LeaseId, command)
 	if err != nil || created.Status != "completed" || created.TestId == nil {
 		t.Fatalf("create: %+v %v", created, err)
@@ -235,7 +235,7 @@ func TestNativeClientRunsAndReopensDemo(t *testing.T) {
 		t.Fatal(err)
 	}
 	record, err := client.Test(ctx, lease.LeaseId, id)
-	if err != nil || record.Outcome != "interrupted" || record.SaveStatus != "saved" || record.Parameters.Valve != "V" || record.Parameters.PreOpenStabilizationSeconds != 13 || record.Parameters.PostCloseStabilizationSeconds != 17 {
+	if err != nil || record.Outcome != "interrupted" || record.SaveStatus != "saved" || record.Parameters.Valve != "V" || record.Parameters.PreOpenStabilizationSeconds != 13 || record.Parameters.PostCloseStabilizationSeconds != 17 || record.Parameters.PostCloseStabilizationRetries != 7 {
 		t.Fatalf("record: %+v %v", record, err)
 	}
 	stopped, err = client.LookupStopExact(ctx, lease.LeaseId, nextHandshake.DatabaseId, id, stopID, stopBody)
@@ -377,7 +377,7 @@ func TestNativeClientRejectsMismatchedCommandAndCursors(t *testing.T) {
 	next := int64(100)
 	one := int64(1)
 	other := uuid.New()
-	record := contract.TestRecord{TestId: testID, StopCommandId: uuid.New(), Demo: true, OperatorId: "demo", Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1, MeasurementSeconds: 1, Direction: "pressure"}, Stage: "preparing", Outcome: "pending", DataQuality: "pending", SaveStatus: "saved", CreatedAt: time.Now().UTC()}
+	record := contract.TestRecord{TestId: testID, StopCommandId: uuid.New(), Demo: true, OperatorId: "demo", Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1, MeasurementSeconds: 60, PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Direction: "pressure"}, Stage: "preparing", Outcome: "pending", DataQuality: "pending", SaveStatus: "saved", CreatedAt: time.Now().UTC()}
 	for _, tc := range []struct {
 		name string
 		body any
@@ -422,15 +422,15 @@ func TestNativeClientRejectsMismatchedCommandAndCursors(t *testing.T) {
 	}
 }
 
-func TestNativeClientReadsHistoricalDuration(t *testing.T) {
+func TestNativeClientRejectsOutOfRangeDuration(t *testing.T) {
 	id := uuid.New()
-	record := contract.TestRecord{TestId: id, StopCommandId: uuid.New(), Demo: true, OperatorId: "demo", Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1, MeasurementSeconds: 7200, Direction: "pressure"}, Stage: "finished", Outcome: "interrupted", DataQuality: "incomplete", SaveStatus: "saved", CreatedAt: time.Now().UTC()}
+	record := contract.TestRecord{TestId: id, StopCommandId: uuid.New(), Demo: true, OperatorId: "demo", Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1, MeasurementSeconds: 7200, PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Direction: "pressure"}, Stage: "finished", Outcome: "interrupted", DataQuality: "incomplete", SaveStatus: "saved", CreatedAt: time.Now().UTC()}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _ = json.NewEncoder(w).Encode(record) }))
 	defer server.Close()
 	client := &Client{endpoint: server.URL, secret: "secret", http: server.Client()}
 	result, err := client.Test(context.Background(), uuid.New(), id)
-	if err != nil || result.Parameters.MeasurementSeconds != 7200 {
-		t.Fatalf("historical record: %+v %v", result, err)
+	if err == nil {
+		t.Fatalf("out-of-range record accepted: %+v", result)
 	}
 }
 

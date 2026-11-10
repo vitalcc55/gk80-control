@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/vitalcc55/gk80-control/internal/contract"
@@ -18,8 +17,96 @@ import (
 
 func createCommand() contract.CreateTestCommand {
 	return contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: 0, Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10,
-		Valve: "Демо клапан", AreaM2: 0.01, PmaxPa: 1000, MeasurementSeconds: 1, Direction: "pressure", Actuator: false,
+		Valve: "Демо клапан", AreaM2: 0.01, PmaxPa: 1000, MeasurementSeconds: 60, Direction: "pressure", Actuator: false,
 	}}
+}
+
+func TestManualParametersPersistAndValidateBoundaries(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := createCommand()
+	command.Parameters.MeasurementSeconds = 300
+	command.Parameters.PreOpenStabilizationSeconds = 100
+	command.Parameters.PostCloseStabilizationSeconds = 10
+	command.Parameters.PostCloseStabilizationRetries = 0
+	result, err := store.Create(ctx, command)
+	if err != nil || result.TestId == nil {
+		t.Fatalf("create: %+v %v", result, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	record, err := store.Test(ctx, *result.TestId)
+	if err != nil || record.Parameters != command.Parameters {
+		t.Fatalf("reopen: %+v %v", record.Parameters, err)
+	}
+	status, err := store.LookupCreate(ctx, command)
+	if err != nil || status.TestId == nil || *status.TestId != *result.TestId {
+		t.Fatalf("lookup: %+v %v", status, err)
+	}
+	changed := command
+	changed.Parameters.PostCloseStabilizationRetries = 1
+	if _, err := store.LookupCreate(ctx, changed); !errors.Is(err, ErrCommandConflict) {
+		t.Fatalf("changed retries did not conflict: %v", err)
+	}
+	for _, change := range []func(*contract.TestParameters){
+		func(p *contract.TestParameters) { p.MeasurementSeconds = 59 },
+		func(p *contract.TestParameters) { p.MeasurementSeconds = 300.1 },
+		func(p *contract.TestParameters) { p.PreOpenStabilizationSeconds = 9 },
+		func(p *contract.TestParameters) { p.PostCloseStabilizationSeconds = 100.5 },
+		func(p *contract.TestParameters) { p.PostCloseStabilizationRetries = -1 },
+		func(p *contract.TestParameters) { p.PostCloseStabilizationRetries = 101 },
+	} {
+		invalid := command
+		invalid.CommandId = uuid.New()
+		change(&invalid.Parameters)
+		if valid(invalid) {
+			t.Fatalf("accepted invalid parameters: %+v", invalid.Parameters)
+		}
+	}
+}
+
+func TestPreviousDemoProfileIsNotModified(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(dir, "demo.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE retained_data (value TEXT); INSERT INTO retained_data VALUES ('preserved'); PRAGMA user_version = 3`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if store, err := Open(dir); err == nil {
+		_ = store.Close()
+		t.Fatal("old profile accepted")
+	}
+	db, err = sql.Open("sqlite", filepath.Join(dir, "demo.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	var value string
+	var version int
+	if err := db.QueryRow(`SELECT value FROM retained_data`).Scan(&value); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if value != "preserved" || version != 3 {
+		t.Fatalf("old profile changed: %q %d", value, version)
+	}
 }
 
 func TestCreatePreservesExactInputIdentityAcrossReopen(t *testing.T) {
@@ -33,7 +120,7 @@ func TestCreatePreservesExactInputIdentityAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	base := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":13,"postCloseStabilizationSeconds":17,"direction":"pressure","actuator":false}}`
+	base := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":13,"postCloseStabilizationSeconds":17,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	var command contract.CreateTestCommand
 	first, err := validator.Inspect("CreateTestCommand", []byte(base), &command)
 	if err != nil || !first.Valid {
@@ -86,10 +173,10 @@ func TestExactMeasurementDurationAboveLimitIsRejectedBeforeRounding(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":3600.0000000000001,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":300.00000000000001,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	var command contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &command)
-	if err != nil || !input.Valid || command.Parameters.MeasurementSeconds != 3600 {
+	if err != nil || command.Parameters.MeasurementSeconds != 300 {
 		t.Fatalf("inspect: %+v %v", command, err)
 	}
 	status, err := store.CreateExact(context.Background(), command, input.Identity)
@@ -112,7 +199,7 @@ func TestCanonicalIdentityMayExceedInputLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"` + strings.Repeat("<", 200) + `","areaM2":1.` + strings.Repeat("0", 7400) + `1,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"` + strings.Repeat("<", 200) + `","areaM2":1.` + strings.Repeat("0", 7400) + `1,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	if len(body) >= 8192 {
 		t.Fatalf("input unexpectedly large: %d", len(body))
 	}
@@ -177,7 +264,7 @@ func TestLegacyRejectedLongInputSurvivesCanonicalExpansion(t *testing.T) {
 	}
 	defer func() { _ = store.Close() }()
 	command := createCommand()
-	command.Parameters.Valve = strings.Repeat("V", 7900)
+	command.Parameters.Valve = strings.Repeat("V", 7850)
 	command.Parameters.AreaM2 = math.SmallestNonzeroFloat64
 	command.Parameters.PmaxPa = math.SmallestNonzeroFloat64
 	command.Parameters.MeasurementSeconds = math.SmallestNonzeroFloat64
@@ -600,205 +687,7 @@ func TestOpenRejectsInvalidDatabaseIdentity(t *testing.T) {
 	}
 }
 
-func TestFailedIdentityMigrationRollsBackVersionTwo(t *testing.T) {
-	ctx := context.Background()
-	dir := t.TempDir()
-	store, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	created, err := store.Create(ctx, createCommand())
-	if err != nil || created.TestId == nil {
-		_ = store.Close()
-		t.Fatalf("create: %+v %v", created, err)
-	}
-	for _, statement := range []string{
-		`ALTER TABLE meta DROP COLUMN database_id`,
-		`CREATE TRIGGER reject_identity BEFORE UPDATE ON meta BEGIN SELECT RAISE(ABORT, 'blocked'); END`,
-		`PRAGMA user_version = 2`,
-	} {
-		if _, err := store.db.Exec(statement); err != nil {
-			_ = store.Close()
-			t.Fatal(err)
-		}
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if migrated, err := Open(dir); err == nil {
-		_ = migrated.Close()
-		t.Fatal("migration succeeded despite rejected identity write")
-	} else if !strings.Contains(err.Error(), "blocked") {
-		t.Fatalf("migration did not reach the identity write: %v", err)
-	}
-	db, err := sql.Open("sqlite", filepath.Join(dir, "demo.sqlite"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
-	var version, columns, revision, records int
-	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 2 {
-		t.Fatalf("version %d: %v", version, err)
-	}
-	if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info('meta') WHERE name = 'database_id'`).Scan(&columns); err != nil || columns != 0 {
-		t.Fatalf("partially added identity column %d: %v", columns, err)
-	}
-	if err := db.QueryRow(`SELECT revision FROM meta WHERE id = 1`).Scan(&revision); err != nil || revision != 1 {
-		t.Fatalf("revision %d: %v", revision, err)
-	}
-	if err := db.QueryRow(`SELECT count(*) FROM tests WHERE id = ?`, created.TestId.String()).Scan(&records); err != nil || records != 1 {
-		t.Fatalf("historical records %d: %v", records, err)
-	}
-}
-
-func TestMigrationKeepsVersionTwoHistory(t *testing.T) {
-	ctx := context.Background()
-	dir := t.TempDir()
-	store, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	created, err := store.Create(ctx, createCommand())
-	if err != nil || created.TestId == nil {
-		_ = store.Close()
-		t.Fatalf("create: %+v %v", created, err)
-	}
-	if _, err := store.db.Exec(`ALTER TABLE meta DROP COLUMN database_id`); err != nil {
-		_ = store.Close()
-		t.Fatal(err)
-	}
-	if _, err := store.db.Exec(`PRAGMA user_version = 2`); err != nil {
-		_ = store.Close()
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store, err = Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = store.Close() }()
-	if store.DatabaseID() == uuid.Nil {
-		t.Fatal("missing migrated database identity")
-	}
-	record, err := store.Test(ctx, *created.TestId)
-	if err != nil || record.TestId != *created.TestId {
-		t.Fatalf("migrated record: %+v %v", record, err)
-	}
-	status, err := store.Command(ctx, created.CommandId)
-	if err != nil || status.Status != "completed" || status.TestId == nil || *status.TestId != *created.TestId {
-		t.Fatalf("migrated command: %+v %v", status, err)
-	}
-	audit, err := store.Audit(ctx, *created.TestId, 0, 10)
-	if err != nil || len(audit) != 1 || audit[0].Outcome != "completed" {
-		t.Fatalf("migrated audit: %+v %v", audit, err)
-	}
-	var version, revision int
-	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 3 {
-		t.Fatalf("version %d: %v", version, err)
-	}
-	if err := store.db.QueryRow(`SELECT revision FROM meta WHERE id = 1`).Scan(&revision); err != nil || revision != 1 {
-		t.Fatalf("revision %d: %v", revision, err)
-	}
-}
-
-func TestMigrationKeepsVersionOneHistory(t *testing.T) {
-	dir := t.TempDir()
-	db, err := sql.Open("sqlite", filepath.Join(dir, "demo.sqlite"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	statements := []string{
-		`CREATE TABLE meta (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL CHECK (revision >= 0))`,
-		`INSERT INTO meta VALUES (1, 7)`,
-		`CREATE TABLE tests (id TEXT PRIMARY KEY, record BLOB NOT NULL, stage TEXT NOT NULL)`,
-		`CREATE TABLE commands (id TEXT PRIMARY KEY, operation TEXT NOT NULL, request BLOB NOT NULL, status TEXT NOT NULL, test_id TEXT REFERENCES tests(id), reason TEXT, operator_id TEXT NOT NULL, occurred_at TEXT NOT NULL)`,
-		`CREATE TABLE audit (sequence INTEGER PRIMARY KEY AUTOINCREMENT, test_id TEXT NOT NULL REFERENCES tests(id), occurred_at TEXT NOT NULL, operator_id TEXT NOT NULL, action TEXT NOT NULL, outcome TEXT NOT NULL, revision INTEGER NOT NULL, command_id TEXT, action_id TEXT, reason TEXT)`,
-		`CREATE INDEX audit_by_test ON audit(test_id, sequence)`,
-		`PRAGMA user_version = 1`,
-	}
-	for _, statement := range statements {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
-	command := createCommand()
-	command.Parameters.MeasurementSeconds = 7200
-	testID, stopID := uuid.New(), uuid.New()
-	old := contract.TestRecord{TestId: testID, StopCommandId: stopID, Demo: true, OperatorId: "demo-operator", Parameters: command.Parameters, Stage: "preparing", Outcome: "pending", DataQuality: "pending", SaveStatus: "saved", CreatedAt: time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)}
-	oldJSON, err := json.Marshal(old)
-	if err != nil {
-		t.Fatal(err)
-	}
-	request, err := json.Marshal(command)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO tests(id, record, stage) VALUES (?, ?, 'preparing')`, testID.String(), oldJSON); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO commands(id, operation, request, status, test_id, operator_id, occurred_at) VALUES (?, 'create', ?, 'completed', ?, 'demo-operator', '2026-10-29T12:00:00Z')`, command.CommandId.String(), request, testID.String()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO commands(id, operation, request, status, test_id, operator_id, occurred_at) VALUES (?, 'stop', x'', 'reserved', ?, 'demo-operator', '2026-10-29T12:00:00Z')`, stopID.String(), testID.String()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO audit(test_id, occurred_at, operator_id, action, outcome, revision) VALUES (?, '2026-10-29T12:00:00Z', 'demo-operator', 'create', 'completed', 7)`, testID.String()); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = store.Close() }()
-	var version, revision, events int
-	var operation, status string
-	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 3 {
-		t.Fatalf("version %d: %v", version, err)
-	}
-	if err := store.db.QueryRow(`SELECT revision FROM meta WHERE id = 1`).Scan(&revision); err != nil || revision != 7 {
-		t.Fatalf("revision %d: %v", revision, err)
-	}
-	reopened, err := store.Test(context.Background(), testID)
-	if err != nil || reopened != old {
-		t.Fatalf("old record: %+v %v", reopened, err)
-	}
-	items, next, _, err := store.ListTests(context.Background(), contract.ListTestsParams{After: nil, Limit: new(1)})
-	if err != nil || len(items) != 1 || items[0] != old || next != nil {
-		t.Fatalf("old history page: %+v %v", items, err)
-	}
-	storedCommand, err := store.Command(context.Background(), command.CommandId)
-	if err != nil || storedCommand.Status != "completed" || storedCommand.TestId == nil || *storedCommand.TestId != testID {
-		t.Fatalf("old stored command: %+v %v", storedCommand, err)
-	}
-	oldAudit, err := store.AuditPage(context.Background(), testID, 0, 1)
-	if err != nil || len(oldAudit.Items) != 1 || oldAudit.NextAfter != nil {
-		t.Fatalf("old audit: %+v %v", oldAudit, err)
-	}
-	repeated, err := store.Create(context.Background(), command)
-	if err != nil || repeated.TestId == nil || *repeated.TestId != testID {
-		t.Fatalf("old command: %+v %v", repeated, err)
-	}
-	if err := store.db.QueryRow(`SELECT operation, status FROM commands WHERE id = ?`, stopID.String()).Scan(&operation, &status); err != nil || operation != "stop" || status != "reserved" {
-		t.Fatalf("reservation %s %s: %v", operation, status, err)
-	}
-	if err := store.db.QueryRow(`SELECT count(*) FROM audit WHERE test_id = ? AND sequence = 1`, testID.String()).Scan(&events); err != nil || events != 1 {
-		t.Fatalf("audit %d: %v", events, err)
-	}
-	if err := store.Recover(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	recovered, err := store.Test(context.Background(), testID)
-	if err != nil || recovered.Stage != "finished" || recovered.Outcome != "unknown" || recovered.Parameters.MeasurementSeconds != 7200 {
-		t.Fatalf("recovered old record: %+v %v", recovered, err)
-	}
-}
-
-func TestFailedMigrationLeavesVersionOneUntouched(t *testing.T) {
+func TestPreviousVersionOneProfileRemainsUntouched(t *testing.T) {
 	dir := t.TempDir()
 	db, err := sql.Open("sqlite", filepath.Join(dir, "demo.sqlite"))
 	if err != nil {

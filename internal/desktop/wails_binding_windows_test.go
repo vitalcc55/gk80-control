@@ -15,7 +15,7 @@ import (
 )
 
 func TestWailsBoundMethodUsesOriginalCommandDecoder(t *testing.T) {
-	body := []byte(`{"commandId":"00000000-0000-4000-8000-000000000001","expectedRevision":0,"parameters":{"valve":"V","areaM2":0.100,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`)
+	body := []byte(`{"commandId":"00000000-0000-4000-8000-000000000001","expectedRevision":0,"parameters":{"valve":"V","areaM2":0.100,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`)
 	method := &application.BoundMethod{
 		Method: reflect.ValueOf(func(input CreateCommandInput) bool {
 			return string(input.body) == string(body) && input.lossless
@@ -66,11 +66,11 @@ func TestWailsRegisteredBindingRejectsMissingFields(t *testing.T) {
 	if method == nil {
 		t.Fatal("create method was not registered")
 	}
-	invalid := json.RawMessage(`{"commandId":"00000000-0000-4000-8000-000000000001","parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`)
+	invalid := json.RawMessage(`{"commandId":"00000000-0000-4000-8000-000000000001","parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`)
 	if _, err := method.Call(context.Background(), []json.RawMessage{invalid}); err == nil || core.calls != 0 {
 		t.Fatal("registered Wails method accepted a missing revision")
 	}
-	valid := json.RawMessage(`{"commandId":"00000000-0000-4000-8000-000000000001","expectedRevision":0,"parameters":{"valve":"V","areaM2":0.100,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`)
+	valid := json.RawMessage(`{"commandId":"00000000-0000-4000-8000-000000000001","expectedRevision":0,"parameters":{"valve":"V","areaM2":0.100,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`)
 	if _, err := method.Call(context.Background(), []json.RawMessage{valid}); err != nil || core.calls != 1 || string(core.input.body) != string(valid) {
 		t.Fatalf("registered Wails method lost original input: calls=%d err=%v", core.calls, err)
 	}
@@ -78,7 +78,7 @@ func TestWailsRegisteredBindingRejectsMissingFields(t *testing.T) {
 	if lookup == nil {
 		t.Fatal("exact lookup method was not registered")
 	}
-	raw := `{"commandId":"00000000-0000-4000-8000-000000000001","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
+	raw := `{"commandId":"00000000-0000-4000-8000-000000000001","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	var lookupArgs []json.RawMessage
 	for _, value := range []string{"00000000-0000-4000-8000-000000000004", "create", "", "", "00000000-0000-4000-8000-000000000001", raw} {
 		encoded, err := json.Marshal(value)

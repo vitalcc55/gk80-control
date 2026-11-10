@@ -27,6 +27,7 @@ export interface Draft {
   measurementSeconds: string;
   preOpenStabilizationSeconds: string;
   postCloseStabilizationSeconds: string;
+  postCloseStabilizationRetries: string;
 }
 type Errors = Partial<
   Record<
@@ -37,7 +38,8 @@ type Errors = Partial<
     | 'closeSeconds'
     | 'measurementSeconds'
     | 'preOpenStabilizationSeconds'
-    | 'postCloseStabilizationSeconds',
+    | 'postCloseStabilizationSeconds'
+    | 'postCloseStabilizationRetries',
     string
   >
 >;
@@ -60,16 +62,14 @@ function positiveNumber(value: string): number | null {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
-function liveFieldError(
-  name:
-    | 'valve'
-    | 'area'
-    | 'pmax'
-    | 'measurementSeconds'
-    | 'preOpenStabilizationSeconds'
-    | 'postCloseStabilizationSeconds',
-  value: string,
-): string | undefined {
+function wholeNumber(value: string, min: number, max: number): number | null {
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const number = Number(trimmed);
+  return Number.isSafeInteger(number) && number >= min && number <= max ? number : null;
+}
+
+function liveFieldError(name: 'valve' | 'area' | 'pmax', value: string): string | undefined {
   if (name === 'valve') {
     const trimmed = trimDemoValve(value);
     if (!trimmed) return 'Укажите обозначение или наименование клапана.';
@@ -77,15 +77,12 @@ function liveFieldError(
       ? 'Укажите не более 200 корректных символов.'
       : undefined;
   }
-  const result = exactPositiveDecimal(value, name === 'measurementSeconds');
+  const result = exactPositiveDecimal(value);
   if (result.error === 'precision') return 'Число нельзя передать без потери точности.';
-  if (result.error === 'range') return 'Введите длительность не более 3600 с.';
   if (result.error === 'invalid')
     return name === 'area'
       ? 'Введите площадь больше нуля, м².'
-      : name === 'pmax'
-        ? 'Введите максимальное давление больше нуля, Па.'
-        : 'Введите длительность больше нуля, с.';
+      : 'Введите максимальное давление больше нуля, Па.';
   return undefined;
 }
 
@@ -109,6 +106,10 @@ export function draftFrom(parameters: TestParameters): Draft {
     measurementSeconds: draftNumber(parameters.measurementSeconds),
     preOpenStabilizationSeconds: draftNumber(parameters.preOpenStabilizationSeconds),
     postCloseStabilizationSeconds: draftNumber(parameters.postCloseStabilizationSeconds),
+    postCloseStabilizationRetries:
+      parameters.postCloseStabilizationRetries === null
+        ? ''
+        : String(parameters.postCloseStabilizationRetries),
   };
 }
 
@@ -117,7 +118,7 @@ interface ParametersScreenProps {
   draft: Draft;
   setDraft: Dispatch<SetStateAction<Draft>>;
   onBack: () => void;
-  onContinue: (parameters: TestParameters) => void;
+  onContinue: (parameters: TestParameters & { postCloseStabilizationRetries: number }) => void;
   live?: boolean;
   pending?: boolean;
   unavailable?: boolean;
@@ -147,18 +148,12 @@ export function ParametersScreen({
     event.preventDefault();
     const areaResult = live ? exactPositiveDecimal(draft.area) : undefined;
     const pressureResult = live ? exactPositiveDecimal(draft.pmax) : undefined;
-    const durationResult = live ? exactPositiveDecimal(draft.measurementSeconds, true) : undefined;
     const area = live ? (areaResult?.value ?? null) : positiveNumber(draft.area);
     const pmax = live ? (pressureResult?.value ?? null) : positiveNumber(draft.pmax);
-    const measurementSeconds = live
-      ? (durationResult?.value ?? null)
-      : positiveNumber(draft.measurementSeconds);
-    const preOpenStabilizationSeconds = live
-      ? (exactPositiveDecimal(draft.preOpenStabilizationSeconds).value ?? null)
-      : positiveNumber(draft.preOpenStabilizationSeconds);
-    const postCloseStabilizationSeconds = live
-      ? (exactPositiveDecimal(draft.postCloseStabilizationSeconds).value ?? null)
-      : positiveNumber(draft.postCloseStabilizationSeconds);
+    const measurementSeconds = wholeNumber(draft.measurementSeconds, 60, 300);
+    const preOpenStabilizationSeconds = wholeNumber(draft.preOpenStabilizationSeconds, 10, 100);
+    const postCloseStabilizationSeconds = wholeNumber(draft.postCloseStabilizationSeconds, 10, 100);
+    const postCloseStabilizationRetries = wholeNumber(draft.postCloseStabilizationRetries, 0, 100);
     const openSeconds = positiveNumber(draft.openSeconds);
     const closeSeconds = positiveNumber(draft.closeSeconds);
     const nextErrors: Errors = {};
@@ -167,28 +162,19 @@ export function ParametersScreen({
     if (area === null) nextErrors.area = 'Введите площадь больше нуля, м².';
     if (pmax === null) nextErrors.pmax = 'Введите максимальное давление больше нуля, Па.';
     if (measurementSeconds === null)
-      nextErrors.measurementSeconds = 'Введите длительность больше нуля, с.';
+      nextErrors.measurementSeconds = 'Введите целое число от 60 до 300 с.';
     if (preOpenStabilizationSeconds === null)
-      nextErrors.preOpenStabilizationSeconds = 'Введите длительность больше нуля, с.';
+      nextErrors.preOpenStabilizationSeconds = 'Введите целое число от 10 до 100 с.';
     if (postCloseStabilizationSeconds === null)
-      nextErrors.postCloseStabilizationSeconds = 'Введите длительность больше нуля, с.';
+      nextErrors.postCloseStabilizationSeconds = 'Введите целое число от 10 до 100 с.';
+    if (postCloseStabilizationRetries === null)
+      nextErrors.postCloseStabilizationRetries = 'Введите целое число от 0 до 100.';
     if (areaResult?.error === 'precision')
       nextErrors.area = 'Число нельзя передать без потери точности.';
     if (pressureResult?.error === 'precision')
       nextErrors.pmax = 'Число нельзя передать без потери точности.';
-    if (durationResult?.error === 'precision')
-      nextErrors.measurementSeconds = 'Число нельзя передать без потери точности.';
-    if (durationResult?.error === 'range')
-      nextErrors.measurementSeconds = 'Введите длительность не более 3600 с.';
     if (live) {
-      for (const field of [
-        'valve',
-        'area',
-        'pmax',
-        'measurementSeconds',
-        'preOpenStabilizationSeconds',
-        'postCloseStabilizationSeconds',
-      ] as const) {
+      for (const field of ['valve', 'area', 'pmax'] as const) {
         const error = liveFieldError(field, draft[field]);
         if (error) nextErrors[field] = error;
         else delete nextErrors[field];
@@ -207,6 +193,7 @@ export function ParametersScreen({
         'measurementSeconds',
         'preOpenStabilizationSeconds',
         'postCloseStabilizationSeconds',
+        'postCloseStabilizationRetries',
         'openSeconds',
         'closeSeconds',
       ] as const
@@ -220,6 +207,7 @@ export function ParametersScreen({
       measurementSeconds === null ||
       preOpenStabilizationSeconds === null ||
       postCloseStabilizationSeconds === null ||
+      postCloseStabilizationRetries === null ||
       nextErrors.valve !== undefined ||
       (live && (draft.direction !== 'pressure' || draft.actuator)) ||
       (draft.actuator && (openSeconds === null || closeSeconds === null))
@@ -233,6 +221,7 @@ export function ParametersScreen({
       measurementSeconds,
       preOpenStabilizationSeconds,
       postCloseStabilizationSeconds,
+      postCloseStabilizationRetries,
       direction: draft.direction,
       actuator: draft.actuator,
       voltage: draft.voltage === '24' ? 24 : 220,
@@ -255,14 +244,19 @@ export function ParametersScreen({
   function updateInput(name: keyof Errors, value: string) {
     setDraft({ ...draft, [name]: value });
     if (
-      live &&
-      (name === 'valve' ||
-        name === 'area' ||
-        name === 'pmax' ||
-        name === 'measurementSeconds' ||
-        name === 'preOpenStabilizationSeconds' ||
-        name === 'postCloseStabilizationSeconds')
+      name === 'measurementSeconds' ||
+      name === 'preOpenStabilizationSeconds' ||
+      name === 'postCloseStabilizationSeconds' ||
+      name === 'postCloseStabilizationRetries'
     ) {
+      const min =
+        name === 'measurementSeconds' ? 60 : name === 'postCloseStabilizationRetries' ? 0 : 10;
+      const max = name === 'measurementSeconds' ? 300 : 100;
+      if (wholeNumber(value, min, max) !== null)
+        setErrors((current) => ({ ...current, [name]: undefined }));
+      return;
+    }
+    if (live && (name === 'valve' || name === 'area' || name === 'pmax')) {
       setErrors((current) =>
         current[name] ? { ...current, [name]: liveFieldError(name, value) } : current,
       );
@@ -272,8 +266,8 @@ export function ParametersScreen({
       name === 'valve'
         ? value.trim() !== '' &&
           (!live || (Array.from(value.trim()).length <= 200 && !/\p{Surrogate}/u.test(value)))
-        : live && (name === 'area' || name === 'pmax' || name === 'measurementSeconds')
-          ? exactPositiveDecimal(value, name === 'measurementSeconds').value !== undefined
+        : live && (name === 'area' || name === 'pmax')
+          ? exactPositiveDecimal(value).value !== undefined
           : positiveNumber(value) !== null;
     if (valid) {
       setErrors((current) => ({ ...current, [name]: undefined }));
@@ -409,6 +403,26 @@ export function ParametersScreen({
                 {errors.postCloseStabilizationSeconds && (
                   <small className="field-error" id="postCloseStabilizationSeconds-error">
                     {errors.postCloseStabilizationSeconds}
+                  </small>
+                )}
+              </label>
+              <label className="form-field">
+                <RequiredLabel id="postCloseStabilizationRetries-label">
+                  Допустимое число повторов стабилизации после закрытия
+                </RequiredLabel>
+                <input
+                  className="work-input"
+                  aria-labelledby="postCloseStabilizationRetries-label"
+                  inputMode="numeric"
+                  value={draft.postCloseStabilizationRetries}
+                  {...inputError('postCloseStabilizationRetries')}
+                  onChange={(event) =>
+                    updateInput('postCloseStabilizationRetries', event.target.value)
+                  }
+                />
+                {errors.postCloseStabilizationRetries && (
+                  <small className="field-error" id="postCloseStabilizationRetries-error">
+                    {errors.postCloseStabilizationRetries}
                   </small>
                 )}
               </label>
@@ -587,6 +601,10 @@ export function ActiveParametersScreen({ parameters }: { parameters: TestParamet
           <div>
             <dt>Стабилизация после закрытия клапана</dt>
             <dd>{formatNumber(parameters.postCloseStabilizationSeconds)} с</dd>
+          </div>
+          <div>
+            <dt>Повторы стабилизации после закрытия</dt>
+            <dd>{parameters.postCloseStabilizationRetries ?? 'Не указано'}</dd>
           </div>
           <div>
             <dt>Направление</dt>

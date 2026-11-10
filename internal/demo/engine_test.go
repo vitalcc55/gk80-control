@@ -26,6 +26,17 @@ func newTestEngine(t *testing.T, store Repository, equipment Equipment, runID uu
 	return engine
 }
 
+func advanceMeasurementOnNextSample(engine *Engine) {
+	start := time.Now()
+	var calls atomic.Int64
+	engine.measurementNow = func() time.Time {
+		if calls.Add(1) == 1 {
+			return start
+		}
+		return start.Add(60 * time.Second)
+	}
+}
+
 func command(seconds float64) contract.CreateTestCommand {
 	return contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "Демо клапан", AreaM2: 0.01, PmaxPa: 1000, MeasurementSeconds: seconds, Direction: "pressure"}}
 }
@@ -57,10 +68,12 @@ func TestMeasurementTimingUsesAcceptedSamplesAndEndsWithMeasurement(t *testing.T
 			}
 			defer func() { _ = store.Close() }()
 			engine := newTestEngine(t, store, NewSimulator(), uuid.New())
-			duration := 1.1
+			duration := 60.0
 			var stopped State
 			if stop {
-				duration = 30
+				duration = 60
+			} else {
+				advanceMeasurementOnNextSample(engine)
 			}
 			created, err := engine.Create(ctx, command(duration))
 			if err != nil || created.TestId == nil {
@@ -139,7 +152,8 @@ func TestSimulatorRunPersistsMeasurementsAndReopens(t *testing.T) {
 		t.Fatal(err)
 	}
 	engine := newTestEngine(t, store, NewSimulator(), uuid.New())
-	created, err := engine.Create(ctx, command(0.05))
+	advanceMeasurementOnNextSample(engine)
+	created, err := engine.Create(ctx, command(60))
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %+v %v", created, err)
 	}
@@ -200,7 +214,7 @@ func TestSimulatorRunPersistsMeasurementsAndReopens(t *testing.T) {
 	if samples[0].Channel != "dd1" || samples[1].Channel != "dd2" || samples[2].Channel != "dd3" || samples[0].Source != "simulator" || samples[0].Unit != "Pa" || samples[0].Value == nil || samples[3].Value == nil || *samples[0].Value == *samples[3].Value {
 		t.Fatalf("simulated channels: %+v", samples)
 	}
-	next := command(0.05)
+	next := command(60)
 	next.ExpectedRevision = result.Revision
 	if _, err := engine.Create(ctx, next); err != nil {
 		t.Fatalf("create after completion using snapshot revision %d: %v", result.Revision, err)
@@ -307,7 +321,7 @@ func TestOtherTestRejectionDeadlineDoesNotStopActiveRun(t *testing.T) {
 			blocked := &blockedRejection{Store: store, entered: make(chan struct{}), result: "not_started"}
 			simulator := &countedSimulator{}
 			engine := newTestEngine(t, blocked, simulator, uuid.New())
-			created, err := engine.Create(ctx, command(20))
+			created, err := engine.Create(ctx, command(60))
 			if err != nil || created.TestId == nil {
 				t.Fatalf("create: %v", err)
 			}
@@ -367,7 +381,7 @@ func TestOtherTestRejectionFailureStillStopsActiveRun(t *testing.T) {
 			blocked := &blockedRejection{Store: store, entered: make(chan struct{}), result: failure}
 			simulator := &countedSimulator{}
 			engine := newTestEngine(t, blocked, simulator, uuid.New())
-			created, err := engine.Create(context.Background(), command(20))
+			created, err := engine.Create(context.Background(), command(60))
 			if err != nil || created.TestId == nil {
 				t.Fatalf("create: %v", err)
 			}
@@ -425,7 +439,7 @@ func TestClientLookupDeadlineDoesNotStopSimulator(t *testing.T) {
 	defer func() { _ = store.Close() }()
 	simulator := &countedSimulator{}
 	engine := newTestEngine(t, &timedOutLookup{Store: store}, simulator, uuid.New())
-	created, err := engine.Create(context.Background(), command(1))
+	created, err := engine.Create(context.Background(), command(60))
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -466,7 +480,8 @@ func TestCommittedCommandsContinueAfterClientCancellation(t *testing.T) {
 	defer func() { _ = store.Close() }()
 	wrapped := &canceledResponse{Store: store}
 	engine := newTestEngine(t, wrapped, NewSimulator(), uuid.New())
-	created, err := engine.Create(context.Background(), command(0.05))
+	advanceMeasurementOnNextSample(engine)
+	created, err := engine.Create(context.Background(), command(60))
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -517,7 +532,7 @@ func TestRefreshPreservesExactCreateIdentityAfterLostResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	var command contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &command)
 	if err != nil || !input.Valid {
@@ -557,7 +572,7 @@ func TestRefreshFindsCreatedTestAfterLostCommitResponse(t *testing.T) {
 	}
 	defer func() { _ = store.Close() }()
 	engine := newTestEngine(t, &lostCreateResponse{Store: store}, NewSimulator(), uuid.New())
-	if _, err := engine.Create(context.Background(), command(1)); !errors.Is(err, context.DeadlineExceeded) {
+	if _, err := engine.Create(context.Background(), command(60)); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("create: %v", err)
 	}
 	if err := engine.Refresh(context.Background()); err != nil {
@@ -584,7 +599,7 @@ func TestRefreshFindsCreatedTestAfterLostRead(t *testing.T) {
 	defer func() { _ = store.Close() }()
 	wrapped := &failedCreateRead{Store: store, fail: true}
 	engine := newTestEngine(t, wrapped, NewSimulator(), uuid.New())
-	created, err := engine.Create(context.Background(), command(1))
+	created, err := engine.Create(context.Background(), command(60))
 	if !errors.Is(err, context.DeadlineExceeded) || created.TestId == nil {
 		t.Fatalf("expected uncertain response: %+v %v", created, err)
 	}
@@ -623,7 +638,7 @@ func TestFailedStopIsAuditedAndDoesNotReleaseTest(t *testing.T) {
 	simulator := &failingStopSimulator{}
 	engine := newTestEngine(t, store, simulator, uuid.New())
 	events, _ := engine.CommandEvents()
-	created, err := engine.Create(ctx, command(1))
+	created, err := engine.Create(ctx, command(60))
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -655,7 +670,7 @@ func TestFailedStopIsAuditedAndDoesNotReleaseTest(t *testing.T) {
 	if err != nil || status.Status != "failed" {
 		t.Fatalf("stored stop: %+v %v", status, err)
 	}
-	next := command(1)
+	next := command(60)
 	next.ExpectedRevision = state.Revision
 	if _, err := engine.Create(ctx, next); !errors.Is(err, storage.ErrActiveTest) {
 		t.Fatalf("new test after failed stop: %v", err)
@@ -680,7 +695,7 @@ func TestStopDoesNotWaitForDelayedStartAndPreventsLateStart(t *testing.T) {
 	delayed := &stalledStart{Store: store, entered: make(chan struct{}), release: make(chan struct{})}
 	simulator := &countedSimulator{}
 	engine := newTestEngine(t, delayed, simulator, uuid.New())
-	created, err := engine.Create(ctx, command(1))
+	created, err := engine.Create(ctx, command(60))
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -740,7 +755,7 @@ func TestNaturalCompletionStopsWhenMeasurementWriteStalls(t *testing.T) {
 	}()
 	simulator := &countedSimulator{}
 	engine := newTestEngine(t, blocked, simulator, uuid.New())
-	created, err := engine.Create(ctx, command(0.05))
+	created, err := engine.Create(ctx, command(60))
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -824,7 +839,7 @@ func TestStopBypassesBlockedMeasurementStorage(t *testing.T) {
 	blocked := &blockedSamples{Store: store, entered: make(chan struct{}), release: make(chan struct{})}
 	simulator := &countedSimulator{}
 	engine := newTestEngine(t, blocked, simulator, uuid.New())
-	created, err := engine.Create(ctx, command(1))
+	created, err := engine.Create(ctx, command(60))
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -903,7 +918,8 @@ func TestRefreshPersistsCompletedRunAfterWriteDeadline(t *testing.T) {
 	}
 	defer func() { _ = store.Close() }()
 	engine := newTestEngine(t, &delayedCompleteCommit{Store: store}, NewSimulator(), uuid.New())
-	create := command(0.05)
+	advanceMeasurementOnNextSample(engine)
+	create := command(60)
 	created, err := engine.Create(ctx, create)
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
@@ -955,7 +971,7 @@ func TestRefreshPersistsConfirmedStopAfterWriteDeadline(t *testing.T) {
 	defer func() { _ = store.Close() }()
 	simulator := &countedSimulator{}
 	engine := newTestEngine(t, &delayedStopCommit{Store: store}, simulator, uuid.New())
-	created, err := engine.Create(ctx, command(1))
+	created, err := engine.Create(ctx, command(60))
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -968,7 +984,7 @@ func TestRefreshPersistsConfirmedStopAfterWriteDeadline(t *testing.T) {
 	if err := waitForStop(ctx, engine.active.stopDone); err != nil {
 		t.Fatal(err)
 	}
-	next := command(1)
+	next := command(60)
 	next.ExpectedRevision = state.Revision
 	if _, err := engine.Create(ctx, next); !errors.Is(err, ErrBusy) {
 		t.Fatalf("create during uncertain stop: %v", err)
@@ -998,7 +1014,7 @@ func TestInvalidMeasurementRecordsSystemStop(t *testing.T) {
 	}
 	defer func() { _ = store.Close() }()
 	engine := newTestEngine(t, &invalidSamples{Store: store}, &countedSimulator{}, uuid.New())
-	created, err := engine.Create(ctx, command(1))
+	created, err := engine.Create(ctx, command(60))
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -1035,7 +1051,7 @@ func TestInvalidMeasurementRecordsSystemStop(t *testing.T) {
 	if _, err := engine.Start(ctx, id, late); !errors.Is(err, storage.ErrInvalidState) {
 		t.Fatalf("late start: %v", err)
 	}
-	next := command(1)
+	next := command(60)
 	next.ExpectedRevision = result.Revision
 	newTest, err := engine.Create(ctx, next)
 	if err != nil || newTest.TestId == nil {
@@ -1063,7 +1079,7 @@ func TestStorageFailureStopsSimulatorWithoutClaimingSaved(t *testing.T) {
 	defer func() { _ = store.Close() }()
 	simulator := &countedSimulator{}
 	engine := newTestEngine(t, &failingSamples{Store: store}, simulator, uuid.New())
-	created, err := engine.Create(ctx, command(1))
+	created, err := engine.Create(ctx, command(60))
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -1097,7 +1113,7 @@ func TestNotReadyStartIsRejectedAndKeepsCommandIdentity(t *testing.T) {
 	}
 	defer func() { _ = store.Close() }()
 	engine := newTestEngine(t, store, &unavailableSimulator{}, uuid.New())
-	created, err := engine.Create(ctx, command(1))
+	created, err := engine.Create(ctx, command(60))
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -1211,7 +1227,7 @@ func TestWrongConfirmationDoesNotStartSimulator(t *testing.T) {
 	defer func() { _ = store.Close() }()
 	simulator := &countedSimulator{}
 	engine := newTestEngine(t, store, simulator, uuid.New())
-	created, err := engine.Create(ctx, command(1))
+	created, err := engine.Create(ctx, command(60))
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -1268,7 +1284,7 @@ func TestStopPreventsSimulatorStartAfterDelayedConfirmation(t *testing.T) {
 	delayed := &stalledConfirm{Store: store, entered: make(chan struct{}), release: make(chan struct{})}
 	simulator := &countedSimulator{}
 	engine := newTestEngine(t, delayed, simulator, uuid.New())
-	created, err := engine.Create(ctx, command(1))
+	created, err := engine.Create(ctx, command(60))
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -1331,7 +1347,7 @@ func TestRevocationStopsCreateCommittedBeforeResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	var cmd contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &cmd)
 	if err != nil || !input.Valid {
@@ -1349,7 +1365,7 @@ func TestRevocationStopsCreateCommittedBeforeResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new client cannot observe pending create: %v", err)
 	}
-	if _, err := next.Create(context.Background(), command(1)); !errors.Is(err, ErrBusy) {
+	if _, err := next.Create(context.Background(), command(60)); !errors.Is(err, ErrBusy) {
 		t.Fatalf("pending create admitted another action: %v", err)
 	}
 	close(held.release)
@@ -1394,7 +1410,7 @@ func TestRevocationResolvesCreateAfterUnknownResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	var cmd contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &cmd)
 	if err != nil || !input.Valid {
@@ -1425,7 +1441,7 @@ func TestRevocationPreventsLateConfirmation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := controller.Create(context.Background(), command(1))
+	created, err := controller.Create(context.Background(), command(60))
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -1468,7 +1484,7 @@ func TestShutdownStopsSimulatorWithoutWaitingForBlockedWriter(t *testing.T) {
 	blocked := &blockedSamples{Store: store, entered: make(chan struct{}), release: make(chan struct{})}
 	sim := &countedSimulator{}
 	engine := newTestEngine(t, blocked, sim, uuid.New())
-	created, err := engine.Create(context.Background(), command(1))
+	created, err := engine.Create(context.Background(), command(60))
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -1510,7 +1526,7 @@ func TestShutdownReportsFailedSimulatorStop(t *testing.T) {
 	}
 	defer func() { _ = store.Close() }()
 	engine := newTestEngine(t, store, &failingStopSimulator{}, uuid.New())
-	if _, err := engine.Create(context.Background(), command(1)); err != nil {
+	if _, err := engine.Create(context.Background(), command(60)); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1543,7 +1559,8 @@ func TestShutdownWaitsForNaturalCompletion(t *testing.T) {
 	defer func() { _ = store.Close() }()
 	held := &heldComplete{Store: store, entered: make(chan struct{}), release: make(chan struct{})}
 	engine := newTestEngine(t, held, &countedSimulator{}, uuid.New())
-	created, err := engine.Create(context.Background(), command(0.05))
+	advanceMeasurementOnNextSample(engine)
+	created, err := engine.Create(context.Background(), command(60))
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -1607,7 +1624,7 @@ func TestShutdownRetriesLookupUntilRecoveryOrDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	var cmd contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &cmd)
 	if err != nil || !input.Valid {
@@ -1648,7 +1665,7 @@ func TestRevocationResolverStopsAtShutdown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	var cmd contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &cmd)
 	if err != nil || !input.Valid {
@@ -1693,7 +1710,7 @@ func TestRevocationResolvesAfterTransientLookupFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	var cmd contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &cmd)
 	if err != nil || !input.Valid {
@@ -1743,7 +1760,7 @@ func TestShutdownDeadlineIncludesUnresponsiveCreateLookup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	var cmd contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &cmd)
 	if err != nil || !input.Valid {
@@ -1820,7 +1837,7 @@ func TestShutdownCancelsRevocationLookup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	var cmd contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &cmd)
 	if err != nil || !input.Valid {
@@ -1874,7 +1891,7 @@ func TestShutdownCancelsPostCreateLookup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	var cmd contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &cmd)
 	if err != nil || !input.Valid {
@@ -1908,7 +1925,7 @@ func TestRevokedControllerCannotIssueStop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := controller.Create(context.Background(), command(1))
+	created, err := controller.Create(context.Background(), command(60))
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -1988,7 +2005,7 @@ func TestStartReplayCannotReturnAfterRevocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := controller.Create(context.Background(), command(1))
+	created, err := controller.Create(context.Background(), command(60))
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -2062,7 +2079,7 @@ func TestControllerRejectsStartAfterConfirmedStop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := controller.Create(context.Background(), command(1))
+	created, err := controller.Create(context.Background(), command(60))
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -2092,7 +2109,7 @@ func TestCanceledStartReplayDoesNotStartSimulator(t *testing.T) {
 	defer func() { _ = store.Close() }()
 	sim := &countedSimulator{}
 	engine := newTestEngine(t, store, sim, uuid.New())
-	created, err := engine.Create(ctx, command(1))
+	created, err := engine.Create(ctx, command(60))
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -2206,7 +2223,7 @@ func TestExpiredControlStopsWaitingStartBeforeTimerRuns(t *testing.T) {
 	if _, err := controller.Renew(time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	created, err := controller.Create(context.Background(), command(1))
+	created, err := controller.Create(context.Background(), command(60))
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -2268,7 +2285,7 @@ func TestControllerStorageTimeoutStillStopsRun(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			created, err := controller.Create(context.Background(), command(1))
+			created, err := controller.Create(context.Background(), command(60))
 			if err != nil || created.TestId == nil {
 				t.Fatalf("create: %v", err)
 			}
@@ -2322,7 +2339,7 @@ func TestLateLookupFailureDoesNotStopNewOwnerRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	create := command(10)
+	create := command(60)
 	created, err := first.Create(context.Background(), create)
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
@@ -2344,7 +2361,7 @@ func TestLateLookupFailureDoesNotStopNewOwnerRun(t *testing.T) {
 	start(first, *created.TestId)
 	done := make(chan error, 1)
 	go func() {
-		_, err := first.LookupCreateExact(context.Background(), command(1), []byte("test"))
+		_, err := first.LookupCreateExact(context.Background(), command(60), []byte("test"))
 		done <- err
 	}()
 	select {
@@ -2360,7 +2377,7 @@ func TestLateLookupFailureDoesNotStopNewOwnerRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	next := command(10)
+	next := command(60)
 	next.ExpectedRevision = finished.Revision
 	nextCreated, err := second.Create(context.Background(), next)
 	if err != nil || nextCreated.TestId == nil {
@@ -2415,7 +2432,7 @@ func TestStalledStartCompletionStopsSimulatorWithoutOperator(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := controller.Create(context.Background(), command(10))
+	created, err := controller.Create(context.Background(), command(60))
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -2480,7 +2497,7 @@ func TestStartCompletionIsReportedAfterConcurrentStop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := controller.Create(context.Background(), command(10))
+	created, err := controller.Create(context.Background(), command(60))
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -2580,7 +2597,7 @@ func TestLateCommittedStartCompletionDoesNotResumeMeasurement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := controller.Create(context.Background(), command(10))
+	created, err := controller.Create(context.Background(), command(60))
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -2645,7 +2662,7 @@ func TestFullDiagnosticQueueDoesNotBlockStop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := controller.Create(context.Background(), command(1))
+	created, err := controller.Create(context.Background(), command(60))
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}

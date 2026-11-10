@@ -148,6 +148,7 @@ function parameters(value: unknown): value is Contract.TestParameters {
       'measurementSeconds',
       'preOpenStabilizationSeconds',
       'postCloseStabilizationSeconds',
+      'postCloseStabilizationRetries',
       'direction',
       'actuator',
     ]) &&
@@ -159,11 +160,21 @@ function parameters(value: unknown): value is Contract.TestParameters {
     finite(value['pmaxPa']) &&
     value['pmaxPa'] > 0 &&
     finite(value['measurementSeconds']) &&
-    value['measurementSeconds'] > 0 &&
+    Number.isInteger(value['measurementSeconds']) &&
+    value['measurementSeconds'] >= 60 &&
+    value['measurementSeconds'] <= 300 &&
     finite(value['preOpenStabilizationSeconds']) &&
-    value['preOpenStabilizationSeconds'] > 0 &&
+    Number.isInteger(value['preOpenStabilizationSeconds']) &&
+    value['preOpenStabilizationSeconds'] >= 10 &&
+    value['preOpenStabilizationSeconds'] <= 100 &&
     finite(value['postCloseStabilizationSeconds']) &&
-    value['postCloseStabilizationSeconds'] > 0 &&
+    Number.isInteger(value['postCloseStabilizationSeconds']) &&
+    value['postCloseStabilizationSeconds'] >= 10 &&
+    value['postCloseStabilizationSeconds'] <= 100 &&
+    finite(value['postCloseStabilizationRetries']) &&
+    Number.isInteger(value['postCloseStabilizationRetries']) &&
+    value['postCloseStabilizationRetries'] >= 0 &&
+    value['postCloseStabilizationRetries'] <= 100 &&
     value['direction'] === 'pressure' &&
     value['actuator'] === false
   );

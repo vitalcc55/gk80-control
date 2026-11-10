@@ -564,6 +564,7 @@ components:
           measurementSeconds,
           preOpenStabilizationSeconds,
           postCloseStabilizationSeconds,
+          postCloseStabilizationRetries,
           direction,
           actuator,
         ]
@@ -574,18 +575,29 @@ components:
         measurementSeconds:
           type: number
           format: double
-          exclusiveMinimum: 0
-          description: Для нового demo-испытания максимум 3600 секунд; точный повтор ранее принятой команды сохраняет прежний результат.
+          minimum: 60
+          maximum: 300
+          multipleOf: 1
+          description: Длительность измерения в целых секундах.
         preOpenStabilizationSeconds:
           type: number
           format: double
-          exclusiveMinimum: 0
+          minimum: 10
+          maximum: 100
+          multipleOf: 1
           description: Длительность стабилизации перед открытием клапана, с.
         postCloseStabilizationSeconds:
           type: number
           format: double
-          exclusiveMinimum: 0
+          minimum: 10
+          maximum: 100
+          multipleOf: 1
           description: Длительность стабилизации после закрытия клапана, с.
+        postCloseStabilizationRetries:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Допустимое число повторов стабилизации после закрытия.
         direction: { type: string, enum: [pressure] }
         actuator: { type: boolean, const: false, x-go-type: bool }
     CreateTestLookupInput:
@@ -609,6 +621,7 @@ components:
               measurementSeconds,
               preOpenStabilizationSeconds,
               postCloseStabilizationSeconds,
+              postCloseStabilizationRetries,
               direction,
               actuator,
             ]
@@ -619,6 +632,7 @@ components:
             measurementSeconds: { type: number, format: double }
             preOpenStabilizationSeconds: { type: number, format: double }
             postCloseStabilizationSeconds: { type: number, format: double }
+            postCloseStabilizationRetries: { type: integer }
             direction: { type: string }
             actuator: { type: boolean }
     CreateTestCommand:

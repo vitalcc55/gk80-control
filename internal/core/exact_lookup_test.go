@@ -86,7 +86,7 @@ func TestExactCreateLookupMatchesStoredIdentityWithoutExecuting(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := uuid.New()
-	body := `{"commandId":"` + id.String() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":10,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"` + id.String() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	var command contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &command)
 	if err != nil {
@@ -227,7 +227,7 @@ func TestExactCreateLookupStopsWhenLeaseIsReleased(t *testing.T) {
 	}
 	reader := blockedExactCreate{database: store.DatabaseID(), entered: make(chan struct{})}
 	handler := &coreHTTP{secret: "secret", validator: validator, leases: leases, exact: reader}
-	body := `{"commandId":"` + uuid.NewString() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":10,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"` + uuid.NewString() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/commands/lookup/create", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer secret")
 	req.Header.Set(leaseHeader, lease.id.String())
@@ -348,7 +348,7 @@ func TestExactCreateLookupKeepsWorkerThroughResponseFlush(t *testing.T) {
 	server := &http.Server{Handler: handler, WriteTimeout: 5 * time.Second}
 	defer func() { _ = server.Close() }()
 	go func() { _ = server.Serve(gate) }()
-	body := `{"commandId":"` + uuid.NewString() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":10,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"` + uuid.NewString() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	req, err := http.NewRequest(http.MethodPost, "http://"+listener.Addr().String()+"/v1/commands/lookup/create", strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
@@ -424,7 +424,7 @@ func TestExactCreateLookupRevocationInterruptsResponseFlush(t *testing.T) {
 	server := &http.Server{Handler: handler, WriteTimeout: 5 * time.Second}
 	defer func() { _ = server.Close() }()
 	go func() { _ = server.Serve(tracked) }()
-	body := `{"commandId":"` + uuid.NewString() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":10,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"` + uuid.NewString() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	req, err := http.NewRequest(http.MethodPost, "http://"+listener.Addr().String()+"/v1/commands/lookup/create", strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)

@@ -19,13 +19,30 @@ const initial: TestParameters = {
   voltage: 24,
   openSeconds: 1,
   closeSeconds: 1,
-  measurementSeconds: 10,
+  measurementSeconds: 60,
   preOpenStabilizationSeconds: 10,
   postCloseStabilizationSeconds: 10,
+  postCloseStabilizationRetries: 1,
 };
 
 function Form({ submit }: { submit: (value: TestParameters) => void }) {
   const [draft, setDraft] = useState(() => draftFrom(initial));
+  return (
+    <ParametersScreen
+      initial={initial}
+      draft={draft}
+      setDraft={setDraft}
+      live
+      onBack={() => {}}
+      onContinue={submit}
+    />
+  );
+}
+
+function EmptyForm({ submit }: { submit: (value: TestParameters) => void }) {
+  const [draft, setDraft] = useState(() =>
+    draftFrom({ ...initial, postCloseStabilizationRetries: null }),
+  );
   return (
     <ParametersScreen
       initial={initial}
@@ -80,6 +97,7 @@ it('shows both saved stabilization intervals for the active test', () => {
         ...initial,
         preOpenStabilizationSeconds: 13,
         postCloseStabilizationSeconds: 17,
+        postCloseStabilizationRetries: 1,
       }}
     />,
   );
@@ -89,4 +107,28 @@ it('shows both saved stabilization intervals for the active test', () => {
   expect(
     screen.getByText('Стабилизация после закрытия клапана').nextElementSibling?.textContent,
   ).toBe('17 с');
+});
+
+it('requires an explicit repeat count and accepts zero at the duration boundaries', async () => {
+  const submit = vi.fn();
+  render(<EmptyForm submit={submit} />);
+  const user = userEvent.setup();
+  const retries = screen.getByLabelText('Допустимое число повторов стабилизации после закрытия');
+  expect(retries).toHaveProperty('value', '');
+  await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
+  expect(submit).not.toHaveBeenCalled();
+  await user.type(retries, '0');
+  const measurement = screen.getByLabelText('Длительность измерения, с');
+  await user.clear(measurement);
+  await user.type(measurement, '300');
+  await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
+  expect(submit).toHaveBeenCalledWith(
+    expect.objectContaining({ postCloseStabilizationRetries: 0, measurementSeconds: 300 }),
+  );
+  await user.clear(retries);
+  await user.type(retries, '101');
+  await user.clear(measurement);
+  await user.type(measurement, '60,5');
+  await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
+  expect(submit).toHaveBeenCalledTimes(1);
 });

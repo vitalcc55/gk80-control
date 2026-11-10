@@ -17,7 +17,7 @@ import (
 
 func TestNativeExactLookupPreservesOriginalAndValidatesResponses(t *testing.T) {
 	lease, database, commandID, testID, actionID := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
-	create := `{"commandId":"` + commandID.String() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":10,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
+	create := `{"commandId":"` + commandID.String() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	start := `{"commandId":"` + commandID.String() + `","expectedRevision":9007199254740993,"valveClosed":true,"connectionConfirmed":true}`
 	confirm := `{"commandId":"` + commandID.String() + `","expectedRevision":2}`
 	stop := `{"commandId":"` + commandID.String() + `"}`
@@ -157,7 +157,7 @@ func TestNativeExactLookupRejectsUnconfirmedOrMismatchedReplies(t *testing.T) {
 
 func TestNativeExactLookupDoesNotRetryLostReadResponse(t *testing.T) {
 	lease, database, commandID := uuid.New(), uuid.New(), uuid.New()
-	body := `{"commandId":"` + commandID.String() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":10,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"` + commandID.String() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	var lookups, commands atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/commands/lookup/create" {

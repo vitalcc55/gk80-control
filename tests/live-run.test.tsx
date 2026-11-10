@@ -65,6 +65,7 @@ const record: TestRecord = {
     measurementSeconds: 60,
     preOpenStabilizationSeconds: 10,
     postCloseStabilizationSeconds: 10,
+    postCloseStabilizationRetries: 1,
     direction: TestParametersDirection.TestParametersDirectionPressure,
     actuator: false,
   },

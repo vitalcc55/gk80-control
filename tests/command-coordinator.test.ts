@@ -51,6 +51,7 @@ const parameters = {
   measurementSeconds: 60,
   preOpenStabilizationSeconds: 10,
   postCloseStabilizationSeconds: 10,
+  postCloseStabilizationRetries: 1,
 };
 const unknown: ExactLookupResult = {
   outcome: ExactLookupResultOutcome.ExactLookupResultOutcomeUnknown,
@@ -153,6 +154,7 @@ function runningRecord(): NonNullable<Snapshot['activeTest']> {
       measurementSeconds: parameters.measurementSeconds,
       preOpenStabilizationSeconds: 10,
       postCloseStabilizationSeconds: 10,
+      postCloseStabilizationRetries: 1,
       direction: TestParametersDirection.TestParametersDirectionPressure,
       actuator: false,
     },
@@ -695,6 +697,7 @@ it('retains the creation notification when its consumer is disposed during publi
         measurementSeconds: 60,
         preOpenStabilizationSeconds: 10,
         postCloseStabilizationSeconds: 10,
+        postCloseStabilizationRetries: 1,
         direction: TestParametersDirection.TestParametersDirectionPressure,
         actuator: false,
       },

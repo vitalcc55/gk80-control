@@ -51,7 +51,7 @@ func TestWorkflowFailureDoesNotConfirmPreparedResult(t *testing.T) {
 						sample := contract.Measurement{Sequence: 1, Channel: "dd1", Quantity: "pressure", Unit: "Pa", ObservedAt: now, MeasuredAt: &measured, Value: &value, Quality: "valid", Source: "simulator"}
 						second := sample
 						second.Sequence = 2
-						if err := store.RecordMeasurements(ctx, id, []TimedMeasurement{{Measurement: sample}, {Measurement: second, Elapsed: time.Second}}); err != nil {
+						if err := store.RecordMeasurements(ctx, id, []TimedMeasurement{{Measurement: sample}, {Measurement: second, Elapsed: 60 * time.Second}}); err != nil {
 							t.Fatal(err)
 						}
 					}
@@ -97,7 +97,7 @@ func TestWorkflowFailureDoesNotConfirmPreparedResult(t *testing.T) {
 					case "completeStart":
 						result, err = store.CompleteStart(ctx, id, start.CommandId)
 					case "complete":
-						result, err = store.Complete(ctx, id, time.Second)
+						result, err = store.Complete(ctx, id, 60*time.Second)
 					case "finishStop":
 						result, err = store.FinishStop(ctx, id, before.StopCommandId, StopDetails{Actor: "demo-operator", Reason: "operator", AcceptedAt: time.Now()})
 					}

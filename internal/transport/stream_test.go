@@ -764,7 +764,7 @@ func TestNativeStreamReceivesCoreEvents(t *testing.T) {
 		defer closeCancel()
 		_ = stream.Close(closeCtx)
 	})
-	command := contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: snapshot.Revision, Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}}
+	command := contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: snapshot.Revision, Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 60, Direction: "pressure"}}
 	result, err := client.CreateTest(ctx, lease.LeaseId, command)
 	if err != nil || result.TestId == nil {
 		t.Fatalf("create: %+v %v", result, err)

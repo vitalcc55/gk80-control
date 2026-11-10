@@ -20,7 +20,7 @@ import (
 
 func TestWailsCommandInputChecksOriginalJSON(t *testing.T) {
 	id := `"00000000-0000-4000-8000-000000000001"`
-	valid := `{"commandId":` + id + `,"expectedRevision":0,"parameters":{"valve":"V","areaM2":0.1,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
+	valid := `{"commandId":` + id + `,"expectedRevision":0,"parameters":{"valve":"V","areaM2":0.1,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	for name, body := range map[string]string{
 		"missing revision": strings.Replace(valid, `,"expectedRevision":0`, "", 1),
 		"missing actuator": strings.Replace(valid, `,"actuator":false`, "", 1),
@@ -107,7 +107,7 @@ func TestServiceRejectsExpiredHeartbeatBeforeAdmission(t *testing.T) {
 
 func TestWailsCreateRejectsNewRoundedValueButForwardsHistoricalReplay(t *testing.T) {
 	run, lease, id := uuid.New(), uuid.New(), uuid.New()
-	body := fmt.Sprintf(`{"commandId":%q,"expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`, id)
+	body := fmt.Sprintf(`{"commandId":%q,"expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`, id)
 	var input CreateCommandInput
 	if err := json.Unmarshal([]byte(body), &input); err != nil {
 		t.Fatal(err)

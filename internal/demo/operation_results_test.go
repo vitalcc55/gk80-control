@@ -71,7 +71,8 @@ func TestLateFinalResultDoesNotReplaceNewRun(t *testing.T) {
 			}()
 			simulator := &countedSimulator{}
 			engine := newTestEngine(t, wrapped, simulator, uuid.New())
-			created, err := engine.Create(ctx, command(0.05))
+			advanceMeasurementOnNextSample(engine)
+			created, err := engine.Create(ctx, command(60))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -167,7 +168,8 @@ func TestEngineFinalizationUsesCommittedResult(t *testing.T) {
 				wrapped := &finalResultRepository{Store: store, lost: lost, failBefore: beforeCommit}
 				simulator := &countedSimulator{}
 				engine := newTestEngine(t, wrapped, simulator, uuid.New())
-				created, err := engine.Create(ctx, command(0.05))
+				advanceMeasurementOnNextSample(engine)
+				created, err := engine.Create(ctx, command(60))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -308,7 +310,7 @@ func TestUnknownCommittedStartResultDoesNotClaimSavedOrRestart(t *testing.T) {
 			}()
 			simulator := &countedSimulator{}
 			engine := newTestEngine(t, wrapped, simulator, uuid.New())
-			created, err := engine.Create(context.Background(), command(3600))
+			created, err := engine.Create(context.Background(), command(300))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -410,7 +412,7 @@ func TestEngineUsesReportedStartResults(t *testing.T) {
 			wrapped := &reportedStartResults{Store: store, entered: make(chan struct{}), release: make(chan struct{}), noOp: noOp}
 			simulator := &countedSimulator{}
 			engine := newTestEngine(t, wrapped, simulator, uuid.New())
-			created, err := engine.Create(context.Background(), command(3600))
+			created, err := engine.Create(context.Background(), command(300))
 			if err != nil {
 				t.Fatal(err)
 			}

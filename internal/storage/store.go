@@ -141,7 +141,7 @@ func (s *Store) initialize() error {
 	if err := s.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return err
 	}
-	if version == 3 {
+	if version == 4 {
 		id, err := readDatabaseID(s.db)
 		if err != nil {
 			return err
@@ -149,8 +149,8 @@ func (s *Store) initialize() error {
 		s.databaseID = id
 		return nil
 	}
-	if version != 0 && version != 1 && version != 2 {
-		return errors.New("unsupported database schema")
+	if version != 0 {
+		return errors.New("unsupported demo profile; choose a new profile directory")
 	}
 	if version == 0 {
 		var objects int
@@ -202,7 +202,7 @@ func (s *Store) initialize() error {
 	if count, err := result.RowsAffected(); err != nil || count != 1 {
 		return errors.New("invalid database metadata")
 	}
-	if _, err := tx.Exec(`PRAGMA user_version = 3`); err != nil {
+	if _, err := tx.Exec(`PRAGMA user_version = 4`); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -229,7 +229,8 @@ func (s *Store) Close() error { return s.db.Close() }
 func valid(command contract.CreateTestCommand) bool {
 	p := command.Parameters
 	number := func(v float64) bool { return v > 0 && !math.IsInf(v, 0) && !math.IsNaN(v) }
-	return command.CommandId != uuid.Nil && command.ExpectedRevision >= 0 && strings.TrimSpace(p.Valve) != "" && utf8.RuneCountInString(p.Valve) <= 200 && p.Direction == "pressure" && !p.Actuator && number(p.AreaM2) && number(p.PmaxPa) && number(p.MeasurementSeconds) && p.MeasurementSeconds <= 3600 && number(p.PreOpenStabilizationSeconds) && number(p.PostCloseStabilizationSeconds)
+	whole := func(v, min, max float64) bool { return v >= min && v <= max && math.Trunc(v) == v }
+	return command.CommandId != uuid.Nil && command.ExpectedRevision >= 0 && strings.TrimSpace(p.Valve) != "" && utf8.RuneCountInString(p.Valve) <= 200 && p.Direction == "pressure" && !p.Actuator && number(p.AreaM2) && number(p.PmaxPa) && whole(p.MeasurementSeconds, 60, 300) && whole(p.PreOpenStabilizationSeconds, 10, 100) && whole(p.PostCloseStabilizationSeconds, 10, 100) && p.PostCloseStabilizationRetries >= 0 && p.PostCloseStabilizationRetries <= 100
 }
 
 // LookupCreate resolves an uncertain response without re-executing the command.
@@ -281,12 +282,9 @@ func (s *Store) Create(ctx context.Context, command contract.CreateTestCommand) 
 
 // CreateExact stores the canonical original request atomically with the command.
 func (s *Store) CreateExact(ctx context.Context, command contract.CreateTestCommand, identity []byte) (contract.CommandStatus, error) {
-	valid, err := validateCreateIdentity(command, identity)
+	_, err := validateCreateIdentity(command, identity)
 	if err != nil {
 		return contract.CommandStatus{}, err
-	}
-	if !valid {
-		return s.createRequest(ctx, command, identity, ErrInvalidCommand)
 	}
 	return s.createRequest(ctx, command, identity, nil)
 }
@@ -422,7 +420,7 @@ func reject(ctx context.Context, tx *sql.Tx, command contract.CreateTestCommand,
 }
 
 func (s *Store) create(ctx context.Context, tx *sql.Tx, command contract.CreateTestCommand, request []byte, writeAttempted *bool) (contract.CommandStatus, error) {
-	if !valid(command) || !validDuration(request) {
+	if !valid(command) || !validParameterNumbers(request) {
 		return reject(ctx, tx, command, request, "invalid_command", ErrInvalidCommand, writeAttempted)
 	}
 	var revision int64
@@ -477,17 +475,23 @@ func (s *Store) create(ctx context.Context, tx *sql.Tx, command contract.CreateT
 	return contract.CommandStatus{CommandId: command.CommandId, Status: "completed", TestId: &id}, nil
 }
 
-func validDuration(request []byte) bool {
+func validParameterNumbers(request []byte) bool {
 	var body struct {
 		Parameters struct {
-			MeasurementSeconds json.Number `json:"measurementSeconds"`
+			MeasurementSeconds            json.Number `json:"measurementSeconds"`
+			PreOpenStabilizationSeconds   json.Number `json:"preOpenStabilizationSeconds"`
+			PostCloseStabilizationSeconds json.Number `json:"postCloseStabilizationSeconds"`
+			PostCloseStabilizationRetries json.Number `json:"postCloseStabilizationRetries"`
 		} `json:"parameters"`
 	}
 	if err := json.Unmarshal(request, &body); err != nil {
 		return false
 	}
-	value, ok := new(big.Rat).SetString(body.Parameters.MeasurementSeconds.String())
-	return ok && value.Sign() > 0 && value.Cmp(big.NewRat(3600, 1)) <= 0
+	whole := func(number json.Number, min, max int64) bool {
+		value, ok := new(big.Rat).SetString(number.String())
+		return ok && value.IsInt() && value.Cmp(big.NewRat(min, 1)) >= 0 && value.Cmp(big.NewRat(max, 1)) <= 0
+	}
+	return whole(body.Parameters.MeasurementSeconds, 60, 300) && whole(body.Parameters.PreOpenStabilizationSeconds, 10, 100) && whole(body.Parameters.PostCloseStabilizationSeconds, 10, 100) && whole(body.Parameters.PostCloseStabilizationRetries, 0, 100)
 }
 
 func (s *Store) Revision(ctx context.Context) (int64, error) {

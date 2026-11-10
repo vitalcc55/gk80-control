@@ -113,6 +113,10 @@ export function ResultScreen({
                   <dt>Стабилизация после закрытия клапана</dt>
                   <dd>{formatNumber(parameters.postCloseStabilizationSeconds)} с</dd>
                 </div>
+                <div>
+                  <dt>Повторы стабилизации после закрытия</dt>
+                  <dd>{parameters.postCloseStabilizationRetries ?? 'Не указано'}</dd>
+                </div>
               </dl>
             </div>
             <div className="work-surface result-section">

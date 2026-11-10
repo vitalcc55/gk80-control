@@ -1024,7 +1024,8 @@ export function createCommandCoordinator({
       | 'measurementSeconds'
       | 'preOpenStabilizationSeconds'
       | 'postCloseStabilizationSeconds'
-    >,
+      | 'postCloseStabilizationRetries'
+    > & { postCloseStabilizationRetries: number },
   ) {
     if (!active) return Promise.resolve();
     const { snapshot } = currentView();
@@ -1041,6 +1042,7 @@ export function createCommandCoordinator({
           measurementSeconds: parameters.measurementSeconds,
           preOpenStabilizationSeconds: parameters.preOpenStabilizationSeconds,
           postCloseStabilizationSeconds: parameters.postCloseStabilizationSeconds,
+          postCloseStabilizationRetries: parameters.postCloseStabilizationRetries,
           direction: TestParametersDirection.TestParametersDirectionPressure,
           actuator: false,
         },

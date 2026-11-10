@@ -27,6 +27,7 @@ export function parametersForDisplay(record: TestRecord): TestParameters {
     measurementSeconds: record.parameters.measurementSeconds,
     preOpenStabilizationSeconds: record.parameters.preOpenStabilizationSeconds,
     postCloseStabilizationSeconds: record.parameters.postCloseStabilizationSeconds,
+    postCloseStabilizationRetries: record.parameters.postCloseStabilizationRetries,
     direction: 'pressure',
     actuator: false,
     voltage: 24,

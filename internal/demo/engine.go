@@ -97,6 +97,7 @@ type Engine struct {
 	commandDrops     chan struct{}
 	droppedInfo      uint64
 	droppedError     uint64
+	measurementNow   func() time.Time
 }
 
 func NewEngine(ctx context.Context, store Repository, equipment Equipment, runID uuid.UUID) (*Engine, error) {
@@ -105,7 +106,7 @@ func NewEngine(ctx context.Context, store Repository, equipment Equipment, runID
 		return nil, err
 	}
 	lifeCtx, lifeCancel := context.WithCancel(context.Background())
-	return &Engine{store: store, equipment: equipment, runID: runID, revision: revision, ordinary: make(chan struct{}, 1), changed: make(chan struct{}, 1), lifeCtx: lifeCtx, lifeCancel: lifeCancel}, nil
+	return &Engine{store: store, equipment: equipment, runID: runID, revision: revision, ordinary: make(chan struct{}, 1), changed: make(chan struct{}, 1), lifeCtx: lifeCtx, lifeCancel: lifeCancel, measurementNow: time.Now}, nil
 }
 
 func (e *Engine) acquire(ctx context.Context) error {
@@ -1529,10 +1530,11 @@ func (e *Engine) measure(current *run) {
 			return 0, false
 		}
 		sampledAt := time.Now()
+		measurementAt := e.measurementNow()
 		if started.IsZero() {
-			started = sampledAt
+			started = measurementAt
 		}
-		elapsed := sampledAt.Sub(started)
+		elapsed := measurementAt.Sub(started)
 		pressure, dd2, dd3, err := e.equipment.Observe(elapsed)
 		if err != nil {
 			e.acceptStopLocked(current, "system", "simulator_error")

@@ -139,9 +139,10 @@ function savedAttempt(
             valve: 'V',
             areaM2: 1,
             pmaxPa: 1000,
-            measurementSeconds: 10,
+            measurementSeconds: 60,
             preOpenStabilizationSeconds: 10,
             postCloseStabilizationSeconds: 10,
+            postCloseStabilizationRetries: 1,
             direction: 'pressure',
             actuator: false,
           },
@@ -175,9 +176,10 @@ const record = {
     valve: 'К-1',
     areaM2: 1,
     pmaxPa: 1000,
-    measurementSeconds: 10,
+    measurementSeconds: 60,
     preOpenStabilizationSeconds: 10,
     postCloseStabilizationSeconds: 10,
+    postCloseStabilizationRetries: 1,
     direction: TestParametersDirection.TestParametersDirectionPressure,
     actuator: false,
   },
@@ -437,6 +439,52 @@ beforeEach(() => {
           };
     },
   );
+});
+
+it('copies the saved stabilization retry count into a new draft', async () => {
+  const saved = {
+    ...record,
+    stage: TestRecordStage.Finished,
+    outcome: TestRecordOutcome.TestRecordOutcomeCompleted,
+    parameters: { ...record.parameters, postCloseStabilizationRetries: 0 },
+  };
+  const snapshot: Snapshot = {
+    apiVersion: 'v1',
+    backendRunId: backend,
+    revision: 0,
+    lastEventSequence: 0,
+    measurementBatch: null,
+    activeTest: null,
+    pendingAction: null,
+    measurementTiming: null,
+    measurements: [],
+  };
+  const session: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot,
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.list.mockResolvedValue({ items: [saved], nextAfter: null });
+  api.test.mockResolvedValue(saved);
+  render(<LiveApp session={session} hostRunId={host} backendRunId={backend} />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('button', { name: /Открыть.*К-1/ }));
+  await user.click(await screen.findByRole('button', { name: 'Новое по этим параметрам' }));
+  expect(
+    await screen.findByLabelText('Допустимое число повторов стабилизации после закрытия'),
+  ).toHaveProperty('value', '0');
 });
 
 it('does not attribute an unbound legacy command to the confirmed database', async () => {
@@ -1713,6 +1761,13 @@ it.each([
     await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
     await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
     await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+    await user.clear(
+      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
+    );
+    await user.type(
+      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
+      '1',
+    );
     await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
     expect(api.create).toHaveBeenCalledTimes(1);
     expect(api.create).toHaveBeenCalledWith(
@@ -1723,6 +1778,7 @@ it.each([
           measurementSeconds: 60,
           preOpenStabilizationSeconds: 10,
           postCloseStabilizationSeconds: 10,
+          postCloseStabilizationRetries: 1,
         }),
       }),
     );
@@ -2464,6 +2520,13 @@ it.each([
     await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
     await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
     await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+    await user.clear(
+      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
+    );
+    await user.type(
+      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
+      '1',
+    );
     await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
     if (retainBefore) {
       await screen.findByText(/Исход команды пока неизвестен/);
@@ -2574,6 +2637,11 @@ it('does not send another creation after an unknown response and remount', async
   await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
   await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
   await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+  await user.clear(screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'));
+  await user.type(
+    screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
+    '1',
+  );
   await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
   await screen.findByText(/Исход команды пока неизвестен/);
   mounted.unmount();
@@ -2645,6 +2713,13 @@ it.each(['wails', 'browser'])(
     await user.type(valve, 'К-1');
     await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
     await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+    await user.clear(
+      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
+    );
+    await user.type(
+      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
+      '1',
+    );
     await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
     await screen.findByText(/Команда: исход неизвестен/);
     await user.click(screen.getByRole('button', { name: 'Проверить состояние' }));
@@ -2730,6 +2805,13 @@ it.each(['lost', 'malformed'] as const)(
     await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
     await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
     await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+    await user.clear(
+      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
+    );
+    await user.type(
+      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
+      '1',
+    );
     await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
     await screen.findByText(/Исход команды пока неизвестен/);
     mounted.unmount();
@@ -2882,6 +2964,11 @@ it('does not replace a confirmed command with a late unknown exact lookup', asyn
   await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
   await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
   await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+  await user.clear(screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'));
+  await user.type(
+    screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
+    '1',
+  );
   await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
   await waitFor(() => expect(api.exact).toHaveBeenCalled());
   const sent = api.create.mock.calls[0]?.[0];
@@ -2959,6 +3046,13 @@ it.each(['failure', 'invalid'])(
     await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
     await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
     await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+    await user.clear(
+      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
+    );
+    await user.type(
+      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
+      '1',
+    );
     await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
     await screen.findByText(/Команда: принята; завершение команды не подтверждено/);
     await act(async () => {
@@ -3014,6 +3108,11 @@ it('accepts a valid direct receipt without testId', async () => {
   await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
   await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
   await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+  await user.clear(screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'));
+  await user.type(
+    screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
+    '1',
+  );
   await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
   await screen.findByText(/Команда: принята; завершение команды не подтверждено/);
   expect(screen.queryByText(/Исход команды пока неизвестен/)).toBeNull();
@@ -3074,6 +3173,11 @@ it('links a completed Create without testId to its exact result and snapshot', a
   await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
   await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
   await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+  await user.clear(screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'));
+  await user.type(
+    screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
+    '1',
+  );
   await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
   await waitFor(() => expect(api.exact).toHaveBeenCalled());
   await screen.findByText(/Команда: выполнена/);
@@ -3796,6 +3900,11 @@ it('does not report an unpersisted Stop when an ordinary browser receipt cannot 
   await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
   await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
   await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+  await user.clear(screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'));
+  await user.type(
+    screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
+    '1',
+  );
   await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
   await screen.findByText(/Не удалось обновить список команд/);
   expect(screen.queryByText(/Исход остановки отслеживается только в памяти/)).toBeNull();
@@ -3866,6 +3975,13 @@ it.each(['rejected response', 'not sent response'] as const)(
     await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
     await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
     await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+    await user.clear(
+      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
+    );
+    await user.type(
+      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
+      '1',
+    );
     await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
     await screen.findByText(/Исход команды пока неизвестен/);
     allowRead = true;
@@ -4234,6 +4350,13 @@ it.each(['notSent', 'rejected', 'failed', 'lookupRejected', 'storageUnavailable'
             throw new Error('storage unavailable');
           })
         : null;
+    await user.clear(
+      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
+    );
+    await user.type(
+      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
+      '1',
+    );
     await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
     const oldNotice =
       firstOutcome === 'storageUnavailable'
@@ -4325,6 +4448,11 @@ it('keeps an earlier test command failure when creating an unrelated test', asyn
   await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
   await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
   await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+  await user.clear(screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'));
+  await user.type(
+    screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
+    '1',
+  );
   await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
   const newNotice = await screen.findByText(
     'Не удалось подтвердить готовность.',
@@ -4476,6 +4604,11 @@ it('keeps a confirmed not-sent result when the service wrapper changes', async (
   await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
   await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
   await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+  await user.clear(screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'));
+  await user.type(
+    screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
+    '1',
+  );
   await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
   await screen.findByText(/Команда: исход неизвестен/);
   await waitFor(() => expect(api.command).toHaveBeenCalled());

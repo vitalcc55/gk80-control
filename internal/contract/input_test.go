@@ -10,7 +10,7 @@ func TestDecodeInputChecksOriginalJSONBeforeDTO(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	valid := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":0.1,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
+	valid := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":0.1,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	cases := []struct {
 		name, body string
 		valid      bool
@@ -31,6 +31,11 @@ func TestDecodeInputChecksOriginalJSONBeforeDTO(t *testing.T) {
 		{"missing actuator", strings.Replace(valid, `,"actuator":false`, "", 1), false},
 		{"missing pre-open stabilization", strings.Replace(valid, `,"preOpenStabilizationSeconds":10`, "", 1), false},
 		{"missing post-close stabilization", strings.Replace(valid, `,"postCloseStabilizationSeconds":10`, "", 1), false},
+		{"missing stabilization retries", strings.Replace(valid, `,"postCloseStabilizationRetries":0`, "", 1), false},
+		{"maximum stabilization retries", strings.Replace(valid, `"postCloseStabilizationRetries":0`, `"postCloseStabilizationRetries":100`, 1), true},
+		{"too many stabilization retries", strings.Replace(valid, `"postCloseStabilizationRetries":0`, `"postCloseStabilizationRetries":101`, 1), false},
+		{"fractional measurement", strings.Replace(valid, `"measurementSeconds":60`, `"measurementSeconds":60.5`, 1), false},
+		{"measurement below minimum", strings.Replace(valid, `"measurementSeconds":60`, `"measurementSeconds":59`, 1), false},
 		{"zero pre-open stabilization", strings.Replace(valid, `"preOpenStabilizationSeconds":10`, `"preOpenStabilizationSeconds":0`, 1), false},
 		{"negative post-close stabilization", strings.Replace(valid, `"postCloseStabilizationSeconds":10`, `"postCloseStabilizationSeconds":-1`, 1), false},
 		{"null actuator", strings.Replace(valid, `"actuator":false`, `"actuator":null`, 1), false},
@@ -87,7 +92,7 @@ func TestInspectInputPreservesExactIdentityAndLegacyRejection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	base := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
+	base := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	var first, different, equivalent CreateTestCommand
 	a, err := validator.Inspect("CreateTestCommand", []byte(base), &first)
 	if err != nil || !a.Valid {
@@ -126,7 +131,7 @@ func TestLongInputNumberRemainsValidAfterCanonicalization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.` + strings.Repeat("1", 7900) + `e-322,"pmaxPa":1000,"measurementSeconds":1,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.` + strings.Repeat("1", 7890) + `e-322,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	if len(body) >= 8192 {
 		t.Fatalf("input size: %d", len(body))
 	}

@@ -57,7 +57,7 @@ func TestOwnerExactLookupPreservesAttemptAndSeparatesOutcomes(t *testing.T) {
 	session.mu.Unlock()
 	owner := &Owner{session: session, process: &fakeCore{done: make(chan struct{})}, databaseID: database, backendID: run, status: contract.DesktopStatus{HostRunId: host, Status: contract.DesktopStatusStatusReady}}
 	service := NewService(owner)
-	create := `{"commandId":"` + id.String() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":10,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
+	create := `{"commandId":"` + id.String() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	start := `{"commandId":"` + id.String() + `","expectedRevision":1,"valveClosed":true,"connectionConfirmed":true}`
 	confirm := `{"commandId":"` + id.String() + `","expectedRevision":2}`
 	stop := `{"commandId":"` + id.String() + `"}`
@@ -524,7 +524,7 @@ func TestOwnerExactLookupResolvesOnlySameTrackedAttempt(t *testing.T) {
 	}}
 	session := newDemoSession(context.Background(), client, host, run)
 	defer session.close()
-	body := `{"commandId":"` + id.String() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":10,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"` + id.String() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	var input CreateCommandInput
 	if err := json.Unmarshal([]byte(body), &input); err != nil {
 		t.Fatal(err)
@@ -643,7 +643,7 @@ func TestDisplacedAttemptClearsOnlyAfterItsExactLookup(t *testing.T) {
 	}}
 	session := newDemoSession(context.Background(), client, host, run)
 	defer session.close()
-	body := `{"commandId":"` + id.String() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":10,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"` + id.String() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	var input CreateCommandInput
 	if err := json.Unmarshal([]byte(body), &input); err != nil {
 		t.Fatal(err)
@@ -698,7 +698,7 @@ func TestOwnerExactLookupDiscardsResponseAfterSessionCloses(t *testing.T) {
 	session.leaseID, session.leaseConfirmed, session.leaseUntil = lease, true, time.Now().Add(time.Minute)
 	session.mu.Unlock()
 	owner := &Owner{session: session, process: &fakeCore{done: make(chan struct{})}, databaseID: database, backendID: run, status: contract.DesktopStatus{HostRunId: host, Status: contract.DesktopStatusStatusReady}}
-	body := `{"commandId":"` + id.String() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":10,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"` + id.String() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	done := make(chan error, 1)
 	go func() {
 		_, err := owner.LookupCommandExact(context.Background(), database.String(), "create", "", "", id.String(), body)

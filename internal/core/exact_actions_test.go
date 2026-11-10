@@ -37,7 +37,7 @@ func TestExactActionLookupUsesCommandAndPathIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := store.Create(ctx, contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: 0, Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}})
+	created, err := store.Create(ctx, contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: 0, Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 60, Direction: "pressure"}})
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create setup: %+v %v", created, err)
 	}

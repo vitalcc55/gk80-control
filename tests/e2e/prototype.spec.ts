@@ -41,6 +41,7 @@ for (const viewport of [
       await page
         .getByRole('textbox', { name: 'Обозначение или наименование клапана' })
         .fill('Клапан для показа');
+      await page.getByLabel('Допустимое число повторов стабилизации после закрытия').fill('1');
       await page.getByRole('button', { name: 'Проверить готовность' }).click();
       await expect(page.getByRole('heading', { name: 'Готовность', exact: true })).toBeVisible();
       const start = page.getByRole('button', { name: 'Перейти к проведению' });
@@ -177,6 +178,7 @@ for (const viewport of [
         .getByRole('textbox', { name: 'Обозначение или наименование клапана' })
         .fill('Клапан 100');
       await page.getByRole('textbox', { name: 'Длительность измерения, с' }).fill('99');
+      await page.getByLabel('Допустимое число повторов стабилизации после закрытия').fill('1');
       await page.getByRole('button', { name: 'Проверить готовность' }).click();
       await page.getByRole('checkbox', { name: /Клапан закрыт/ }).check();
       await page.getByRole('checkbox', { name: /Подключение соответствует направлению/ }).check();
@@ -222,11 +224,10 @@ for (const viewport of [
       for (const example of [
         { pressure: '10000', period: '60', expectedX: 60, expectedY: 10_000 },
         { pressure: '10000', period: '100', expectedX: 100, expectedY: 10_000 },
-        { pressure: '0,0001', period: '0,0001', expectedX: 0.0001, expectedY: 0.0001 },
+        { pressure: '0,0001', period: '60', expectedX: 60, expectedY: 0.0001 },
         { pressure: `0,${'0'.repeat(14)}1`, period: '60', expectedX: 60, expectedY: 1e-15 },
         { pressure: `0,${'0'.repeat(99)}1`, period: '60', expectedX: 60, expectedY: 1e-100 },
-        { pressure: '10000', period: `0,${'0'.repeat(99)}1`, expectedX: 1e-100, expectedY: 10_000 },
-        { pressure: '10000', period: `1${'0'.repeat(307)}`, expectedX: 1e307, expectedY: 10_000 },
+        { pressure: '10000', period: '300', expectedX: 300, expectedY: 10_000 },
       ]) {
         await page.goto('/?fixture=empty');
         await page.getByRole('button', { name: 'Новое испытание' }).click();
@@ -235,6 +236,7 @@ for (const viewport of [
           .fill('Клапан для проверки осей');
         await page.getByRole('textbox', { name: 'Pmax производителя, Па' }).fill(example.pressure);
         await page.getByRole('textbox', { name: 'Длительность измерения, с' }).fill(example.period);
+        await page.getByLabel('Допустимое число повторов стабилизации после закрытия').fill('1');
         await page.getByRole('button', { name: 'Проверить готовность' }).click();
         await page.getByRole('checkbox', { name: /Клапан закрыт/ }).check();
         await page.getByRole('checkbox', { name: /Подключение соответствует направлению/ }).check();
@@ -325,6 +327,7 @@ for (const viewport of [
         page.getByRole('textbox', { name: 'Площадь клапана, квадратные метры' }),
       ).toHaveValue('0,');
       await page.getByRole('textbox', { name: 'Площадь клапана, квадратные метры' }).fill('0,12');
+      await page.getByLabel('Допустимое число повторов стабилизации после закрытия').fill('1');
       await page.getByRole('button', { name: 'Проверить готовность' }).click();
       await page.getByRole('checkbox', { name: /Клапан закрыт/ }).check();
       await page.getByRole('checkbox', { name: /Подключение соответствует направлению/ }).check();
@@ -355,6 +358,7 @@ test('обычные слова в истории остаются читаем�
   await page.goto('/?fixture=empty');
   await page.getByRole('button', { name: 'Новое испытание' }).click();
   await page.getByLabel('Обозначение или наименование клапана').fill('Проверка Windows');
+  await page.getByLabel('Допустимое число повторов стабилизации после закрытия').fill('1');
   await page.getByRole('button', { name: 'Проверить готовность' }).click();
   await page.getByRole('checkbox', { name: /Клапан закрыт/ }).check();
   await page.getByRole('checkbox', { name: /Подключение соответствует направлению/ }).check();
