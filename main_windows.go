@@ -57,20 +57,6 @@ func showFatal(cleanupUnconfirmed, sessionUnconfirmed, coreExited bool) {
 	_, _ = windows.MessageBox(0, message, title, windows.MB_OK|windows.MB_ICONERROR)
 }
 
-func showDiagnosticWarning() {
-	message, _ := windows.UTF16PtrFromString("Журнал диагностики недоступен, неполон или его завершение не подтверждено. Состояние сохранения испытания определяется отдельно.")
-	title, _ := windows.UTF16PtrFromString("ГК80 — диагностика")
-	done := make(chan struct{})
-	go func() {
-		_, _ = windows.MessageBox(0, message, title, windows.MB_OK|windows.MB_ICONWARNING)
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-	}
-}
-
 func runSafely() (err error) {
 	defer func() {
 		if recover() != nil {
@@ -109,10 +95,7 @@ func run() (resultErr error) {
 		logger.Application(diagnostics.ComponentDesktop).Info(string(diagnostics.ProcessStopped))
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		closeErr := logger.Close(ctx)
-		if closeErr != nil || logger.Status().Degraded || (owner != nil && owner.Status().DiagnosticsDegraded) {
-			showDiagnosticWarning()
-		}
+		_ = logger.Close(ctx)
 	}()
 	logger.Application(diagnostics.ComponentDesktop).Info(string(diagnostics.ProcessStarted))
 	var app *application.App
@@ -151,11 +134,8 @@ func run() (resultErr error) {
 				}
 				logger.Application(diagnostics.ComponentDesktop).Error(string(diagnostics.ProcessStopped), "exit_code", 1)
 				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-				logCloseErr := logger.Close(ctx)
+				_ = logger.Close(ctx)
 				cancel()
-				if logCloseErr != nil || logger.Status().Degraded || owner.Status().DiagnosticsDegraded {
-					showDiagnosticWarning()
-				}
 				showFatal(errors.Is(closeErr, transport.ErrCleanupUnconfirmed), errors.Is(closeErr, desktop.ErrSessionShutdownUnconfirmed), owner.CoreExitConfirmed())
 			}
 		},
