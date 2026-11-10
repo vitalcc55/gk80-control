@@ -314,7 +314,7 @@ for (const viewport of [
       await expect(page.getByRole('button', { name: 'Остановка выполняется' })).toBeDisabled();
     });
 
-    test('навигация сохраняет черновик и возвращает к активному проходу', async ({ page }) => {
+    test('навигация сохраняет черновик и блокируется во время прохода', async ({ page }) => {
       const valve = 'К'.repeat(200);
       await page.goto('/?fixture=empty');
       await page.getByRole('button', { name: 'Новое испытание' }).click();
@@ -333,17 +333,8 @@ for (const viewport of [
       await page.getByRole('checkbox', { name: /Подключение соответствует направлению/ }).check();
       await page.getByRole('button', { name: 'Перейти к проведению' }).click();
       await page.getByRole('button', { name: 'Подтверждаю завершение серии' }).click();
-      await nav.getByRole('button', { name: 'Параметры' }).click();
-      await expect(page.getByText('Текущее испытание · только просмотр')).toBeVisible();
-      await page.evaluate(() => document.fonts.ready);
-      await expect(
-        page.getByRole('region', { name: 'Параметры испытания' }).getByText(valve, { exact: true }),
-      ).toBeVisible();
-      expect(
-        await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
-      ).toBe(true);
-      await expect(page.getByRole('textbox')).toHaveCount(0);
-      await nav.getByRole('button', { name: 'Текущее испытание' }).click();
+      await expect(nav.getByRole('button', { name: 'Испытания' })).toBeDisabled();
+      await expect(nav.getByRole('button', { name: 'Параметры' })).toBeDisabled();
       await expect(page.getByRole('heading', { name: 'Выход на рабочее давление' })).toBeVisible();
       expect(
         await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
@@ -353,7 +344,7 @@ for (const viewport of [
   });
 }
 
-test('обычные слова в истории остаются читаемыми рядом с активным проходом', async ({ page }) => {
+test('обычные слова в истории остаются читаемыми после завершения прохода', async ({ page }) => {
   await page.setViewportSize({ width: 1186, height: 793 });
   await page.goto('/?fixture=empty');
   await page.getByRole('button', { name: 'Новое испытание' }).click();
@@ -374,13 +365,7 @@ test('обычные слова в истории остаются читаем�
     'Показать результат',
   ])
     await page.getByRole('button', { name }).click();
-  await page
-    .getByRole('combobox', { name: 'Выбрать подготовленное состояние' })
-    .selectOption('sensor-lost');
-  await page
-    .getByRole('navigation', { name: 'Навигация' })
-    .getByRole('button', { name: 'Испытания' })
-    .click();
+  await page.getByRole('button', { name: 'К списку' }).click();
   await page.evaluate(() => document.fonts.ready);
   const row = page.locator('.work-table tbody tr').filter({ hasText: 'Проверка Windows' });
   await expect(row).toBeVisible();
@@ -404,7 +389,7 @@ test('обычные слова в истории остаются читаем�
   expect(brokenWords).toEqual([]);
 });
 
-for (const fixture of ['readiness', 'measuring']) {
+for (const fixture of ['readiness']) {
   test(`широкая история не расширяет страницу (${fixture})`, async ({ page }) => {
     await page.setViewportSize({ width: 819, height: 614 });
     await page.goto(`/?fixture=${fixture}`);

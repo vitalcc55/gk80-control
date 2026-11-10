@@ -1,4 +1,5 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { MeasurementChart } from '../components/MeasurementChart';
 import type {
   AuditEvent,
   AuditPage,
@@ -16,6 +17,7 @@ import {
   measurementSourceLabel,
 } from './display';
 import { resultReadVersion } from './presentation';
+import { readMeasurementTrace, readStopReason } from './record-summary';
 import { useRecordPage } from './use-record-page';
 
 const EventRow = memo(function EventRow({ item }: { item: AuditEvent }) {
@@ -127,6 +129,25 @@ export function RecordDetails({
     kind: 'audit',
     read: (id, after) => service.audit(id, after, 100),
   });
+  const trace = useRecordPage({
+    id: record.testId,
+    version,
+    visible,
+    available,
+    kind: 'measurements',
+    read: (id, _after, current) => readMeasurementTrace(service, id, current),
+  });
+  const reason = useRecordPage({
+    id: record.testId,
+    version: `${version}:${record.stopCommandId ?? ''}`,
+    visible,
+    available,
+    kind: 'audit',
+    read: (id, _after, current) =>
+      record.stopCommandId
+        ? readStopReason(service, id, record.stopCommandId, current)
+        : Promise.resolve(null),
+  });
   const measurementOpen = measurement.open;
   const measurements = measurement.page;
   const measurementError = measurement.error;
@@ -138,6 +159,16 @@ export function RecordDetails({
   const auditError = journal.error;
   const auditLoading = journal.loading;
   const auditStale = journal.stale;
+  const autoOpened = useRef<string | null>(null);
+  useEffect(() => {
+    if (record.outcome !== 'interrupted' || autoOpened.current === record.testId) return;
+    autoOpened.current = record.testId;
+    measurement.setOpen(true);
+    trace.setOpen(true);
+  }, [record.testId, record.outcome, measurement.setOpen, trace.setOpen]);
+  useEffect(() => {
+    reason.setOpen(record.outcome === 'interrupted' || record.outcome === 'unknown');
+  }, [record.outcome, reason.setOpen]);
   useLayoutEffect(() => {
     if (
       measurement.scrollVersion &&
@@ -171,6 +202,100 @@ export function RecordDetails({
   if (!visible) return null;
   return (
     <div className="record-disclosures">
+      {reason.open && (
+        <div className="work-surface result-section">
+          <h2>Причина остановки</h2>
+          {reason.loading || (!reason.loaded && available && !reason.error) ? (
+            <p role="status">Чтение причины остановки…</p>
+          ) : reason.error ? (
+            <>
+              <p role="alert">
+                {reason.retry ? 'Не удалось прочитать причину остановки.' : reason.error}
+              </p>
+              {reason.retry && (
+                <button type="button" onClick={reason.retryRead}>
+                  Повторить чтение причины
+                </button>
+              )}
+            </>
+          ) : !available ? (
+            <p>Ожидание связи для чтения причины остановки.</p>
+          ) : reason.stale ? (
+            <p>Причина остановки не подтверждена для текущей версии записи.</p>
+          ) : (
+            <p>
+              {reason.page
+                ? eventReasonLabels(reason.page).join('; ')
+                : 'Причина не найдена в сохранённом журнале.'}
+            </p>
+          )}
+        </div>
+      )}
+      <details
+        className="work-surface result-section"
+        open={trace.open}
+        onToggle={(event) => {
+          if (event.target === event.currentTarget) trace.setOpen(event.currentTarget.open);
+        }}
+      >
+        <summary>График измерений</summary>
+        {trace.open && (
+          <>
+            {trace.loading && <p role="status">Чтение графика…</p>}
+            {!available && !trace.loading && !trace.error && (
+              <p>Ожидание связи для чтения графика.</p>
+            )}
+            {trace.error && (
+              <>
+                <p role="alert">
+                  {trace.retry
+                    ? 'Не удалось построить полный график по сохранённым данным.'
+                    : trace.error}
+                </p>
+                {trace.retry && (
+                  <button type="button" onClick={trace.retryRead}>
+                    Повторить чтение графика
+                  </button>
+                )}
+              </>
+            )}
+            {!trace.loading &&
+              !trace.error &&
+              !trace.stale &&
+              trace.page &&
+              (trace.page.length ? (
+                <>
+                  <p>Время от первого отсчёта каждого участка; пропуски не соединяются.</p>
+                  {trace.page.length > 1 && (
+                    <p>Временные метки повторились или изменились: участки показаны раздельно.</p>
+                  )}
+                  {trace.page.map((segment, index) => {
+                    const segmentId = `segment-${index}`;
+                    return (
+                      <div key={segmentId}>
+                        {trace.page && trace.page.length > 1 && (
+                          <p>
+                            Начало участка:{' '}
+                            <time dateTime={segment.startedAt}>
+                              {formatEventDateTime(segment.startedAt)}
+                            </time>
+                          </p>
+                        )}
+                        <MeasurementChart
+                          points={segment.points}
+                          target={record.parameters.pmaxPa}
+                          live
+                        />
+                      </div>
+                    );
+                  })}
+                </>
+              ) : (
+                <p>Сохранённых показаний для графика нет.</p>
+              ))}
+          </>
+        )}
+      </details>
       <details
         className="work-surface result-section"
         open={informationOpen}

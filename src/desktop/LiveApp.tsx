@@ -413,9 +413,17 @@ function ActiveLiveApp({
     return undefined;
   }, [fresh, activeId, stage, revision, service, hostRunId, backendRunId, showMessage]);
 
+  const navigationLocked = stage === 'running' || stage === 'stopping';
+  useLayoutEffect(() => {
+    if (!navigationLocked) return;
+    setShowHistory(false);
+    setShowSavedParameters(false);
+    setShowForm(false);
+  }, [navigationLocked, setShowForm, setShowHistory]);
   const formParameters = record ? parametersForDisplay(record) : empty;
-  const currentScreen: Screen =
-    showHistory || (!record && !showForm)
+  const currentScreen: Screen = navigationLocked
+    ? 'run'
+    : showHistory || (!record && !showForm)
       ? historyResult
         ? 'result'
         : 'tests'
@@ -443,6 +451,7 @@ function ActiveLiveApp({
     }
   }, [record, submittedCreate, coordinator, draft, setShowForm]);
   const openHistory = () => {
+    if (navigationLocked) return;
     requestFocus('tests');
     setHistoryReset((value) => value + 1);
     setHistoryResult(false);
@@ -490,6 +499,7 @@ function ActiveLiveApp({
       screen={currentScreen}
       historyResult={historyVisible && historyResult}
       active={!!record && stage !== 'finished'}
+      navigationLocked={navigationLocked}
       draftAvailable={draftAvailable || showForm}
       mainRef={mainRef}
       onTests={openHistory}
@@ -509,6 +519,7 @@ function ActiveLiveApp({
           : null
       }
       onParameters={() => {
+        if (navigationLocked) return;
         requestFocus('parameters');
         setShowHistory(false);
         if (record && stage !== 'finished') setShowSavedParameters(true);

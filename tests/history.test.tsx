@@ -2,7 +2,11 @@ import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { expect, it, vi } from 'vitest';
 
-vi.mock('../src/components/MeasurementChart', () => ({ MeasurementChart: () => null }));
+vi.mock('../src/components/MeasurementChart', () => ({
+  MeasurementChart: ({ points }: { points: unknown }) => (
+    <div data-testid="saved-chart" data-points={JSON.stringify(points)} />
+  ),
+}));
 
 import { type ReactNode, useState } from 'react';
 import { AppShell } from '../src/components/AppShell';
@@ -11,10 +15,12 @@ import { eventActionLabel, eventOutcomeLabel, eventReasonLabels } from '../src/d
 import { History } from '../src/desktop/History';
 import { LiveApp } from '../src/desktop/LiveApp';
 import { RecordDetails } from '../src/desktop/RecordDetails';
+import { measurementSegments, readStopReason } from '../src/desktop/record-summary';
 import { desktopDemoService } from '../src/desktop/wails-bridge';
 import { FixtureTests } from '../src/FixtureTests';
 import { fixtureSource } from '../src/fixtureAdapter';
 import {
+  type AuditPage,
   ConnectionStateStatus,
   MeasurementChannel,
   type MeasurementPage,
@@ -94,6 +100,280 @@ function PreparedHistory({ entries }: { entries: Array<typeof fixtureSource.init
   );
 }
 
+it('показывает все страницы графика без слияния близких отсчётов и причину с последующей страницы', async () => {
+  const first = measurementPage(1).items?.[0];
+  if (!first) throw new Error('Measurement missing');
+  const measurements = vi.fn(async (_id: string, after: number) =>
+    after === 0
+      ? {
+          items: [
+            { ...first, sequence: 1, measuredAt: '2026-11-05T00:00:00.000100Z', value: 10 },
+            ...Array.from({ length: 499 }, (_, index) => ({
+              ...first,
+              sequence: index + 2,
+              channel: MeasurementChannel.Dd3,
+            })),
+          ],
+          nextAfter: 500,
+        }
+      : {
+          items: [
+            { ...first, sequence: 501, measuredAt: '2026-11-05T00:00:00.000200Z', value: 20 },
+          ],
+          nextAfter: null,
+        },
+  );
+  const audit = vi.fn(async (_id: string, after: number) =>
+    after === 0
+      ? {
+          items: Array.from({ length: 500 }, (_, index) => ({
+            sequence: index + 1,
+            testId: record.testId,
+            occurredAt: record.createdAt,
+            operatorId: 'demo-operator',
+            action: 'confirm',
+            outcome: 'completed',
+            revision: index + 1,
+          })),
+          nextAfter: 500,
+        }
+      : {
+          items: [
+            {
+              sequence: 501,
+              testId: record.testId,
+              occurredAt: record.createdAt,
+              operatorId: 'demo-operator',
+              action: 'stop',
+              outcome: 'accepted',
+              revision: 3,
+              commandId: record.stopCommandId,
+              reason: 'operator',
+            },
+          ],
+          nextAfter: null,
+        },
+  );
+  const stopped = { ...record, outcome: TestRecordOutcome.TestRecordOutcomeInterrupted };
+  render(
+    <RecordDetails
+      record={stopped}
+      service={{ ...desktopDemoService, measurements, audit }}
+      available
+    />,
+  );
+  await waitFor(() =>
+    expect(screen.getByTestId('saved-chart').getAttribute('data-points')).toContain('0.0001'),
+  );
+  expect(screen.getByTestId('saved-chart').getAttribute('data-points')).toContain('"pressure":20');
+  expect(await screen.findByText('Остановка по запросу оператора')).toBeTruthy();
+  expect(measurements).toHaveBeenCalledWith(record.testId, 500, 500);
+  expect(audit).toHaveBeenCalledWith(record.testId, 500, 500);
+});
+
+it('сохраняет точность строчных временных меток и разделяет участки при переводе часов', () => {
+  const first = measurementPage(1).items?.[0];
+  if (!first) throw new Error('Measurement missing');
+  const points = measurementSegments([
+    { ...first, measuredAt: '2026-11-05t00:00:00.000100z', value: 10 },
+    { ...first, sequence: 2, measuredAt: '2026-11-05t00:00:00.000200z', value: 20 },
+    { ...first, sequence: 3, measuredAt: '2026-11-04T23:59:59Z', value: 30 },
+    { ...first, sequence: 4, measuredAt: '2026-11-04T23:59:59Z', value: 40 },
+  ]);
+  expect(points).toEqual([
+    {
+      startedAt: '2026-11-05t00:00:00.000100z',
+      points: [
+        { seconds: 0, pressure: 10, differential: null },
+        { seconds: 0.0001, pressure: 20, differential: null },
+      ],
+    },
+    {
+      startedAt: '2026-11-04T23:59:59Z',
+      points: [{ seconds: 0, pressure: 30, differential: null }],
+    },
+    {
+      startedAt: '2026-11-04T23:59:59Z',
+      points: [{ seconds: 0, pressure: 40, differential: null }],
+    },
+  ]);
+});
+
+it('различает ожидание связи и отсутствие сохранённой причины', async () => {
+  const stopped = { ...record, outcome: TestRecordOutcome.TestRecordOutcomeUnknown };
+  const audit = vi.fn().mockResolvedValue({ items: [], nextAfter: null });
+  const service = { ...desktopDemoService, audit };
+  const view = render(<RecordDetails record={stopped} service={service} available={false} />);
+  expect(await screen.findByText('Ожидание связи для чтения причины остановки.')).toBeTruthy();
+  expect(audit).not.toHaveBeenCalled();
+  view.rerender(<RecordDetails record={stopped} service={service} available />);
+  expect(await screen.findByText('Причина не найдена в сохранённом журнале.')).toBeTruthy();
+});
+
+it('ограничивает число одновременно создаваемых графиков', () => {
+  const first = measurementPage(1).items?.[0];
+  if (!first) throw new Error('Measurement missing');
+  const repeated = Array.from({ length: 17 }, (_, index) => ({ ...first, sequence: index + 1 }));
+  expect(() => measurementSegments(repeated)).toThrow('Слишком много участков графика');
+});
+
+it('не перечитывает график после достижения предела при повторном открытии', async () => {
+  const first = measurementPage(1).items?.[0];
+  if (!first) throw new Error('Measurement missing');
+  const measurements = vi.fn().mockResolvedValue({
+    items: Array.from({ length: 17 }, (_, index) => ({ ...first, sequence: index + 1 })),
+    nextAfter: null,
+  });
+  const audit = vi.fn().mockResolvedValue({ items: [], nextAfter: null });
+  const stopped = { ...record, outcome: TestRecordOutcome.TestRecordOutcomeInterrupted };
+  const service = { ...desktopDemoService, measurements, audit };
+  const view = render(<RecordDetails record={stopped} service={service} available />);
+  expect(
+    await screen.findByText('Слишком много участков графика. Доступны страницы измерений ниже.'),
+  ).toBeTruthy();
+  const calls = measurements.mock.calls.length;
+  const user = userEvent.setup();
+  await user.click(screen.getByText('График измерений', { selector: 'summary' }));
+  await user.click(screen.getByText('График измерений', { selector: 'summary' }));
+  expect(
+    screen.getByText('Слишком много участков графика. Доступны страницы измерений ниже.'),
+  ).toBeTruthy();
+  expect(measurements).toHaveBeenCalledTimes(calls);
+  const updated = {
+    ...stopped,
+    dataQuality: TestRecordDataQuality.TestRecordDataQualityIncomplete,
+  };
+  view.rerender(<RecordDetails record={updated} service={service} available visible={false} />);
+  expect(measurements).toHaveBeenCalledTimes(calls);
+  view.rerender(<RecordDetails record={updated} service={service} available />);
+  await waitFor(() => expect(measurements.mock.calls.length).toBeGreaterThan(calls));
+});
+
+it('не читает следующую страницу причины после смены записи', async () => {
+  let finish: (page: AuditPage) => void = () => {};
+  const pending = new Promise<AuditPage>((resolve) => {
+    finish = resolve;
+  });
+  const audit = vi.fn().mockReturnValue(pending);
+  let current = true;
+  const result = readStopReason(
+    { ...desktopDemoService, audit },
+    record.testId,
+    record.stopCommandId ?? '',
+    () => current,
+  );
+  current = false;
+  finish({
+    items: [
+      {
+        sequence: 1,
+        testId: record.testId,
+        occurredAt: record.createdAt,
+        operatorId: 'demo-operator',
+        action: 'create',
+        outcome: 'completed',
+        revision: 1,
+      },
+    ],
+    nextAfter: 1,
+  });
+  await expect(result).rejects.toThrow('Read superseded');
+  expect(audit).toHaveBeenCalledTimes(1);
+});
+
+it('сообщает о пределе поиска причины и не предлагает бесполезный повтор', async () => {
+  const audit = vi.fn(async (_id: string, after: number) => ({
+    items: Array.from({ length: 500 }, (_, index) => ({
+      sequence: after + index + 1,
+      testId: record.testId,
+      occurredAt: record.createdAt,
+      operatorId: 'demo-operator',
+      action: 'confirm',
+      outcome: 'completed',
+      revision: after + index + 1,
+    })),
+    nextAfter: after + 500,
+  }));
+  const stopped = { ...record, outcome: TestRecordOutcome.TestRecordOutcomeUnknown };
+  render(<RecordDetails record={stopped} service={{ ...desktopDemoService, audit }} available />);
+  expect(
+    await screen.findByText(
+      'Причина не найдена в пределах поиска. Проверьте страницы журнала событий.',
+    ),
+  ).toBeTruthy();
+  expect(audit).toHaveBeenCalledTimes(100);
+  expect(screen.queryByRole('button', { name: 'Повторить чтение причины' })).toBeNull();
+});
+
+it('не выдаёт ошибку чтения причины за отсутствие и повторяет для неизвестного исхода', async () => {
+  const audit = vi
+    .fn()
+    .mockRejectedValueOnce(new Error('offline'))
+    .mockResolvedValue({
+      items: [
+        {
+          sequence: 1,
+          testId: record.testId,
+          occurredAt: record.createdAt,
+          operatorId: 'demo-operator',
+          action: 'stop',
+          outcome: 'accepted',
+          revision: 3,
+          commandId: record.stopCommandId,
+          reason: 'operator',
+        },
+      ],
+      nextAfter: null,
+    });
+  const unknown = { ...record, outcome: TestRecordOutcome.TestRecordOutcomeUnknown };
+  render(<RecordDetails record={unknown} service={{ ...desktopDemoService, audit }} available />);
+  expect(await screen.findByText('Не удалось прочитать причину остановки.')).toBeTruthy();
+  expect(screen.queryByText('Причина не подтверждена.')).toBeNull();
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Повторить чтение причины' }));
+  expect(await screen.findByText('Остановка по запросу оператора')).toBeTruthy();
+});
+
+it('переключает разделы истории и сохраняет доступ к неизвестному исходу', async () => {
+  let finish: (value: TestList) => void = () => {};
+  const oldPage = new Promise<TestList>((resolve) => {
+    finish = resolve;
+  });
+  const listTests = vi
+    .fn()
+    .mockReturnValueOnce(oldPage)
+    .mockResolvedValue({ items: [], nextAfter: null, total: 0 });
+  render(
+    <History
+      {...callbacks}
+      service={{ ...desktopDemoService, listTests }}
+      available
+      disabled={false}
+      draftAvailable={false}
+    />,
+  );
+  const user = userEvent.setup();
+  await user.click(screen.getByRole('button', { name: 'Прерванные' }));
+  await waitFor(() =>
+    expect(listTests).toHaveBeenLastCalledWith({ outcome: 'interrupted', limit: 20, after: null }),
+  );
+  await act(async () => {
+    finish({ items: [record], total: 1, nextAfter: null });
+    await oldPage;
+  });
+  expect(screen.queryByRole('button', { name: /Открыть Первая запись/ })).toBeNull();
+  await user.selectOptions(screen.getByLabelText('Исход'), 'unknown');
+  await user.click(screen.getByRole('button', { name: 'Найти' }));
+  await waitFor(() =>
+    expect(listTests).toHaveBeenLastCalledWith({ outcome: 'unknown', limit: 20, after: null }),
+  );
+  expect(screen.getByRole('button', { name: 'Завершённые' }).getAttribute('aria-pressed')).toBe(
+    'false',
+  );
+  expect(screen.getByRole('button', { name: 'Прерванные' }).getAttribute('aria-pressed')).toBe(
+    'false',
+  );
+});
+
 it('не принимает старый список после потери связи и обновляет запрошенную страницу', async () => {
   let finish: (value: TestList) => void = () => {};
   const pending = new Promise<TestList>((resolve) => {
@@ -120,7 +400,7 @@ it('не принимает старый список после потери с
   expect(screen.queryByRole('button', { name: /Открыть Первая/ })).toBeNull();
   view.rerender(draw(true));
   await waitFor(() => expect(listTests).toHaveBeenCalledTimes(2));
-  expect(listTests).toHaveBeenLastCalledWith({ limit: 20, after: null });
+  expect(listTests).toHaveBeenLastCalledWith({ limit: 20, after: null, outcome: 'completed' });
 });
 
 it('после восстановления повторяет страницу применённого поиска и игнорирует прежний ответ', async () => {
@@ -153,7 +433,12 @@ it('после восстановления повторяет страницу 
   view.rerender(draw(false));
   view.rerender(draw(true));
   await waitFor(() => expect(listTests).toHaveBeenCalledTimes(4));
-  expect(listTests).toHaveBeenLastCalledWith({ q: 'Клапан', limit: 20, after: record.testId });
+  expect(listTests).toHaveBeenLastCalledWith({
+    q: 'Клапан',
+    limit: 20,
+    after: record.testId,
+    outcome: 'completed',
+  });
   await act(async () => finish({ items: [record], total: null, nextAfter: null }));
   expect(screen.queryByRole('button', { name: /Открыть Первая/ })).toBeNull();
 });
@@ -165,12 +450,14 @@ it('limits the prepared history page including the active record', async () => {
     valve: `Клапан ${index}`,
   }));
   render(<PreparedHistory entries={entries} />);
+  const user = userEvent.setup();
+  await user.selectOptions(screen.getByLabelText('Исход'), '');
+  await user.click(screen.getByRole('button', { name: 'Найти' }));
   expect(screen.getAllByRole('row')).toHaveLength(21);
   expect(screen.getByText(/Страница 1.*записей 22.*страниц 2/)).toBeTruthy();
   expect(
     screen.getByRole('button', { name: /Вернуться к испытанию.*Активный клапан/ }),
   ).toBeTruthy();
-  const user = userEvent.setup();
   await user.click(screen.getByRole('button', { name: 'Следующая страница' }));
   expect(screen.getAllByRole('row')).toHaveLength(3);
   expect(screen.getByText(/Страница 2.*записей 22.*страниц 2/)).toBeTruthy();
@@ -226,7 +513,11 @@ it('сохраняет номер страницы при недоступном
   expect(screen.getByText('На этой странице записей нет')).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'Обновить количество' }));
   await screen.findByText(/Страница 2.*записей 21/);
-  expect(listTests).toHaveBeenLastCalledWith({ limit: 20, after: record.testId });
+  expect(listTests).toHaveBeenLastCalledWith({
+    limit: 20,
+    after: record.testId,
+    outcome: 'completed',
+  });
 });
 
 it('не утверждает, что история пуста, если количество не подтверждено', async () => {
@@ -306,7 +597,7 @@ it('предлагает вернуться к началу, если истор
   await screen.findByText(/Список мог измениться\. Вернитесь к началу/);
   await user.click(screen.getByRole('button', { name: 'К началу списка' }));
   await screen.findByText(/Страница 1.*записей 36/);
-  expect(listTests).toHaveBeenLastCalledWith({ limit: 20, after: null });
+  expect(listTests).toHaveBeenLastCalledWith({ limit: 20, after: null, outcome: 'completed' });
 });
 
 it('предупреждает, когда новая запись добавила страницу перед текущим курсором', async () => {
@@ -399,7 +690,12 @@ it('keeps the applied search when page size changes offline while an old page is
   expect(listTests).toHaveBeenCalledTimes(3);
   view.rerender(draw(true));
   await waitFor(() =>
-    expect(listTests).toHaveBeenLastCalledWith({ q: 'Применено', limit: 50, after: null }),
+    expect(listTests).toHaveBeenLastCalledWith({
+      q: 'Применено',
+      limit: 50,
+      after: null,
+      outcome: 'completed',
+    }),
   );
   expect(listTests).toHaveBeenCalledTimes(4);
   expect(search).toHaveProperty('value', 'Черновик');
@@ -422,7 +718,7 @@ it('changes page size without applying an unfinished search or accepting an old 
   );
   const user = userEvent.setup();
   expect(await screen.findByRole('button', { name: /Открыть Первая/ })).toBeTruthy();
-  expect(listTests).toHaveBeenLastCalledWith({ limit: 20, after: null });
+  expect(listTests).toHaveBeenLastCalledWith({ limit: 20, after: null, outcome: 'completed' });
   const search = screen.getByLabelText('Поиск по номеру или изделию');
   await user.type(search, 'Применено');
   await user.click(screen.getByRole('button', { name: 'Найти' }));
@@ -431,7 +727,12 @@ it('changes page size without applying an unfinished search or accepting an old 
   await user.type(search, 'Не отправлено');
   await user.selectOptions(screen.getByLabelText('Записей на странице'), '10');
   await waitFor(() =>
-    expect(listTests).toHaveBeenLastCalledWith({ q: 'Применено', limit: 10, after: null }),
+    expect(listTests).toHaveBeenLastCalledWith({
+      q: 'Применено',
+      limit: 10,
+      after: null,
+      outcome: 'completed',
+    }),
   );
   await act(async () => finishOld({ items: [record], total: null, nextAfter: null }));
   expect(screen.queryByRole('button', { name: /Открыть Первая/ })).toBeNull();
@@ -779,6 +1080,7 @@ it.each(['ς', '[a]'])(
       />,
     );
     const user = userEvent.setup();
+    await user.selectOptions(screen.getByLabelText('Исход'), '');
     await user.click(screen.getByLabelText('Поиск по номеру или изделию'));
     await user.paste(query);
     await user.click(screen.getByRole('button', { name: 'Найти' }));
@@ -1111,7 +1413,7 @@ it('refreshes the visible history when a newly created active record appears', a
   const view = render(
     <History {...callbacks} service={service} available disabled={false} draftAvailable={false} />,
   );
-  await screen.findByText('История пуста');
+  await screen.findByText('По заданным условиям записей нет');
   view.rerender(
     <History
       {...callbacks}
@@ -1394,6 +1696,7 @@ it('ends the canceled loading state when a new query is submitted offline', asyn
       q: 'Новая выборка',
       after: null,
       limit: 20,
+      outcome: 'completed',
     }),
   );
 });
@@ -2509,7 +2812,11 @@ it('retries the failed page of the applied query without submitting edited filte
   await user.type(screen.getByLabelText('Поиск по номеру или изделию'), 'Не отправлено');
   await user.click(screen.getByRole('button', { name: 'Повторить чтение списка' }));
   await screen.findByRole('button', { name: /Открыть Первая/ });
-  expect(listTests).toHaveBeenLastCalledWith({ limit: 20, after: record.testId });
+  expect(listTests).toHaveBeenLastCalledWith({
+    limit: 20,
+    after: record.testId,
+    outcome: 'completed',
+  });
   expect(screen.getByLabelText('Поиск по номеру или изделию')).toHaveProperty(
     'value',
     'Не отправлено',
@@ -2581,7 +2888,7 @@ it.each(['navigation', 'connection'])(
     expect(screen.queryByRole('button', { name: /Открыть Первая/ })).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Сбросить поиск' }));
     expect(await screen.findByRole('button', { name: /Открыть Первая/ })).toBeTruthy();
-    expect(listTests).toHaveBeenLastCalledWith({ limit: 50, after: null });
+    expect(listTests).toHaveBeenLastCalledWith({ limit: 50, after: null, outcome: 'completed' });
   },
 );
 
@@ -2677,7 +2984,11 @@ it('queries the whole source with calendar/outcome filters, resets the cursor an
   );
   const user = userEvent.setup();
   await user.click(await screen.findByRole('button', { name: 'Следующая страница' }));
-  expect(listTests).toHaveBeenLastCalledWith({ limit: 20, after: record.testId });
+  expect(listTests).toHaveBeenLastCalledWith({
+    limit: 20,
+    after: record.testId,
+    outcome: 'completed',
+  });
   await user.type(screen.getByLabelText('Поиск по номеру или изделию'), 'За первой');
   await user.selectOptions(screen.getByLabelText('Исход'), 'completed');
   await user.type(screen.getByLabelText('С даты'), '2026-11-05');
@@ -2736,7 +3047,12 @@ it('keeps filters and the current bounded page across hidden navigation and igno
   view.rerender(draw(true));
   await waitFor(() => expect(listTests).toHaveBeenCalledTimes(calls + 1));
   expect(screen.getByLabelText('Поиск по номеру или изделию')).toHaveProperty('value', 'Первая');
-  expect(listTests).toHaveBeenLastCalledWith({ limit: 20, after: null, q: 'Первая' });
+  expect(listTests).toHaveBeenLastCalledWith({
+    limit: 20,
+    after: null,
+    q: 'Первая',
+    outcome: 'completed',
+  });
 });
 
 it('opens the shared result before reading details and retains the record when a detail page fails', async () => {
@@ -2825,7 +3141,12 @@ it('starts a changed offline query at the first cursor on reconnect, including u
   await user.click(screen.getByRole('button', { name: 'Найти' }));
   view.rerender(draw(true));
   await waitFor(() =>
-    expect(listTests).toHaveBeenLastCalledWith({ limit: 50, after: null, q: 'Другая выборка' }),
+    expect(listTests).toHaveBeenLastCalledWith({
+      limit: 50,
+      after: null,
+      q: 'Другая выборка',
+      outcome: 'completed',
+    }),
   );
   await user.selectOptions(screen.getByLabelText('Исход'), 'unknown');
   await user.click(screen.getByRole('button', { name: 'Найти' }));

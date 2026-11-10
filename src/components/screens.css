@@ -593,3 +593,25 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+.history-outcome-tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+  padding: 0;
+  border: 0;
+}
+
+.history-outcome-tabs button {
+  border: 1px solid var(--border, #d6e2dc);
+  border-radius: 0.4rem;
+  padding: 0.5rem 0.85rem;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.history-outcome-tabs button[aria-pressed="true"] {
+  background: #276e68;
+  border-color: #276e68;
+  color: white;
+}

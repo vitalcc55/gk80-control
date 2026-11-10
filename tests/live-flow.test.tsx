@@ -1,6 +1,6 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { type ComponentProps, Profiler, StrictMode } from 'react';
+import { type ComponentProps, StrictMode } from 'react';
 import { beforeEach, expect, it, vi } from 'vitest';
 import type { DesktopBridge, SessionBridge } from '../src/desktop/bridge';
 import { createBrowserBridge } from '../src/desktop/browser-bridge';
@@ -185,7 +185,7 @@ const record = {
   },
 };
 
-it('isolates a series-only update from hidden screens and keeps the completed result reachable', async () => {
+it('keeps the active series and completed result reachable without leaving the run', async () => {
   const measurementContext = new MeasurementSeriesContext();
   let snapshot: Snapshot = {
     apiVersion: 'v1',
@@ -228,21 +228,16 @@ it('isolates a series-only update from hidden screens and keeps the completed re
     }),
   };
   api.list.mockResolvedValue({ items: [], nextAfter: null });
-  const commits = vi.fn();
   render(
-    <Profiler id="operator-view" onRender={commits}>
-      <LiveApp
-        session={session}
-        hostRunId={host}
-        backendRunId={backend}
-        measurementContext={measurementContext}
-      />
-    </Profiler>,
+    <LiveApp
+      session={session}
+      hostRunId={host}
+      backendRunId={backend}
+      measurementContext={measurementContext}
+    />,
   );
   await screen.findByRole('heading', { name: 'Проведение испытания' });
-  await userEvent.setup().click(screen.getByRole('button', { name: 'Испытания' }));
-  await screen.findByText('История пуста');
-  commits.mockClear();
+  expect(screen.getByRole('button', { name: 'Испытания' })).toHaveProperty('disabled', true);
   const key = `${host}:${backend}:${database}:${testId}`;
   const next = {
     ...snapshot,
@@ -257,7 +252,6 @@ it('isolates a series-only update from hidden screens and keeps the completed re
   };
   act(() => measurementContext.accept(key, next, true, 0));
   expect(measurementContext.read(key).points.at(-1)?.pressure).toBe(1001);
-  expect(commits).not.toHaveBeenCalled();
   snapshot = {
     ...snapshot,
     revision: 2,
@@ -276,154 +270,130 @@ it('isolates a series-only update from hidden screens and keeps the completed re
   expect(api.stop).not.toHaveBeenCalled();
 }, 12000);
 
-it.each(['history', 'bridge'] as const)(
-  'retains chart points and time origin through %s without sending commands',
-  async (route) => {
-    const sample = (index: number): Snapshot => ({
-      apiVersion: 'v1',
-      backendRunId: backend,
-      revision: index,
-      lastEventSequence: index,
-      measurementBatch: index,
-      activeTest: { ...record, stage: TestRecordStage.Running },
-      pendingAction: null,
-      measurementTiming: null,
-      measurements: [
-        {
-          channel: MeasurementChannel.Dd1,
-          measuredAt: `2026-10-30T00:00:0${index}Z`,
-          observedAt: `2026-10-30T00:00:0${index}Z`,
-          quality: MeasurementQuality.MeasurementQualityValid,
-          quantity: MeasurementQuantity.MeasurementQuantityPressure,
-          sequence: index,
-          source: MeasurementSource.MeasurementSourceSimulator,
-          unit: MeasurementUnit.Pa,
-          value: 999 + index,
-        },
-      ],
-    });
-    let snapshot = sample(1);
-    let revision = 0;
-    const session: SessionBridge = {
-      beginSessionCheck: async () => 'ticket',
-      keepAlive: async () => {},
-      sessionView: async () => ({
-        connection: {
-          hostRunId: host,
-          revision: ++revision,
-          status: ConnectionStateStatus.Live,
-          linkValid: true,
-          leaseAcquireUnknown: false,
-          streamGeneration: 0,
-        },
-        snapshot,
-        validForMs: 6000,
-        linkValidForMs: 6000,
-      }),
-    };
-    api.list.mockResolvedValue({ items: [], nextAfter: null });
-    const desktop: DesktopBridge = {
-      status: async () => ({
+it('blocks navigation during the run and retains the chart through bridge interruption', async () => {
+  const sample = (index: number): Snapshot => ({
+    apiVersion: 'v1',
+    backendRunId: backend,
+    revision: index,
+    lastEventSequence: index,
+    measurementBatch: index,
+    activeTest: { ...record, stage: TestRecordStage.Running },
+    pendingAction: null,
+    measurementTiming: null,
+    measurements: [
+      {
+        channel: MeasurementChannel.Dd1,
+        measuredAt: `2026-10-30T00:00:0${index}Z`,
+        observedAt: `2026-10-30T00:00:0${index}Z`,
+        quality: MeasurementQuality.MeasurementQualityValid,
+        quantity: MeasurementQuantity.MeasurementQuantityPressure,
+        sequence: index,
+        source: MeasurementSource.MeasurementSourceSimulator,
+        unit: MeasurementUnit.Pa,
+        value: 999 + index,
+      },
+    ],
+  });
+  let snapshot = sample(1);
+  let revision = 0;
+  const session: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
         hostRunId: host,
-        revision: 1,
-        connectionRevision: 1,
-        status: DesktopStatusStatus.DesktopStatusStatusReady,
-        diagnosticsDegraded: false,
-        handshake: { apiVersion: 'v1', backendRunId: backend, databaseId: database, demo: true },
-      }),
-      verify: async () => desktop.status(),
-      subscribe: () => () => {},
-    };
-    const measurementContext = new MeasurementSeriesContext();
-    const view = render(
-      <DesktopApp bridge={desktop} session={session} measurementContext={measurementContext} />,
-    );
-    const points = () =>
-      screen.getByRole('img', { name: 'График показаний симулятора' }).getAttribute('data-points');
-    await waitFor(() => expect(points()).toContain('1000'));
-    const currentNavigation = screen.getByRole('button', { name: 'Текущее испытание' });
-    expect(currentNavigation.getAttribute('aria-current')).toBe('page');
-    currentNavigation.focus();
-    snapshot = sample(2);
-    await waitFor(() => expect(points()).toContain('1001'), { timeout: 8000 });
-    expect(document.activeElement).toBe(currentNavigation);
-    const user = userEvent.setup();
-    if (route === 'history') {
-      await user.click(screen.getByRole('button', { name: 'Испытания' }));
-      expect(document.activeElement).toBe(screen.getByRole('main', { name: 'Испытания' }));
-      expect(screen.getByRole('button', { name: 'Испытания' }).getAttribute('aria-current')).toBe(
-        'page',
-      );
-      expect(screen.getByRole('button', { name: 'Остановить испытание' })).toBeTruthy();
-    } else {
-      view.rerender(
-        <DesktopApp
-          bridge={{
-            ...desktop,
-            status: async () => {
-              throw new Error('unavailable');
-            },
-          }}
-          session={session}
-          measurementContext={measurementContext}
-        />,
-      );
-      await screen.findByRole('button', { name: 'Повторить связь' });
-    }
-    expect(screen.queryByRole('img', { name: 'График показаний симулятора' })).toBeNull();
-    snapshot = sample(route === 'history' ? 4 : 3);
-    if (route === 'history') {
-      await waitFor(
-        () =>
-          expect(
-            measurementContext
-              .read(`${host}:${backend}:${database}:${testId}`)
-              .points.map((point) => point.pressure),
-          ).toEqual([1000, 1001, null, 1003]),
-        { timeout: 8000 },
-      );
-      expect(screen.queryByRole('img', { name: 'График показаний симулятора' })).toBeNull();
-      snapshot = sample(5);
-      await waitFor(
-        () =>
-          expect(
-            measurementContext
-              .read(`${host}:${backend}:${database}:${testId}`)
-              .points.map((point) => point.pressure),
-          ).toEqual([1000, 1001, null, 1003, 1004]),
-        { timeout: 8000 },
-      );
-      expect(screen.queryByRole('img', { name: 'График показаний симулятора' })).toBeNull();
-      await user.click(screen.getByRole('button', { name: 'Текущее испытание' }));
-    } else
-      view.rerender(
-        <DesktopApp bridge={desktop} session={session} measurementContext={measurementContext} />,
-      );
-    await waitFor(
-      () =>
-        expect(points()).toBe(
-          JSON.stringify([
-            { seconds: 0, pressure: 1000, differential: null },
-            { seconds: 1, pressure: 1001, differential: null },
-            ...(route === 'bridge'
-              ? [
-                  { seconds: 1.5, pressure: null, differential: null },
-                  { seconds: 2, pressure: 1002, differential: null },
-                ]
-              : [
-                  { seconds: 2, pressure: null, differential: null },
-                  { seconds: 3, pressure: 1003, differential: null },
-                  { seconds: 4, pressure: 1004, differential: null },
-                ]),
-          ]),
-        ),
-      { timeout: 8000 },
-    );
-    for (const command of [api.create, api.start, api.confirm, api.stop])
-      expect(command).not.toHaveBeenCalled();
-  },
-  30000,
-);
+        revision: ++revision,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot,
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.list.mockResolvedValue({ items: [], nextAfter: null });
+  const desktop: DesktopBridge = {
+    status: async () => ({
+      hostRunId: host,
+      revision: 1,
+      connectionRevision: 1,
+      status: DesktopStatusStatus.DesktopStatusStatusReady,
+      diagnosticsDegraded: false,
+      handshake: { apiVersion: 'v1', backendRunId: backend, databaseId: database, demo: true },
+    }),
+    verify: async () => desktop.status(),
+    subscribe: () => () => {},
+  };
+  const measurementContext = new MeasurementSeriesContext();
+  const view = render(
+    <DesktopApp bridge={desktop} session={session} measurementContext={measurementContext} />,
+  );
+  const points = () =>
+    screen.getByRole('img', { name: 'График показаний симулятора' }).getAttribute('data-points');
+  await waitFor(() => expect(points()).toContain('1000'));
+  const currentNavigation = screen.getByRole('button', { name: 'Текущее испытание' });
+  expect(currentNavigation.getAttribute('aria-current')).toBe('page');
+  currentNavigation.focus();
+  snapshot = sample(2);
+  await waitFor(() => expect(points()).toContain('1001'), { timeout: 8000 });
+  expect(document.activeElement).toBe(currentNavigation);
+  const user = userEvent.setup();
+  expect(screen.getByRole('button', { name: 'Испытания' })).toHaveProperty('disabled', true);
+  expect(screen.getByRole('button', { name: 'Параметры' })).toHaveProperty('disabled', true);
+  await user.click(screen.getByRole('button', { name: 'Испытания' }));
+  expect(screen.getByRole('heading', { name: 'Проведение испытания' })).toBeTruthy();
+  view.rerender(
+    <DesktopApp
+      bridge={{
+        ...desktop,
+        status: async () => {
+          throw new Error('unavailable');
+        },
+      }}
+      session={session}
+      measurementContext={measurementContext}
+    />,
+  );
+  await screen.findByRole('button', { name: 'Повторить связь' });
+  expect(screen.queryByRole('img', { name: 'График показаний симулятора' })).toBeNull();
+  snapshot = sample(3);
+  view.rerender(
+    <DesktopApp bridge={desktop} session={session} measurementContext={measurementContext} />,
+  );
+  await waitFor(
+    () =>
+      expect(points()).toBe(
+        JSON.stringify([
+          { seconds: 0, pressure: 1000, differential: null },
+          { seconds: 1, pressure: 1001, differential: null },
+          { seconds: 1.5, pressure: null, differential: null },
+          { seconds: 2, pressure: 1002, differential: null },
+        ]),
+      ),
+    { timeout: 8000 },
+  );
+  expect(screen.getByRole('button', { name: 'Испытания' })).toHaveProperty('disabled', true);
+  snapshot = { ...sample(4), activeTest: { ...record, stage: TestRecordStage.Stopping } };
+  await screen.findAllByText(/этап остановки/i, {}, { timeout: 8000 });
+  expect(screen.getByRole('button', { name: 'Испытания' })).toHaveProperty('disabled', true);
+  snapshot = {
+    ...sample(5),
+    activeTest: {
+      ...record,
+      stage: TestRecordStage.Finished,
+      outcome: TestRecordOutcome.TestRecordOutcomeInterrupted,
+    },
+  };
+  await waitFor(
+    () =>
+      expect(screen.getByRole('button', { name: 'Испытания' })).toHaveProperty('disabled', false),
+    { timeout: 8000 },
+  );
+  for (const command of [api.create, api.start, api.confirm, api.stop])
+    expect(command).not.toHaveBeenCalled();
+}, 30000);
 
 beforeEach(() => {
   sessionStorage.clear();
@@ -1356,7 +1326,7 @@ it('keeps a requested history page when the same session replaces its service wr
     await response;
   });
   expect(await screen.findByRole('button', { name: /К-2/ })).toBeTruthy();
-  expect(listTests).toHaveBeenCalledWith({ limit: 20, after: testId });
+  expect(listTests).toHaveBeenCalledWith({ limit: 20, after: testId, outcome: 'completed' });
   expect(nextListTests).not.toHaveBeenCalled();
 });
 

@@ -14,6 +14,7 @@ export const screenTitles: Record<Screen, string> = {
 export function AppShell({
   screen,
   active,
+  navigationLocked = false,
   draftAvailable,
   onTests,
   onRun,
@@ -29,6 +30,7 @@ export function AppShell({
 }: {
   screen: Screen;
   active: boolean;
+  navigationLocked?: boolean;
   draftAvailable: boolean;
   onTests: () => void;
   onRun: () => void;
@@ -75,6 +77,7 @@ export function AppShell({
               type="button"
               className={section === 'tests' ? 'nav-item active' : 'nav-item'}
               aria-current={section === 'tests' ? 'page' : undefined}
+              disabled={navigationLocked}
               onClick={onTests}
             >
               <ListChecks size={18} aria-hidden="true" /> <span>Испытания</span>
@@ -106,6 +109,7 @@ export function AppShell({
                 type="button"
                 className={section === 'parameters' ? 'nav-item active' : 'nav-item'}
                 aria-current={section === 'parameters' ? 'page' : undefined}
+                disabled={navigationLocked}
                 onClick={onParameters}
               >
                 <FileText size={18} aria-hidden="true" />

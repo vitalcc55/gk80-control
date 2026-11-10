@@ -1,8 +1,7 @@
 import { ArrowRight } from 'lucide-react';
 import { useRef, useState } from 'react';
-import { ActiveTestPanel } from './components/ActiveTestPanel';
 import { AppShell } from './components/AppShell';
-import { ActiveParametersScreen, draftFrom, ParametersScreen } from './components/ParametersScreen';
+import { draftFrom, ParametersScreen } from './components/ParametersScreen';
 import { ReadinessScreen } from './components/ReadinessScreen';
 import { ResultScreen } from './components/ResultScreen';
 import { RunScreen as SharedRunScreen } from './components/RunScreen';
@@ -208,19 +207,10 @@ export function App() {
   const [showExample, setShowExample] = useState(
     initial.id !== 'empty' && initial.id !== 'save-error',
   );
-  const activeRun = useRef<{ fixture: Fixture; parameters: TestParameters; step: number } | null>(
-    initial.screen === 'run'
-      ? { fixture: initial, parameters: initial.parameters, step: initialStep(initial) }
-      : null,
-  );
-
   function selectFixture(id: FixtureId, preserveParameters = false) {
     const base = fixtureSource.get(id);
-    const context = preserveParameters
-      ? screen === 'run'
-        ? { fixture, parameters, step }
-        : activeRun.current
-      : null;
+    if (active && base.screen !== 'run') return;
+    const context = preserveParameters && screen === 'run' ? { fixture, parameters, step } : null;
     const selected =
       context && id === 'stopping'
         ? {
@@ -251,14 +241,6 @@ export function App() {
             demoSteps.findIndex((item) => item.stage === selected.stage),
           );
     setStep(selectedStep);
-    activeRun.current =
-      selected.screen === 'run'
-        ? {
-            fixture: selected,
-            parameters: context?.parameters ?? selected.parameters,
-            step: selectedStep,
-          }
-        : null;
     const url = new URL(window.location.href);
     url.searchParams.set('fixture', id);
     if (preserveParameters && id === 'stopping') {
@@ -286,7 +268,6 @@ export function App() {
     setNextId((id) => id + 1);
     setFixture(fixtureSource.get('empty'));
     setActive(false);
-    activeRun.current = null;
     setScreen('parameters');
   }
   function startRun() {
@@ -294,11 +275,6 @@ export function App() {
     setStep(0);
     setActive(true);
     setDraftAvailable(false);
-    activeRun.current = {
-      fixture: { ...fixtureSource.get('waiting'), stage: 'cycles' },
-      parameters,
-      step: 0,
-    };
     const url = new URL(window.location.href);
     url.searchParams.set('fixture', 'waiting');
     url.searchParams.set('step', '0');
@@ -306,23 +282,17 @@ export function App() {
     setScreen('run');
   }
   function openList() {
-    if (screen === 'run') activeRun.current = { fixture, parameters, step };
+    if (active) return;
     setScreen('tests');
   }
   function openParameters() {
-    if (screen === 'run') activeRun.current = { fixture, parameters, step };
+    if (active) return;
     setScreen('parameters');
   }
   function openRun() {
-    if (screen === 'run') return;
-    if (activeRun.current) {
-      setFixture(activeRun.current.fixture);
-      setParameters(activeRun.current.parameters);
-      setStep(activeRun.current.step);
-      setScreen('run');
-    }
+    if (active && screen !== 'run') setScreen('run');
   }
-  const activeFixture = screen === 'run' ? fixture : activeRun.current?.fixture;
+  const activeFixture = screen === 'run' ? fixture : undefined;
   const activeNotice =
     activeFixture?.id === 'stopping'
       ? activeFixture.pressure.quality !== 'valid'
@@ -336,6 +306,7 @@ export function App() {
       screen={screen}
       historyResult={historyResult}
       active={active}
+      navigationLocked={active}
       draftAvailable={draftAvailable}
       announcement={
         screen === 'run' ? (activeNotice ?? `Этап: ${demoSteps[step]?.title ?? ''}`) : null
@@ -356,7 +327,6 @@ export function App() {
           : undefined
       }
       mainRef={mainRef}
-      notice={active && screen !== 'run' ? activeNotice : null}
       footer={
         <div className="fixture-toolbar">
           <div>
@@ -372,7 +342,11 @@ export function App() {
               }}
             >
               {fixtureSource.ids.map((id) => (
-                <option key={id} value={id}>
+                <option
+                  key={id}
+                  value={id}
+                  disabled={active && fixtureSource.get(id).screen !== 'run'}
+                >
                   {fixtureSource.get(id).label}
                 </option>
               ))}
@@ -381,7 +355,7 @@ export function App() {
         </div>
       }
     >
-      <div className={active && screen !== 'run' ? 'active-route-layout' : undefined}>
+      <div>
         <div className="route-content">
           {screen === 'tests' && (
             <FixtureTests
@@ -400,24 +374,21 @@ export function App() {
               showExample={showExample}
               history={history}
               example={fixtureSource.initial}
-              activeParameters={active ? (activeRun.current?.parameters ?? parameters) : null}
+              activeParameters={null}
             />
           )}
-          {screen === 'parameters' &&
-            (active && activeRun.current ? (
-              <ActiveParametersScreen parameters={activeRun.current.parameters} />
-            ) : (
-              <ParametersScreen
-                initial={draftBase}
-                draft={draft}
-                setDraft={setDraft}
-                onBack={() => setScreen('tests')}
-                onContinue={(value) => {
-                  setParameters(value);
-                  setScreen('readiness');
-                }}
-              />
-            ))}
+          {screen === 'parameters' && (
+            <ParametersScreen
+              initial={draftBase}
+              draft={draft}
+              setDraft={setDraft}
+              onBack={() => setScreen('tests')}
+              onContinue={(value) => {
+                setParameters(value);
+                setScreen('readiness');
+              }}
+            />
+          )}
           {screen === 'readiness' && (
             <ReadinessScreen
               parameters={parameters}
@@ -447,7 +418,6 @@ export function App() {
                 ]);
                 setActive(false);
                 setDraftAvailable(false);
-                activeRun.current = null;
                 setScreen('result');
               }}
               onFixture={(id) => selectFixture(id, true)}
@@ -480,27 +450,6 @@ export function App() {
             />
           )}
         </div>
-        {active && screen !== 'run' && (
-          <ActiveTestPanel
-            title={`${(activeRun.current?.parameters ?? parameters).id} · ${(activeRun.current?.parameters ?? parameters).valve}`}
-            status="Текущее испытание"
-            description={activeNotice ?? 'Испытание не завершено'}
-            onReturn={openRun}
-            stop={
-              <StopButton
-                disabled={activeFixture?.id === 'stopping'}
-                label={
-                  activeFixture?.id === 'stopping'
-                    ? 'Остановка выполняется'
-                    : 'Остановить испытание'
-                }
-                onStop={() => {
-                  selectFixture('stopping', true);
-                }}
-              />
-            }
-          />
-        )}
       </div>
     </AppShell>
   );

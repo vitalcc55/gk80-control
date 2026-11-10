@@ -245,6 +245,11 @@ h2 {
   background: var(--nav-active);
   color: var(--action-hover);
 }
+.nav-item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: transparent;
+}
 .nav-item svg {
   flex-shrink: 0;
 }

@@ -17,6 +17,29 @@ beforeEach(() => {
 });
 
 describe('подготовленные состояния оператора', () => {
+  it('блокирует остальные разделы при испытании и открывает их после результата', async () => {
+    window.history.replaceState(null, '', '/?fixture=waiting&step=7');
+    const user = userEvent.setup();
+    render(<App />);
+    const nav = screen.getByRole('navigation');
+    const tests = within(nav).getByRole('button', { name: 'Испытания' });
+    const parameters = within(nav).getByRole('button', { name: 'Параметры' });
+    expect(tests).toHaveProperty('disabled', true);
+    expect(parameters).toHaveProperty('disabled', true);
+    expect(screen.getByRole('option', { name: 'Пустая история' })).toHaveProperty('disabled', true);
+    await user.click(tests);
+    expect(screen.getByRole('heading', { name: 'Проведение испытания' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Остановить испытание' })).toHaveProperty(
+      'disabled',
+      false,
+    );
+    await user.click(screen.getByRole('button', { name: 'Показать результат' }));
+    expect(screen.getByRole('heading', { name: 'Результат испытания' })).toBeTruthy();
+    expect(within(nav).getByRole('button', { name: 'Испытания' })).toHaveProperty(
+      'disabled',
+      false,
+    );
+  });
   it('показывает смысл проверок готовности и сохраняет неизвестные подписи', () => {
     render(
       <ReadinessScreen
@@ -111,53 +134,7 @@ describe('подготовленные состояния оператора', (
     expect(screen.getByRole('status')).toBe(announcement);
     expect(announcement.textContent).toContain('Этап:');
   });
-  it('останавливает активный пример из чужого результата, сохраняя потерю ДД1 и исходные параметры', async () => {
-    const user = userEvent.setup();
-    window.history.replaceState(null, '', '/?fixture=empty');
-    render(<App />);
-    await user.click(screen.getByRole('button', { name: 'Новое испытание' }));
-    await user.type(
-      screen.getByLabelText('Обозначение или наименование клапана'),
-      'Прошлая запись',
-    );
-    await user.clear(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-    );
-    await user.type(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-      '1',
-    );
-    await user.click(screen.getByRole('button', { name: 'Проверить готовность' }));
-    await user.click(screen.getByRole('checkbox', { name: /Клапан закрыт/ }));
-    await user.click(
-      screen.getByRole('checkbox', { name: /Подключение соответствует направлению/ }),
-    );
-    await user.click(screen.getByRole('button', { name: 'Перейти к проведению' }));
-    for (const name of [
-      'Подтверждаю завершение серии',
-      'Показать стабилизацию',
-      'Показать следующий этап',
-      'Подтверждаю открытие',
-      'Подтверждаю закрытие',
-      'Показать измерение',
-      'Показать снижение давления',
-      'Показать результат',
-    ])
-      await user.click(screen.getByRole('button', { name }));
-    await user.selectOptions(
-      screen.getByRole('combobox', { name: 'Выбрать подготовленное состояние' }),
-      'sensor-lost',
-    );
-    await user.click(
-      within(screen.getByRole('navigation')).getByRole('button', { name: 'Испытания' }),
-    );
-    await user.click(screen.getByRole('button', { name: /Открыть Прошлая запись/ }));
-    await user.click(screen.getByRole('button', { name: 'Остановить испытание' }));
-    expect(screen.getByRole('heading', { name: 'Проведение испытания' })).toBeTruthy();
-    expect(screen.getByText('Данные ДД1 недоступны')).toBeTruthy();
-    expect(screen.getByText(/ИСП-001 · Образец клапана/)).toBeTruthy();
-    expect(screen.queryByText(/ИСП-002 · Прошлая запись/)).toBeNull();
-  });
+
   it('сбрасывает историю только при выборе пустого подготовленного состояния', async () => {
     const user = userEvent.setup();
     window.history.replaceState(null, '', '/?fixture=waiting&step=7');
@@ -177,7 +154,7 @@ describe('подготовленные состояния оператора', (
       screen.getByRole('combobox', { name: 'Выбрать подготовленное состояние' }),
       'empty',
     );
-    expect(screen.getByText('История пуста')).toBeTruthy();
+    expect(screen.getByText('По заданным условиям записей нет')).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Новое испытание' }));
     await user.type(
       screen.getByRole('textbox', { name: 'Обозначение или наименование клапана' }),
@@ -214,27 +191,6 @@ describe('подготовленные состояния оператора', (
     expect(screen.queryByText('ИСП-001')).toBeNull();
   });
 
-  it('не показывает активный подготовленный пример завершённым в истории', async () => {
-    const user = userEvent.setup();
-    window.history.replaceState(null, '', '/?fixture=measuring');
-    render(<App />);
-    await user.click(screen.getByRole('button', { name: 'Испытания' }));
-    expect(
-      within(screen.getByRole('complementary', { name: 'Активное испытание' })).getByText(
-        'Текущее испытание',
-      ),
-    ).toBeTruthy();
-    expect(
-      screen.getByRole('button', { name: /Вернуться к испытанию.*Образец клапана/ }),
-    ).toBeTruthy();
-    expect(screen.queryByRole('cell', { name: 'Завершено' })).toBeNull();
-    await user.selectOptions(screen.getByLabelText('Исход'), 'pending');
-    await user.click(
-      screen.getByRole('button', { name: /Вернуться к испытанию.*Образец клапана/ }),
-    );
-    expect(screen.getByRole('heading', { name: 'Проведение испытания' })).toBeTruthy();
-  });
-
   it('не добавляет подготовленный результат при начале испытания из пустой истории', async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -256,11 +212,7 @@ describe('подготовленные состояния оператора', (
       screen.getByRole('checkbox', { name: /Подключение соответствует направлению/ }),
     );
     await user.click(screen.getByRole('button', { name: 'Перейти к проведению' }));
-    await user.click(screen.getByRole('button', { name: 'Испытания' }));
-    expect(screen.getByRole('button', { name: /Вернуться к испытанию.*Клапан П/ })).toBeTruthy();
-    expect(screen.queryByRole('cell', { name: 'Завершено' })).toBeNull();
-    expect(screen.queryByRole('button', { name: /^Открыть / })).toBeNull();
-    await user.click(screen.getByRole('button', { name: 'Вернуться к испытанию' }));
+    expect(screen.getByRole('button', { name: 'Испытания' })).toHaveProperty('disabled', true);
     for (const action of [
       'Подтверждаю завершение серии',
       'Показать стабилизацию',
@@ -465,12 +417,7 @@ describe('подготовленные состояния оператора', (
     expect(within(differential).getByText('Неизвестно')).toBeTruthy();
     expect(new URLSearchParams(window.location.search).get('step')).toBe('0');
     expect(screen.queryByRole('button', { name: 'Показать результат' })).toBeNull();
-    await user.click(screen.getByRole('button', { name: 'Испытания' }));
-    expect(screen.getByRole('button', { name: 'Новое испытание' })).toHaveProperty(
-      'disabled',
-      true,
-    );
-    expect(screen.getByRole('button', { name: 'Вернуться к испытанию' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Испытания' })).toHaveProperty('disabled', true);
   });
 
   it('не меняет подготовленное показание на снижении давления при запросе остановки', async () => {
@@ -541,55 +488,14 @@ describe('подготовленные состояния оператора', (
     );
   });
 
-  it('показывает параметры активного прохода после истории и возвращает к прежнему этапу', async () => {
-    const user = userEvent.setup();
-    render(<App />);
-    await user.click(screen.getByRole('button', { name: 'Новое испытание' }));
-    await user.type(
-      screen.getByRole('textbox', { name: 'Обозначение или наименование клапана' }),
-      'Клапан П-10',
-    );
-    await user.clear(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-    );
-    await user.type(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-      '1',
-    );
-    await user.click(screen.getByRole('button', { name: 'Проверить готовность' }));
-    await user.click(screen.getByRole('checkbox', { name: /Клапан закрыт/ }));
-    await user.click(
-      screen.getByRole('checkbox', { name: /Подключение соответствует направлению/ }),
-    );
-    await user.click(screen.getByRole('button', { name: 'Перейти к проведению' }));
-    await user.click(screen.getByRole('button', { name: 'Подтверждаю завершение серии' }));
-    const nav = screen.getByRole('navigation');
-    expect(within(nav).queryByRole('status')).toBeNull();
-    await user.click(within(nav).getByRole('button', { name: 'Испытания' }));
-    expect(within(nav).queryByRole('status')).toBeNull();
-    await user.click(within(nav).getByRole('button', { name: 'Параметры' }));
-    expect(screen.getByText('Текущее испытание · только просмотр')).toBeTruthy();
-    expect(screen.getByText('Клапан П-10')).toBeTruthy();
-    expect(screen.queryByRole('textbox')).toBeNull();
-    await user.click(within(nav).getByRole('button', { name: 'Текущее испытание' }));
-    expect(screen.getByRole('heading', { name: 'Выход на рабочее давление' })).toBeTruthy();
-    expect(screen.getByText(/Клапан П-10/)).toBeTruthy();
-  });
-
-  it('после просмотра параметров сохраняет запрос остановки и потерю ДД1', async () => {
-    const user = userEvent.setup();
+  it('сохраняет запрет навигации после запроса остановки и потери ДД1', async () => {
     window.history.replaceState(null, '', '/?fixture=sensor-lost');
+    const user = userEvent.setup();
     render(<App />);
     const nav = screen.getByRole('navigation');
-    await user.click(within(nav).getByRole('button', { name: 'Параметры' }));
-    expect(within(nav).getByText('Потеря ДД1')).toBeTruthy();
-    await user.click(within(nav).getByRole('button', { name: 'Текущее испытание' }));
     await user.click(screen.getByRole('button', { name: 'Остановить испытание' }));
-    await user.click(within(nav).getByRole('button', { name: 'Параметры' }));
-    expect(within(nav).getByText('Потеря ДД1 · остановка не подтверждена')).toBeTruthy();
-    await user.click(within(nav).getByRole('button', { name: 'Текущее испытание' }));
-    expect(screen.getByText('Данные ДД1 недоступны')).toBeTruthy();
-    expect(within(nav).queryByRole('status')).toBeNull();
+    expect(within(nav).getByRole('button', { name: 'Испытания' })).toHaveProperty('disabled', true);
+    expect(within(nav).getByRole('button', { name: 'Параметры' })).toHaveProperty('disabled', true);
     expect(screen.getByRole('button', { name: 'Остановка выполняется' })).toHaveProperty(
       'disabled',
       true,
@@ -674,43 +580,6 @@ describe('подготовленные состояния оператора', (
     );
   });
 
-  it('возвращается к текущему этапу с введёнными параметрами после просмотра списка', async () => {
-    const user = userEvent.setup();
-    render(<App />);
-    const newButton = screen.getAllByRole('button', { name: 'Новое испытание' })[0];
-    if (!newButton) throw new Error('New test button missing');
-    await user.click(newButton);
-    await user.type(
-      screen.getByRole('textbox', { name: 'Обозначение или наименование клапана' }),
-      'Клапан П-7',
-    );
-    const pressure = screen.getByRole('textbox', { name: 'Pmax производителя, Па' });
-    await user.clear(pressure);
-    await user.type(pressure, '345,67');
-    await user.clear(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-    );
-    await user.type(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-      '1',
-    );
-    await user.click(screen.getByRole('button', { name: 'Проверить готовность' }));
-    await user.click(screen.getByRole('checkbox', { name: /Клапан закрыт/ }));
-    await user.click(
-      screen.getByRole('checkbox', { name: /Подключение соответствует направлению/ }),
-    );
-    await user.click(screen.getByRole('button', { name: 'Перейти к проведению' }));
-    await user.click(screen.getByRole('button', { name: 'Подтверждаю завершение серии' }));
-    expect(screen.getByRole('heading', { name: 'Выход на рабочее давление' })).toBeTruthy();
-    await user.click(screen.getByRole('button', { name: 'Испытания' }));
-    await user.click(screen.getByRole('button', { name: 'Вернуться к испытанию' }));
-    expect(screen.getByRole('heading', { name: 'Выход на рабочее давление' })).toBeTruthy();
-    expect(screen.getByText(/Клапан П-7/)).toBeTruthy();
-    const target = screen.getByText('max').closest('.reading');
-    if (!(target instanceof HTMLElement)) throw new Error('Target reading missing');
-    expect(target.textContent).toMatch(/345,67\s*Па/);
-  });
-
   it('не отображает малое положительное давление как ноль', async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -754,7 +623,7 @@ describe('подготовленные состояния оператора', (
     expect(screen.getByText('Запись результата не подтверждена.')).toBeTruthy();
     expect(screen.queryByText('Пример: сохранено')).toBeNull();
     await user.click(screen.getByRole('button', { name: 'К списку' }));
-    expect(screen.getByText('История пуста')).toBeTruthy();
+    expect(screen.getByText('По заданным условиям записей нет')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /^Открыть / })).toBeNull();
   });
 });

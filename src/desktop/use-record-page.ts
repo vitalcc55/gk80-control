@@ -1,4 +1,5 @@
 import { useCallback, useLayoutEffect, useRef, useState } from 'react';
+import { RecordSummaryLimitError } from './record-summary';
 
 type Intent = { after: number; manual: boolean; returnToStart: boolean; retry: boolean };
 type Published<T> = { page: T; after: number; version: string };
@@ -15,6 +16,7 @@ type Model<T> = {
   intent: Intent | null;
   flight: Flight | null;
   error: string;
+  limitReached: boolean;
   scrollVersion: number;
 };
 
@@ -32,7 +34,7 @@ export function useRecordPage<T>({
   available: boolean;
   visible: boolean;
   kind: 'measurements' | 'audit';
-  read: (id: string, after: number) => Promise<T>;
+  read: (id: string, after: number, current: () => boolean) => Promise<T>;
 }) {
   const model = useRef<Model<T>>({
     id,
@@ -46,6 +48,7 @@ export function useRecordPage<T>({
     intent: null,
     flight: null,
     error: '',
+    limitReached: false,
     scrollVersion: 0,
   });
   const readRef = useRef(read);
@@ -85,19 +88,25 @@ export function useRecordPage<T>({
     publish();
     void (async () => {
       try {
-        const page = await request(requestId, intent.after);
+        const page = await request(requestId, intent.after, canPublish);
         if (canPublish()) {
           state.published = { page, after: intent.after, version: flight.version };
           if (intent.returnToStart) state.scrollVersion = flight.generation;
           state.error = '';
         }
-      } catch {
+      } catch (error) {
         if (canPublish()) {
-          state.error =
-            kind === 'measurements'
-              ? 'Не удалось прочитать измерения.'
-              : 'Не удалось прочитать журнал.';
-          state.intent = { ...intent, retry: true };
+          if (error instanceof RecordSummaryLimitError) {
+            state.error = error.message;
+            state.limitReached = true;
+            state.intent = null;
+          } else {
+            state.error =
+              kind === 'measurements'
+                ? 'Не удалось прочитать измерения.'
+                : 'Не удалось прочитать журнал.';
+            state.intent = { ...intent, retry: true };
+          }
         }
       } finally {
         if (state.flight === flight) state.flight = null;
@@ -125,6 +134,11 @@ export function useRecordPage<T>({
     const changedVersion = state.version !== version;
     const hidden = state.visible && !visible;
     const disconnected = state.available && !available;
+    const reloadLimitedVersion = changedVersion && state.limitReached && state.open;
+    if ((changedId || changedVersion) && state.limitReached) {
+      state.limitReached = false;
+      state.error = '';
+    }
     if (changedId || changedVersion || hidden || disconnected) {
       const active =
         state.flight?.generation === state.generation ? state.flight.intent : undefined;
@@ -134,8 +148,9 @@ export function useRecordPage<T>({
         state.intent = { after: 0, manual: false, returnToStart: false, retry: false };
         state.error = '';
       } else if (hidden) {
-        state.intent =
-          kind === 'audit'
+        state.intent = reloadLimitedVersion
+          ? { after: 0, manual: false, returnToStart: false, retry: false }
+          : kind === 'audit'
             ? (state.intent ?? (active ? { ...active, retry: false } : null))
             : active
               ? {
@@ -145,7 +160,7 @@ export function useRecordPage<T>({
                   retry: false,
                 }
               : null;
-        if (kind === 'measurements') state.error = '';
+        if (kind === 'measurements' && !state.limitReached) state.error = '';
       } else if (disconnected && !active && !changedVersion) {
         // No read was interrupted; retain the current intent and only invalidate pending display effects.
       } else if (kind === 'measurements' && state.open && !state.closing && active?.manual) {
@@ -191,7 +206,7 @@ export function useRecordPage<T>({
               retry: false,
             }
           : null;
-    if (kind === 'measurements') state.error = '';
+    if (kind === 'measurements' && !state.limitReached) state.error = '';
   }, [kind]);
   const setOpen = useCallback(
     (open: boolean) => {
@@ -206,7 +221,12 @@ export function useRecordPage<T>({
         state.published?.version !== state.version
       )
         state.intent = { ...state.intent, retry: false };
-      if (open && (!state.published || state.published.version !== state.version) && !state.intent)
+      if (
+        open &&
+        !state.limitReached &&
+        (!state.published || state.published.version !== state.version) &&
+        !state.intent
+      )
         state.intent = {
           after: state.published?.after ?? 0,
           manual: false,
@@ -257,6 +277,7 @@ export function useRecordPage<T>({
   return {
     open: state.open,
     page: state.published?.page ?? null,
+    loaded: !!state.published,
     stale: !!state.published && state.published.version !== state.version,
     loading: !!state.flight && state.open && state.visible,
     error: state.error,
