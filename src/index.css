@@ -597,9 +597,25 @@ h2 {
   flex: 1;
   min-width: 0;
 }
-.chart-container {
+.chart-container,
+.leakage-chart-plot {
   width: 100%;
   overflow: hidden;
+}
+.leakage-chart-values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  margin: 8px 0 0;
+  font-size: var(--font-label);
+}
+.leakage-chart-values dt {
+  color: var(--muted);
+}
+.leakage-chart-values dd {
+  margin: 3px 0 0;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 .chart-legend {
   display: flex;

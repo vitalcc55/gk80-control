@@ -1,5 +1,5 @@
 import { defaultParameters, fixtureIds, fixtures, getFixture, stages } from './fixtures';
-import type { Fixture, FixtureId, StageId, TestParameters } from './model';
+import type { Fixture, FixtureId, LeakagePoint, StageId, TestParameters } from './model';
 
 /** Временная граница представления; при интеграции сопоставляется с контрактом core. */
 export interface PreviewSource {
@@ -18,6 +18,18 @@ export const fixtureSource: PreviewSource = {
   get: (id: FixtureId): Fixture => fixtures[id],
   find: getFixture,
 };
+
+const preparedLeakagePoint: LeakagePoint = {
+  specificLeakageLitresPerSecondPerSquareMetre: 20,
+  testPressurePa: 10_010,
+};
+
+export function prepareLeakagePoint(parameters: TestParameters): LeakagePoint | undefined {
+  if (parameters.direction === 'pressure' && !parameters.actuator && parameters.pmax === 10_000) {
+    return preparedLeakagePoint;
+  }
+  return undefined;
+}
 
 /** Переходы предназначены только для просмотра; это не алгоритм core. */
 export const demoSteps: readonly {

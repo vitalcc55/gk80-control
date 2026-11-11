@@ -552,6 +552,17 @@
   gap: 18px;
   margin-top: 18px;
 }
+.result-layout:has(.leakage-chart) {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+}
+@media (max-width: 900px) {
+  .result-layout:has(.leakage-chart) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .result-layout:has(.leakage-chart) > :has(.leakage-chart) {
+    grid-row: 1;
+  }
+}
 .result-section {
   padding: 18px;
 }

@@ -1,5 +1,5 @@
 import { type ReactNode, useState } from 'react';
-import { RunScreen } from '../components/RunScreen';
+import { RunMeasurementChart, RunScreen } from '../components/RunScreen';
 import type {
   Measurement,
   Snapshot,
@@ -90,15 +90,17 @@ export function LiveRun({
             ))}
         </details>
       }
-      chart={{
-        live: true,
-        points: series.points,
-        target: record.parameters.pmaxPa,
-      }}
-      chartNote={
-        series.clockChanged
-          ? 'Время измерения изменилось: график начат заново с нового отсчёта.'
-          : 'Время от первого полученного отсчёта; пропуски не соединяются.'
+      chart={
+        <RunMeasurementChart
+          live
+          points={series.points}
+          target={record.parameters.pmaxPa}
+          note={
+            series.clockChanged
+              ? 'Время измерения изменилось: график начат заново с нового отсчёта.'
+              : 'Время от первого полученного отсчёта; пропуски не соединяются.'
+          }
+        />
       }
       actionTitle={
         stopping ? 'Остановка' : awaiting ? 'Подтверждение оператора' : measurementLabel(timing)

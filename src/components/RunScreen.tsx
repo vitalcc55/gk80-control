@@ -3,6 +3,23 @@ import type { ComponentProps, ReactNode, Ref } from 'react';
 import { MeasurementChart } from './MeasurementChart';
 import { PressureNotation } from './PressureNotation';
 
+export function RunMeasurementChart({
+  note,
+  ...chart
+}: ComponentProps<typeof MeasurementChart> & { note?: ReactNode }) {
+  return (
+    <>
+      <div className="section-heading">
+        <div>
+          <h2>Изменение показаний</h2>
+          {note && <p>{note}</p>}
+        </div>
+      </div>
+      <MeasurementChart {...chart} />
+    </>
+  );
+}
+
 export function RunScreen({
   subtitle,
   stages,
@@ -14,7 +31,6 @@ export function RunScreen({
   pressureNote,
   details,
   chart,
-  chartNote,
   actionTitle,
   instruction,
   actionLabel,
@@ -32,8 +48,7 @@ export function RunScreen({
   details?: ReactNode;
   pressureNote?: ReactNode;
   differentialNote?: ReactNode;
-  chart: ComponentProps<typeof MeasurementChart>;
-  chartNote?: ReactNode;
+  chart: ReactNode;
   actionTitle: string;
   instruction?: string | undefined;
   actionLabel?: string;
@@ -125,15 +140,7 @@ export function RunScreen({
           </div>
           {stop && <div className="stop-area">{stop}</div>}
         </aside>
-        <div className="chart-panel">
-          <div className="section-heading">
-            <div>
-              <h2>Изменение показаний</h2>
-              {chartNote && <p>{chartNote}</p>}
-            </div>
-          </div>
-          <MeasurementChart {...chart} />
-        </div>
+        <div className="chart-panel">{chart}</div>
       </div>
     </section>
   );

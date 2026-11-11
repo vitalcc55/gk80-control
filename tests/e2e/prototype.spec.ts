@@ -1,4 +1,48 @@
-import { expect, test } from '@playwright/test';
+import { expect, type Locator, type Page, test } from '@playwright/test';
+
+async function captureAxisText(page: Page) {
+  await page.addInitScript(() => {
+    const drawText = CanvasRenderingContext2D.prototype.fillText;
+    CanvasRenderingContext2D.prototype.fillText = function (text, x, y, maxWidth?) {
+      this.canvas.dataset['axisText'] = `${this.canvas.dataset['axisText'] ?? ''}\u001f${text}`;
+      if (maxWidth === undefined) drawText.call(this, text, x, y);
+      else drawText.call(this, text, x, y, maxWidth);
+    };
+  });
+}
+
+async function leakageMarker(canvas: Locator) {
+  return canvas.evaluate((element) => {
+    if (!(element instanceof HTMLCanvasElement)) throw new Error('Canvas expected');
+    const plot = element.closest('.u-wrap')?.querySelector('.u-over')?.getBoundingClientRect();
+    const context = element.getContext('2d');
+    if (!plot || !context) throw new Error('Chart is unavailable');
+    const bounds = element.getBoundingClientRect();
+    const scale = element.width / bounds.width;
+    const x = (plot.left - bounds.left + (plot.width * Math.log10(20)) / 2) * scale;
+    const y = (plot.bottom - bounds.top - (plot.height * (Math.log10(10_010) - 2)) / 3) * scale;
+    const accent = getComputedStyle(element).getPropertyValue('--accent').trim();
+    const red = Number.parseInt(accent.slice(1, 3), 16);
+    const green = Number.parseInt(accent.slice(3, 5), 16);
+    const blue = Number.parseInt(accent.slice(5, 7), 16);
+    const { data } = context.getImageData(0, 0, element.width, element.height);
+    let near = 0;
+    let elsewhere = 0;
+    for (let index = 0; index < data.length; index += 4) {
+      if (data[index] !== red || data[index + 1] !== green || data[index + 2] !== blue) continue;
+      const pixel = index / 4;
+      if (
+        Math.hypot((pixel % element.width) - x, Math.floor(pixel / element.width) - y) <
+        7 * scale
+      ) {
+        near++;
+      } else {
+        elsewhere++;
+      }
+    }
+    return { near, elsewhere };
+  });
+}
 
 for (const viewport of [
   { width: 1366, height: 768 },
@@ -10,6 +54,7 @@ for (const viewport of [
     test('оператор проходит пять экранов и видит настоящий график', async ({ page }) => {
       const errors: string[] = [];
       page.on('pageerror', (error) => errors.push(error.message));
+      await captureAxisText(page);
       await page.goto('/?fixture=empty');
       await expect(page.getByRole('heading', { name: 'Испытания', exact: true })).toBeVisible();
       await page.getByRole('button', { name: 'Новое испытание' }).first().click();
@@ -51,7 +96,9 @@ for (const viewport of [
       await start.click();
       await expect(page.getByRole('heading', { name: 'Проведение испытания' })).toBeVisible();
       await expect(page.getByText('Клапан для показа')).toBeVisible();
-      await expect(page.locator('.chart-container canvas').first()).toBeVisible();
+      const characteristic = page.getByRole('region', { name: 'Характеристика утечки' });
+      const canvas = characteristic.locator('canvas');
+      await expect(canvas).toBeVisible();
       await expect(page.getByRole('button', { name: 'Остановить испытание' })).toBeVisible();
       const longAction = page.getByRole('button', { name: 'Подтверждаю завершение серии' });
       const labelFits = await longAction.evaluate((button) => {
@@ -76,7 +123,7 @@ for (const viewport of [
         '.main-reading strong',
         '.target-reading strong',
         '.differential-reading strong',
-        '.chart-container',
+        '.leakage-chart-plot',
         '.action-panel h2',
         '.action-instruction',
         '.stop-button',
@@ -112,14 +159,56 @@ for (const viewport of [
         'Подтверждаю открытие',
         'Подтверждаю закрытие',
         'Показать измерение',
-        'Показать снижение давления',
-        'Показать результат',
       ]) {
         await page.getByRole('button', { name: action }).click();
       }
+      await expect(characteristic).toContainText('Рабочая точка ещё не получена');
+      expect(await leakageMarker(canvas)).toEqual({ near: 0, elsewhere: 0 });
+      await expect(page.getByRole('button', { name: 'Остановить испытание' })).toBeEnabled();
+      await expect(page.getByText('Таблица показаний')).toBeHidden();
+      await page.getByText('Подробности измерений', { exact: true }).click();
+      await expect(page.locator('.chart-container canvas')).toBeVisible();
+      await page.getByText('Таблица показаний').click();
+      await expect(
+        page.getByRole('table', { name: 'Подготовленные показания по времени' }),
+      ).toBeVisible();
+      await page.getByRole('button', { name: 'Показать снижение давления' }).click();
+      await page.getByRole('button', { name: 'Показать результат' }).click();
       await expect(page.getByRole('heading', { name: 'Результат испытания' })).toBeVisible();
-      await expect(page.getByText('Не рассчитан')).toBeVisible();
-      await expect(page.getByText('Не определён')).toBeVisible();
+      await expect(characteristic.getByText('20 л/(с·м²)')).toBeVisible();
+      await expect(characteristic.getByText('10 010 Па')).toBeVisible();
+      await expect(canvas).toHaveAttribute('data-axis-text', /Удельная утечка, л\/\(с·м²\)/);
+      await expect(canvas).toHaveAttribute('data-axis-text', /Испытательное давление, Па/);
+      const axisText = (await canvas.getAttribute('data-axis-text'))?.split('\u001f') ?? [];
+      expect(axisText).toEqual(
+        expect.arrayContaining(['1', '10', '100', '1 000', '10 000', '100 000']),
+      );
+      expect(axisText).not.toContain('0');
+      const marker = await leakageMarker(canvas);
+      expect(marker.near).toBeGreaterThan(0);
+      expect(marker.elsewhere).toBe(0);
+      const canvasWidth = await canvas.getAttribute('width');
+      await page.setViewportSize({ width: 819, height: 768 });
+      await expect(canvas).not.toHaveAttribute('width', canvasWidth ?? '');
+      const resized = await leakageMarker(canvas);
+      expect(resized.near).toBeGreaterThan(0);
+      expect(resized.elsewhere).toBe(0);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+        true,
+      );
+
+      await page.getByRole('button', { name: 'К списку' }).click();
+      await page.getByRole('button', { name: 'Результат прохода' }).click();
+      await expect(characteristic.getByText('20 л/(с·м²)')).toBeVisible();
+      await page.getByRole('button', { name: 'К списку' }).click();
+      await page.getByRole('button', { name: /Открыть Клапан для показа/ }).click();
+      await expect(page.getByRole('heading', { name: 'Результат испытания' })).toBeVisible();
+      await expect(characteristic).toHaveCount(0);
+
+      await page.goto('/?fixture=save-error');
+      await expect(page.getByText('Сохранение не подтверждено')).toBeVisible();
+      await expect(characteristic).toContainText('Рабочая точка недоступна');
+      expect(await leakageMarker(canvas)).toEqual({ near: 0, elsewhere: 0 });
       expect(errors).toEqual([]);
     });
 
@@ -144,6 +233,7 @@ for (const viewport of [
 
     test('график и таблица показывают только доступные показания', async ({ page }) => {
       await page.goto('/?fixture=measuring');
+      await page.getByText('Подробности измерений', { exact: true }).click();
       await expect(page.getByText('Прошло 30 с · длительность 60 с')).toBeVisible();
       const legend = page.locator('.chart-legend');
       const chart = page.locator('.chart-container');
@@ -163,6 +253,7 @@ for (const viewport of [
       await expect(rows.last()).toContainText('83');
 
       await page.goto('/?fixture=sensor-lost');
+      await page.getByText('Подробности измерений', { exact: true }).click();
       await page.getByText('Таблица показаний').click();
       const lostRows = page
         .getByRole('table', { name: 'Подготовленные показания по времени' })
@@ -193,6 +284,7 @@ for (const viewport of [
       ]) {
         await page.getByRole('button', { name: action }).click();
       }
+      await page.getByText('Подробности измерений', { exact: true }).click();
       await expect(page.getByText('Прошло 49,5 с · длительность 99 с')).toBeVisible();
       await expect(page.getByText('Прошло 49 с · осталось 50 с')).toBeVisible();
       await page.getByText('Таблица показаний').click();
@@ -205,21 +297,7 @@ for (const viewport of [
     test('подписи осей сохраняют различимость малых и обычных величин', async ({ page }) => {
       const errors: string[] = [];
       page.on('pageerror', (error) => errors.push(error.message));
-      // Захватываем текст, реально отрисованный uPlot в Canvas, а не внутренние данные графика.
-      await page.addInitScript(() => {
-        const drawText = CanvasRenderingContext2D.prototype.fillText;
-        CanvasRenderingContext2D.prototype.fillText = function (
-          this: CanvasRenderingContext2D,
-          text: string,
-          x: number,
-          y: number,
-          maxWidth?: number,
-        ) {
-          this.canvas.dataset['axisText'] = `${this.canvas.dataset['axisText'] ?? ''}\u001f${text}`;
-          if (maxWidth === undefined) drawText.call(this, text, x, y);
-          else drawText.call(this, text, x, y, maxWidth);
-        };
-      });
+      await captureAxisText(page);
 
       for (const example of [
         { pressure: '10000', period: '60', expectedX: 60, expectedY: 10_000 },
@@ -251,6 +329,7 @@ for (const viewport of [
         ]) {
           await page.getByRole('button', { name: action }).click();
         }
+        await page.getByText('Подробности измерений', { exact: true }).click();
         const canvas = page.locator('.chart-container canvas').first();
         await expect(canvas).toHaveAttribute('data-axis-text', /Перепад, Па/);
         const painted = (await canvas.getAttribute('data-axis-text'))?.split('\u001f') ?? [];
@@ -312,6 +391,12 @@ for (const viewport of [
       await page.reload();
       await expect(page.locator('.main-reading strong')).toContainText('2 000');
       await expect(page.getByRole('button', { name: 'Остановка выполняется' })).toBeDisabled();
+      const characteristic = page.getByRole('region', { name: 'Характеристика утечки' });
+      await expect(characteristic).toContainText('Рабочая точка недоступна');
+      expect(await leakageMarker(characteristic.locator('canvas'))).toEqual({
+        near: 0,
+        elsewhere: 0,
+      });
     });
 
     test('навигация сохраняет черновик и блокируется во время прохода', async ({ page }) => {

@@ -54,6 +54,11 @@ export interface GraphPoint {
   differential: number | null;
 }
 
+export interface LeakagePoint {
+  specificLeakageLitresPerSecondPerSquareMetre: number;
+  testPressurePa: number;
+}
+
 export interface Fixture {
   id: FixtureId;
   label: string;

@@ -16,6 +16,7 @@ interface ResultScreenProps {
   onList: () => void;
   onNew: () => void;
   record?: TestRecord;
+  calculation?: ReactNode;
   children?: ReactNode;
   hidden?: boolean;
 }
@@ -29,6 +30,7 @@ export function ResultScreen({
   onList,
   onNew,
   record,
+  calculation,
   children,
   hidden = false,
 }: ResultScreenProps) {
@@ -120,19 +122,23 @@ export function ResultScreen({
               </dl>
             </div>
             <div className="work-surface result-section">
-              <div className="section-heading">
-                <h2>Результаты расчёта</h2>
-              </div>
-              <dl className="result-details">
-                <div>
-                  <dt>Расход</dt>
-                  <dd>Не рассчитан</dd>
-                </div>
-                <div>
-                  <dt>Класс герметичности</dt>
-                  <dd>Не определён</dd>
-                </div>
-              </dl>
+              {calculation ?? (
+                <>
+                  <div className="section-heading">
+                    <h2>Результаты расчёта</h2>
+                  </div>
+                  <dl className="result-details">
+                    <div>
+                      <dt>Расход</dt>
+                      <dd>Не рассчитан</dd>
+                    </div>
+                    <div>
+                      <dt>Класс герметичности</dt>
+                      <dd>Не определён</dd>
+                    </div>
+                  </dl>
+                </>
+              )}
             </div>
           </div>
         </>
