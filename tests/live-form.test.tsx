@@ -23,13 +23,23 @@ const initial: TestParameters = {
   preOpenStabilizationSeconds: 10,
   postCloseStabilizationSeconds: 10,
   postCloseStabilizationRetries: 1,
+  lowerPressureLimitPa: 0,
+  upperPressureLimitPa: 1100,
+  lowerPressureHoldSeconds: 0,
+  upperPressureHoldSeconds: 2,
 };
 
-function Form({ submit }: { submit: (value: TestParameters) => void }) {
-  const [draft, setDraft] = useState(() => draftFrom(initial));
+function Form({
+  submit,
+  parameters = initial,
+}: {
+  submit: (value: TestParameters) => void;
+  parameters?: TestParameters;
+}) {
+  const [draft, setDraft] = useState(() => draftFrom(parameters));
   return (
     <ParametersScreen
-      initial={initial}
+      initial={parameters}
       draft={draft}
       setDraft={setDraft}
       live
@@ -38,6 +48,43 @@ function Form({ submit }: { submit: (value: TestParameters) => void }) {
     />
   );
 }
+
+it('requires all four pressure fields and accepts the inclusive bounds and zero hold', async () => {
+  const {
+    lowerPressureLimitPa,
+    upperPressureLimitPa,
+    lowerPressureHoldSeconds,
+    upperPressureHoldSeconds,
+    ...withoutLimits
+  } = initial;
+  const submit = vi.fn();
+  render(<Form submit={submit} parameters={withoutLimits} />);
+  const user = userEvent.setup();
+  const lower = screen.getByLabelText('Нижний аварийный предел, Па');
+  const upper = screen.getByLabelText('Верхний аварийный предел, Па');
+  const lowerHold = screen.getByLabelText('Выдержка ниже нижнего предела, с');
+  const upperHold = screen.getByLabelText('Выдержка выше верхнего предела, с');
+  const button = screen.getByRole('button', { name: /Проверить готовность/ });
+  for (const field of [lower, upper, lowerHold, upperHold])
+    expect(field).toHaveProperty('value', '');
+  await user.click(button);
+  expect(submit).not.toHaveBeenCalled();
+  for (const field of [lower, upper, lowerHold, upperHold])
+    expect(field.getAttribute('aria-invalid')).toBe('true');
+  await user.type(lower, String(lowerPressureLimitPa));
+  await user.type(upper, String(upperPressureLimitPa));
+  await user.type(lowerHold, String(lowerPressureHoldSeconds));
+  await user.type(upperHold, String(upperPressureHoldSeconds));
+  await user.click(button);
+  expect(submit).toHaveBeenCalledWith(
+    expect.objectContaining({
+      lowerPressureLimitPa,
+      upperPressureLimitPa,
+      lowerPressureHoldSeconds,
+      upperPressureHoldSeconds,
+    }),
+  );
+});
 
 function EmptyForm({ submit }: { submit: (value: TestParameters) => void }) {
   const [draft, setDraft] = useState(() =>
@@ -93,6 +140,8 @@ it('edits and submits both stabilization intervals independently', async () => {
 it('shows both saved stabilization intervals for the active test', () => {
   render(
     <ActiveParametersScreen
+      stop={null}
+      onReturn={() => undefined}
       parameters={{
         ...initial,
         preOpenStabilizationSeconds: 13,
@@ -113,7 +162,7 @@ it('requires an explicit repeat count and accepts zero at the duration boundarie
   const submit = vi.fn();
   render(<EmptyForm submit={submit} />);
   const user = userEvent.setup();
-  const retries = screen.getByLabelText('Допустимое число повторов стабилизации после закрытия');
+  const retries = screen.getByLabelText('Число повторов для каждой стабилизации');
   expect(retries).toHaveProperty('value', '');
   await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
   expect(submit).not.toHaveBeenCalled();

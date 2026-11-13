@@ -9,7 +9,6 @@ import {
   useState,
   useSyncExternalStore,
 } from 'react';
-import { ActiveTestPanel } from '../components/ActiveTestPanel';
 import { AppShell } from '../components/AppShell';
 import {
   ActiveParametersScreen,
@@ -36,11 +35,7 @@ import type { DemoService } from './demo-service';
 import { History } from './History';
 import { LiveRun } from './LiveRun';
 import { MeasurementSeriesContext } from './measurement-series';
-import {
-  isStartMeasurementInstruction,
-  measurementLabel,
-  parametersForDisplay,
-} from './presentation';
+import { measurementLabel, parametersForDisplay } from './presentation';
 import { RecordDetails } from './RecordDetails';
 import { observeReadiness } from './readiness-observation';
 import { SessionStatus } from './SessionStatus';
@@ -472,11 +467,6 @@ function ActiveLiveApp({
     setShowForm(true);
   };
   const historyVisible = showHistory || (!record && !showForm);
-  const runVisible =
-    !showHistory &&
-    !showSavedParameters &&
-    (stage === 'running' || stage === 'stopping') &&
-    !!snapshot;
   const active = !!record && stage !== 'finished';
   const stopControl = (
     <StopButton
@@ -515,7 +505,7 @@ function ActiveLiveApp({
       }
       announcement={
         record
-          ? `По последнему снимку: ${stage === 'preparing' ? 'подготовка испытания' : stage === 'finished' ? 'результат испытания доступен' : stage === 'stopping' ? 'этап остановки; безопасное давление не подтверждено' : snapshot?.pendingAction ? (isStartMeasurementInstruction(snapshot.pendingAction.instruction) ? 'ожидается подтверждение запуска испытания' : snapshot.pendingAction.instruction) : measurementLabel(snapshot?.measurementTiming)}`
+          ? `По последнему снимку: ${stage === 'preparing' ? 'подготовка испытания' : stage === 'finished' ? 'результат испытания доступен' : stage === 'stopping' ? 'этап остановки; безопасное давление не подтверждено' : snapshot?.pendingAction ? snapshot.pendingAction.instruction : measurementLabel(snapshot?.measurementTiming)}`
           : null
       }
       onParameters={() => {
@@ -730,175 +720,192 @@ function ActiveLiveApp({
           )}
         </div>
       </section>
-      <div className={active && !runVisible ? 'active-route-layout' : undefined}>
-        <div className="route-content">
-          <div hidden={!historyVisible}>
-            <History
-              visible={historyVisible}
-              resetVersion={historyReset}
-              activeTestId={active ? activeId : undefined}
-              onCurrent={() => openCurrent(false)}
-              completedRecord={record?.stage === 'finished' ? record : null}
-              onViewChange={(result) => {
-                setHistoryResult(result);
-              }}
-              service={service}
-              available={fresh}
-              disabled={!fresh || blocking || (!!record && record.stage !== 'finished')}
-              onNew={() => {
-                requestFocus('parameters');
-                setShowSavedParameters(false);
-                setShowHistory(false);
-                if (!draftAvailable) {
-                  setDraft(newDraft());
-                  setDraftAvailable(true);
-                }
-                openDraft();
-              }}
-              onCopy={(value) => {
-                requestFocus('parameters');
-                setShowSavedParameters(false);
-                setDraft(
-                  draftFrom({
-                    ...empty,
-                    valve: value.valve,
-                    area: value.areaM2,
-                    pmax: value.pmaxPa,
-                    measurementSeconds: value.measurementSeconds,
-                    preOpenStabilizationSeconds: value.preOpenStabilizationSeconds,
-                    postCloseStabilizationSeconds: value.postCloseStabilizationSeconds,
-                    postCloseStabilizationRetries: value.postCloseStabilizationRetries,
-                  }),
-                );
-                setDraftAvailable(true);
-                setShowHistory(false);
-                openDraft();
-              }}
-              draftAvailable={draftAvailable}
-              onDiscard={() => {
-                setDraft(newDraft());
-                setDraftAvailable(false);
-              }}
-            />
-          </div>
-          {!showHistory && (!record || record.stage === 'finished') && showForm && (
-            <ParametersScreen
-              initial={empty}
-              draft={draft}
-              setDraft={setDraft}
-              live
-              pending={pending.some((item) => item.kind === 'create' && !item.retired)}
-              unavailable={!fresh || blocking}
-              onBack={openHistory}
-              onContinue={(parameters) => {
-                requestFocus('readiness');
-                submittedCreate.current = {
-                  draft,
-                  previousId: record?.testId ?? null,
-                  observed: false,
-                  retained: false,
-                  coordinator,
-                };
-                void coordinator.create(parameters);
-              }}
-            />
-          )}
-          {!showHistory && showSavedParameters && record && record.stage !== 'finished' && (
-            <ActiveParametersScreen parameters={formParameters} />
-          )}
-          {!showHistory &&
-            !showSavedParameters &&
-            record?.stage === 'preparing' &&
-            readiness?.testId === record.testId && (
-              <ReadinessScreen
-                key={`${record.testId}:${readiness.revision}`}
-                parameters={formParameters}
-                autoCheckFailed={
-                  !fresh ||
-                  !readinessConfirmed ||
-                  !readiness.ready ||
-                  readiness.revision !== snapshot?.revision
-                }
-                readiness={readiness}
-                pending={blocking}
-                stale={!fresh || !readinessConfirmed || readiness.revision !== snapshot?.revision}
-                onBack={() => {
-                  requestFocus('parameters');
-                  setShowSavedParameters(true);
-                }}
-                onStart={(checks) => {
-                  requestFocus('run');
-                  void coordinator.startTest(checks);
-                }}
-              />
-            )}
-          {!showHistory &&
-            !showSavedParameters &&
-            record?.stage === 'preparing' &&
-            readiness?.testId !== record.testId && <p>Готовность ещё не подтверждена.</p>}
-          {!showHistory &&
-            !showSavedParameters &&
-            (record?.stage === 'running' || record?.stage === 'stopping') &&
-            snapshot && (
-              <LiveRun
-                key={record.testId}
-                record={record}
-                snapshot={snapshot}
-                fresh={fresh}
-                measurementContext={measurementContext}
-                measurementKey={measurementKey}
-                stop={stopControl}
-                pending={blocking}
-                onConfirm={() => {
-                  void coordinator.confirmAction();
-                }}
-              />
-            )}
-          {!showHistory && !showForm && record?.stage === 'finished' && (
-            <ResultScreen
-              parameters={formParameters}
-              record={record}
-              saveError={record.saveStatus === 'failed'}
-              interrupted={record.outcome === 'interrupted'}
-              active={blocking}
-              draftAvailable={draftAvailable}
-              onList={openHistory}
-              onNew={() => {
-                requestFocus('parameters');
-                setShowSavedParameters(false);
-                if (!draftAvailable) {
-                  setDraft(draftFrom(formParameters));
-                  setDraftAvailable(true);
-                }
-                openDraft();
-              }}
-            >
-              <RecordDetails
-                key={record.testId}
-                record={record}
-                service={service}
-                available={fresh}
-              />
-            </ResultScreen>
-          )}
-        </div>
-        {active && !runVisible && (
-          <ActiveTestPanel
-            title={record.parameters.valve}
-            description={
-              stage === 'preparing'
-                ? null
-                : stage === 'stopping'
-                  ? 'Этап остановки; безопасное давление не подтверждено.'
-                  : snapshot?.pendingAction
-                    ? 'Ожидание подтверждения оператора'
-                    : measurementLabel(snapshot?.measurementTiming)
+      <div hidden={!historyVisible}>
+        <History
+          visible={historyVisible}
+          resetVersion={historyReset}
+          activeTestId={active ? activeId : undefined}
+          onCurrent={() => openCurrent(false)}
+          completedRecord={record?.stage === 'finished' ? record : null}
+          onViewChange={(result) => {
+            setHistoryResult(result);
+          }}
+          service={service}
+          available={fresh}
+          disabled={
+            !fresh ||
+            blocking ||
+            snapshot?.pendingAction?.kind === 'confirmStopped' ||
+            (!!record && record.stage !== 'finished')
+          }
+          onNew={() => {
+            requestFocus('parameters');
+            setShowSavedParameters(false);
+            setShowHistory(false);
+            if (!draftAvailable) {
+              setDraft(newDraft());
+              setDraftAvailable(true);
             }
-            onReturn={currentScreen === 'readiness' ? undefined : openCurrent}
+            openDraft();
+          }}
+          onCopy={(value) => {
+            requestFocus('parameters');
+            setShowSavedParameters(false);
+            setDraft(
+              draftFrom({
+                ...empty,
+                valve: value.valve,
+                area: value.areaM2,
+                pmax: value.pmaxPa,
+                measurementSeconds: value.measurementSeconds,
+                preOpenStabilizationSeconds: value.preOpenStabilizationSeconds,
+                postCloseStabilizationSeconds: value.postCloseStabilizationSeconds,
+                postCloseStabilizationRetries: value.postCloseStabilizationRetries,
+                ...(value.lowerPressureLimitPa == null
+                  ? {}
+                  : { lowerPressureLimitPa: value.lowerPressureLimitPa }),
+                ...(value.lowerPressureHoldSeconds == null
+                  ? {}
+                  : { lowerPressureHoldSeconds: value.lowerPressureHoldSeconds }),
+                ...(value.upperPressureLimitPa == null
+                  ? {}
+                  : { upperPressureLimitPa: value.upperPressureLimitPa }),
+                ...(value.upperPressureHoldSeconds == null
+                  ? {}
+                  : { upperPressureHoldSeconds: value.upperPressureHoldSeconds }),
+              }),
+            );
+            setDraftAvailable(true);
+            setShowHistory(false);
+            openDraft();
+          }}
+          draftAvailable={draftAvailable}
+          onDiscard={() => {
+            setDraft(newDraft());
+            setDraftAvailable(false);
+          }}
+        />
+      </div>
+      {!showHistory && (!record || record.stage === 'finished') && showForm && (
+        <ParametersScreen
+          initial={empty}
+          draft={draft}
+          setDraft={setDraft}
+          live
+          pending={pending.some((item) => item.kind === 'create' && !item.retired)}
+          unavailable={!fresh || blocking}
+          onBack={openHistory}
+          onContinue={(parameters) => {
+            requestFocus('readiness');
+            submittedCreate.current = {
+              draft,
+              previousId: record?.testId ?? null,
+              observed: false,
+              retained: false,
+              coordinator,
+            };
+            void coordinator.create(parameters);
+          }}
+        />
+      )}
+      {!showHistory && showSavedParameters && record && record.stage !== 'finished' && (
+        <ActiveParametersScreen
+          parameters={formParameters}
+          onReturn={() => openCurrent()}
+          stop={stopControl}
+        />
+      )}
+      {!showHistory &&
+        !showSavedParameters &&
+        record?.stage === 'preparing' &&
+        readiness?.testId === record.testId && (
+          <ReadinessScreen
+            key={`${record.testId}:${readiness.revision}`}
+            parameters={formParameters}
+            autoCheckFailed={
+              !fresh ||
+              !readinessConfirmed ||
+              !readiness.ready ||
+              readiness.revision !== snapshot?.revision
+            }
+            readiness={readiness}
             stop={stopControl}
+            pending={blocking}
+            stale={!fresh || !readinessConfirmed || readiness.revision !== snapshot?.revision}
+            onBack={() => {
+              requestFocus('parameters');
+              setShowSavedParameters(true);
+            }}
+            onStart={(checks) => {
+              requestFocus('run');
+              void coordinator.startTest(checks);
+            }}
           />
         )}
-      </div>
+      {!showHistory &&
+        !showSavedParameters &&
+        record?.stage === 'preparing' &&
+        readiness?.testId !== record.testId && (
+          <div className="workpage-heading">
+            <p>Готовность ещё не подтверждена.</p>
+            <div>{stopControl}</div>
+          </div>
+        )}
+      {!showHistory &&
+        !showSavedParameters &&
+        (record?.stage === 'running' || record?.stage === 'stopping') &&
+        snapshot && (
+          <LiveRun
+            key={record.testId}
+            record={record}
+            snapshot={snapshot}
+            fresh={fresh}
+            measurementContext={measurementContext}
+            measurementKey={measurementKey}
+            stop={stopControl}
+            pending={blocking}
+            onConfirm={() => {
+              void coordinator.confirmAction();
+            }}
+          />
+        )}
+      {!showHistory && !showForm && record?.stage === 'finished' && (
+        <ResultScreen
+          parameters={formParameters}
+          record={record}
+          saveError={record.saveStatus === 'failed'}
+          interrupted={record.outcome === 'interrupted'}
+          active={blocking || snapshot?.pendingAction?.kind === 'confirmStopped'}
+          draftAvailable={draftAvailable}
+          onList={openHistory}
+          onNew={() => {
+            requestFocus('parameters');
+            setShowSavedParameters(false);
+            if (!draftAvailable) {
+              setDraft(draftFrom(formParameters));
+              setDraftAvailable(true);
+            }
+            openDraft();
+          }}
+        >
+          {snapshot?.pendingAction?.kind === 'confirmStopped' && (
+            <div className="work-surface">
+              <p>{snapshot.pendingAction.instruction}</p>
+              <button
+                type="button"
+                className="primary-button"
+                disabled={!fresh || blocking}
+                onClick={() => {
+                  void coordinator.confirmAction();
+                }}
+              >
+                Подтвердить остановку вала
+              </button>
+            </div>
+          )}
+          <RecordDetails key={record.testId} record={record} service={service} available={fresh} />
+        </ResultScreen>
+      )}
     </AppShell>
   );
 }

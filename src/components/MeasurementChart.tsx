@@ -15,7 +15,7 @@ interface MeasurementChartProps {
 }
 
 const formatValue = (value: number | null): string =>
-  value === null ? 'Нет данных' : formatNumber(value, 12);
+  value === null ? 'Нет данных' : formatNumber(value);
 
 // A line cannot show a sample with gaps on both sides; mark only those samples.
 const isolatedPoints: uPlot.Series.Points.Filter = (chart, seriesIndex) => {
@@ -29,19 +29,15 @@ const isolatedPoints: uPlot.Series.Points.Filter = (chart, seriesIndex) => {
   return isolated;
 };
 
-/** Выбирает точность по отметкам, чтобы соседние значения не сливались в один текст. */
-function formatAxisValues(splits: number[]): string[] {
-  const scientific = splits.some(
-    (value) => Math.abs(value) > 0 && (Math.abs(value) < 0.001 || Math.abs(value) >= 1_000_000),
-  );
-  const uniqueCount = new Set(splits).size;
-  for (let digits = 3; digits <= 17; digits++) {
-    const labels = splits.map((value) =>
-      value === 0 ? '0' : formatNumber(value, digits, scientific ? 'scientific' : 'standard'),
-    );
-    if (new Set(labels).size === uniqueCount) return labels;
-  }
-  return splits.map((value) => String(value));
+function formatAxisValues(splits: number[]): (string | null)[] {
+  const seen = new Set<string>();
+  return splits.map((value) => {
+    if (!Number.isFinite(value)) return null;
+    const label = formatNumber(value);
+    if (seen.has(label)) return null;
+    seen.add(label);
+    return label;
+  });
 }
 
 type ChartProjection = {
@@ -52,12 +48,7 @@ type ChartProjection = {
 };
 
 function restoredValues(splits: number[], scale: number) {
-  const actual = splits.map((value) => value * scale);
-  return formatAxisValues(actual).map((label, index) =>
-    !Number.isFinite(actual[index]) || (index > 0 && actual[index] === actual[index - 1])
-      ? null
-      : label,
-  );
+  return formatAxisValues(splits.map((value) => value * scale));
 }
 
 function projectChart({

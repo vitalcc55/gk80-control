@@ -1,5 +1,5 @@
 import { ArrowLeft, ArrowRight } from 'lucide-react';
-import { useState } from 'react';
+import { type ReactNode, useState } from 'react';
 import type { Readiness } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
 import { formatNumber } from '../lib/format';
 import type { TestParameters } from '../model';
@@ -13,6 +13,7 @@ interface ReadinessScreenProps {
   readiness?: Readiness;
   pending?: boolean;
   stale?: boolean;
+  stop?: ReactNode;
 }
 
 export function ReadinessScreen({
@@ -23,6 +24,7 @@ export function ReadinessScreen({
   readiness,
   pending = false,
   stale = false,
+  stop,
 }: ReadinessScreenProps) {
   const [valveConfirmed, setValveConfirmed] = useState(false);
   const [connectionConfirmed, setConnectionConfirmed] = useState(false);
@@ -38,6 +40,7 @@ export function ReadinessScreen({
         <div>
           <h1 id="readiness-title">Готовность</h1>
         </div>
+        {stop && <div>{stop}</div>}
       </div>
       <div className="parameter-summary">
         <div>

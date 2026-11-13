@@ -5,8 +5,8 @@ import { formatNumber } from '../src/lib/format';
 
 describe('подготовленные состояния интерфейса', () => {
   it('не показывает принятое малое положительное значение как ноль', () => {
-    expect(formatNumber(0.0001)).toBe('0,0001');
-    expect(formatNumber(0.00000001)).toBe('0,00000001');
+    expect(formatNumber(0.0001)).toBe('1E-4');
+    expect(formatNumber(0.00000001)).toBe('1E-8');
   });
 
   it('показывает крайние порядки компактно и сохраняет знак и ненулевую величину', () => {
@@ -20,10 +20,10 @@ describe('подготовленные состояния интерфейса',
 
   it('ограничивает отображаемые знаки подготовленного показания, не теряя точность ввода', () => {
     const derivedPressure = (10010 / 10000) * 1e-100;
-    expect(formatNumber(derivedPressure, 12)).toBe('1,001E-100');
-    expect(formatNumber(1.2345678901234567)).toBe('1,2345678901234567');
-    expect(formatNumber(0.0001, 12)).toBe('0,0001');
-    expect(formatNumber(Number.MIN_VALUE, 12)).toBe('5E-324');
+    expect(formatNumber(derivedPressure)).toBe('1E-100');
+    expect(formatNumber(1.2345678901234567)).toBe('1,23');
+    expect(formatNumber(0.0001)).toBe('1E-4');
+    expect(formatNumber(Number.MIN_VALUE)).toBe('5E-324');
   });
 
   it('согласует середину измерения с последней точкой графика', () => {

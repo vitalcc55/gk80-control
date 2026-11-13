@@ -118,7 +118,7 @@ func TestExactLookupResultKeepsConflictSeparateFromCommandStatus(t *testing.T) {
 func TestMeasurementContractPreservesNullAndRejectsInvalidData(t *testing.T) {
 	schema := schemaFor(t, "Measurement")
 	measurement := Measurement{
-		Sequence: 1, Channel: Dd1, Quantity: MeasurementQuantityPressure, Unit: Pa,
+		Sequence: 1, Channel: MeasurementChannelDd1, Quantity: MeasurementQuantityPressure, Unit: Pa,
 		ObservedAt: time.Date(2026, 10, 29, 12, 0, 1, 0, time.UTC),
 		Quality:    MeasurementQualityUnavailable, Source: MeasurementSourceSimulator,
 	}
@@ -149,7 +149,7 @@ func TestEventRequiresPayloadForItsType(t *testing.T) {
 	runID := uuid.New()
 	testID := uuid.New()
 	measurement := Measurement{
-		Sequence: 1, Channel: Dd1, Quantity: MeasurementQuantityPressure, Unit: Pa,
+		Sequence: 1, Channel: MeasurementChannelDd1, Quantity: MeasurementQuantityPressure, Unit: Pa,
 		ObservedAt: time.Date(2026, 10, 29, 12, 0, 1, 0, time.UTC),
 		Quality:    MeasurementQualityUnavailable, Source: MeasurementSourceSimulator,
 	}

@@ -185,19 +185,19 @@ func (e ExactLookupResultOutcome) Valid() bool {
 
 // Defines values for MeasurementChannel.
 const (
-	Dd1 MeasurementChannel = "dd1"
-	Dd2 MeasurementChannel = "dd2"
-	Dd3 MeasurementChannel = "dd3"
+	MeasurementChannelDd1 MeasurementChannel = "dd1"
+	MeasurementChannelDd2 MeasurementChannel = "dd2"
+	MeasurementChannelDd3 MeasurementChannel = "dd3"
 )
 
 // Valid indicates whether the value is a known member of the MeasurementChannel enum.
 func (e MeasurementChannel) Valid() bool {
 	switch e {
-	case Dd1:
+	case MeasurementChannelDd1:
 		return true
-	case Dd2:
+	case MeasurementChannelDd2:
 		return true
-	case Dd3:
+	case MeasurementChannelDd3:
 		return true
 	default:
 		return false
@@ -273,6 +273,30 @@ func (e MeasurementUnit) Valid() bool {
 	}
 }
 
+// Defines values for PendingActionKind.
+const (
+	ConfirmPreparation PendingActionKind = "confirmPreparation"
+	ConfirmStopped     PendingActionKind = "confirmStopped"
+	ConfirmValveClosed PendingActionKind = "confirmValveClosed"
+	ConfirmValveOpen   PendingActionKind = "confirmValveOpen"
+)
+
+// Valid indicates whether the value is a known member of the PendingActionKind enum.
+func (e PendingActionKind) Valid() bool {
+	switch e {
+	case ConfirmPreparation:
+		return true
+	case ConfirmStopped:
+		return true
+	case ConfirmValveClosed:
+		return true
+	case ConfirmValveOpen:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ReadinessCheckSource.
 const (
 	ReadinessCheckSourceCore      ReadinessCheckSource = "core"
@@ -285,6 +309,57 @@ func (e ReadinessCheckSource) Valid() bool {
 	case ReadinessCheckSourceCore:
 		return true
 	case ReadinessCheckSourceSimulator:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RunPhase.
+const (
+	AwaitingPreparation      RunPhase = "awaitingPreparation"
+	AwaitingValveClosing     RunPhase = "awaitingValveClosing"
+	AwaitingValveOpening     RunPhase = "awaitingValveOpening"
+	Measuring                RunPhase = "measuring"
+	SearchingPressure        RunPhase = "searchingPressure"
+	StabilizingAfterClosing  RunPhase = "stabilizingAfterClosing"
+	StabilizingBeforeOpening RunPhase = "stabilizingBeforeOpening"
+)
+
+// Valid indicates whether the value is a known member of the RunPhase enum.
+func (e RunPhase) Valid() bool {
+	switch e {
+	case AwaitingPreparation:
+		return true
+	case AwaitingValveClosing:
+		return true
+	case AwaitingValveOpening:
+		return true
+	case Measuring:
+		return true
+	case SearchingPressure:
+		return true
+	case StabilizingAfterClosing:
+		return true
+	case StabilizingBeforeOpening:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SnapshotActiveDifferential.
+const (
+	SnapshotActiveDifferentialDd2 SnapshotActiveDifferential = "dd2"
+	SnapshotActiveDifferentialDd3 SnapshotActiveDifferential = "dd3"
+)
+
+// Valid indicates whether the value is a known member of the SnapshotActiveDifferential enum.
+func (e SnapshotActiveDifferential) Valid() bool {
+	switch e {
+	case SnapshotActiveDifferentialDd2:
+		return true
+	case SnapshotActiveDifferentialDd3:
 		return true
 	default:
 		return false
@@ -544,15 +619,19 @@ type CreateTestLookupInput struct {
 	CommandId        openapi_types.UUID `json:"commandId"`
 	ExpectedRevision int64              `json:"expectedRevision"`
 	Parameters       struct {
-		Actuator                      bool    `json:"actuator"`
-		AreaM2                        float64 `json:"areaM2"`
-		Direction                     string  `json:"direction"`
-		MeasurementSeconds            float64 `json:"measurementSeconds"`
-		PmaxPa                        float64 `json:"pmaxPa"`
-		PostCloseStabilizationRetries int     `json:"postCloseStabilizationRetries"`
-		PostCloseStabilizationSeconds float64 `json:"postCloseStabilizationSeconds"`
-		PreOpenStabilizationSeconds   float64 `json:"preOpenStabilizationSeconds"`
-		Valve                         string  `json:"valve"`
+		Actuator                      bool     `json:"actuator"`
+		AreaM2                        float64  `json:"areaM2"`
+		Direction                     string   `json:"direction"`
+		LowerPressureHoldSeconds      *int     `json:"lowerPressureHoldSeconds,omitempty"`
+		LowerPressureLimitPa          *float64 `json:"lowerPressureLimitPa,omitempty"`
+		MeasurementSeconds            float64  `json:"measurementSeconds"`
+		PmaxPa                        float64  `json:"pmaxPa"`
+		PostCloseStabilizationRetries int      `json:"postCloseStabilizationRetries"`
+		PostCloseStabilizationSeconds float64  `json:"postCloseStabilizationSeconds"`
+		PreOpenStabilizationSeconds   float64  `json:"preOpenStabilizationSeconds"`
+		UpperPressureHoldSeconds      *int     `json:"upperPressureHoldSeconds,omitempty"`
+		UpperPressureLimitPa          *float64 `json:"upperPressureLimitPa,omitempty"`
+		Valve                         string   `json:"valve"`
 	} `json:"parameters"`
 }
 
@@ -652,8 +731,12 @@ type MeasurementTiming struct {
 type PendingAction struct {
 	ActionId    openapi_types.UUID `json:"actionId"`
 	Instruction string             `json:"instruction"`
+	Kind        *PendingActionKind `json:"kind,omitempty"`
 	TestId      openapi_types.UUID `json:"testId"`
 }
+
+// PendingActionKind defines model for PendingAction.Kind.
+type PendingActionKind string
 
 // Readiness defines model for Readiness.
 type Readiness struct {
@@ -674,6 +757,9 @@ type ReadinessCheck struct {
 // ReadinessCheckSource defines model for ReadinessCheck.Source.
 type ReadinessCheckSource string
 
+// RunPhase defines model for RunPhase.
+type RunPhase string
+
 // SessionView defines model for SessionView.
 type SessionView struct {
 	Connection     ConnectionState `json:"connection"`
@@ -686,10 +772,14 @@ type SessionView struct {
 
 // Snapshot defines model for Snapshot.
 type Snapshot struct {
-	ActiveTest        *TestRecord        `json:"activeTest"`
-	ApiVersion        string             `json:"apiVersion"`
-	BackendRunId      openapi_types.UUID `json:"backendRunId"`
-	LastEventSequence int64              `json:"lastEventSequence"`
+	ActiveDifferential *SnapshotActiveDifferential `json:"activeDifferential,omitempty"`
+	ActiveTest         *TestRecord                 `json:"activeTest"`
+	ApiVersion         string                      `json:"apiVersion"`
+	BackendRunId       openapi_types.UUID          `json:"backendRunId"`
+
+	// CurrentReadings Последний опрос каналов до основного измерения. Нумерация локальна для этой проекции, показания не входят в архив.
+	CurrentReadings   *[]Measurement `json:"currentReadings,omitempty"`
+	LastEventSequence int64          `json:"lastEventSequence"`
 
 	// MeasurementBatch Номер последнего принятого пакета текущего испытания. До первого пакета null; каждый успешно принятый пакет получает следующий номер начиная с 1. Публикуется атомарно с measurements и сохраняется с ними при остановке и завершении. Не подтверждает запись в Store.
 	MeasurementBatch *int64 `json:"measurementBatch"`
@@ -698,8 +788,15 @@ type Snapshot struct {
 	MeasurementTiming *MeasurementTiming `json:"measurementTiming"`
 	Measurements      []Measurement      `json:"measurements"`
 	PendingAction     *PendingAction     `json:"pendingAction"`
-	Revision          int64              `json:"revision"`
+
+	// PhaseTiming Монотонное время Engine на последнем принятом отсчёте. Нулевой остаток не подтверждает завершение этапа.
+	PhaseTiming *MeasurementTiming `json:"phaseTiming,omitempty"`
+	Revision    int64              `json:"revision"`
+	RunPhase    *RunPhase          `json:"runPhase,omitempty"`
 }
+
+// SnapshotActiveDifferential defines model for Snapshot.ActiveDifferential.
+type SnapshotActiveDifferential string
 
 // StartTestCommand defines model for StartTestCommand.
 type StartTestCommand struct {
@@ -742,23 +839,27 @@ type TestList struct {
 
 // TestParameters defines model for TestParameters.
 type TestParameters struct {
-	Actuator  bool                    `json:"actuator"`
-	AreaM2    float64                 `json:"areaM2"`
-	Direction TestParametersDirection `json:"direction"`
+	Actuator                 bool                    `json:"actuator"`
+	AreaM2                   float64                 `json:"areaM2"`
+	Direction                TestParametersDirection `json:"direction"`
+	LowerPressureHoldSeconds *int                    `json:"lowerPressureHoldSeconds,omitempty"`
+	LowerPressureLimitPa     *float64                `json:"lowerPressureLimitPa,omitempty"`
 
 	// MeasurementSeconds Длительность измерения в целых секундах.
 	MeasurementSeconds float64 `json:"measurementSeconds"`
 	PmaxPa             float64 `json:"pmaxPa"`
 
-	// PostCloseStabilizationRetries Допустимое число повторов стабилизации после закрытия.
+	// PostCloseStabilizationRetries Отдельный лимит повторов для каждой стабилизации.
 	PostCloseStabilizationRetries int `json:"postCloseStabilizationRetries"`
 
 	// PostCloseStabilizationSeconds Длительность стабилизации после закрытия клапана, с.
 	PostCloseStabilizationSeconds float64 `json:"postCloseStabilizationSeconds"`
 
 	// PreOpenStabilizationSeconds Длительность стабилизации перед открытием клапана, с.
-	PreOpenStabilizationSeconds float64 `json:"preOpenStabilizationSeconds"`
-	Valve                       string  `json:"valve"`
+	PreOpenStabilizationSeconds float64  `json:"preOpenStabilizationSeconds"`
+	UpperPressureHoldSeconds    *int     `json:"upperPressureHoldSeconds,omitempty"`
+	UpperPressureLimitPa        *float64 `json:"upperPressureLimitPa,omitempty"`
+	Valve                       string   `json:"valve"`
 }
 
 // TestParametersDirection defines model for TestParameters.Direction.

@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -17,7 +18,7 @@ import (
 
 func createCommand() contract.CreateTestCommand {
 	return contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: 0, Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10,
-		Valve: "Демо клапан", AreaM2: 0.01, PmaxPa: 1000, MeasurementSeconds: 60, Direction: "pressure", Actuator: false,
+		Valve: "Демо клапан", AreaM2: 0.01, PmaxPa: 1000, LowerPressureLimitPa: new(900.0), UpperPressureLimitPa: new(1080.0), LowerPressureHoldSeconds: new(2), UpperPressureHoldSeconds: new(2), MeasurementSeconds: 60, Direction: "pressure", Actuator: false,
 	}}
 }
 
@@ -46,7 +47,7 @@ func TestManualParametersPersistAndValidateBoundaries(t *testing.T) {
 	}
 	defer func() { _ = store.Close() }()
 	record, err := store.Test(ctx, *result.TestId)
-	if err != nil || record.Parameters != command.Parameters {
+	if err != nil || !reflect.DeepEqual(record.Parameters, command.Parameters) {
 		t.Fatalf("reopen: %+v %v", record.Parameters, err)
 	}
 	status, err := store.LookupCreate(ctx, command)
@@ -109,6 +110,77 @@ func TestPreviousDemoProfileIsNotModified(t *testing.T) {
 	}
 }
 
+func TestVersionFourProfilePreservesRecordAndExactCreate(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := createCommand()
+	created, err := store.Create(ctx, command)
+	if err != nil || created.TestId == nil {
+		t.Fatalf("create: %+v %v", created, err)
+	}
+	record, err := store.Test(ctx, *created.TestId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := command
+	legacy.Parameters.LowerPressureLimitPa = nil
+	legacy.Parameters.UpperPressureLimitPa = nil
+	legacy.Parameters.LowerPressureHoldSeconds = nil
+	legacy.Parameters.UpperPressureHoldSeconds = nil
+	record.Parameters = legacy.Parameters
+	legacyJSON, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validator, err := contract.NewInputValidator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded contract.CreateTestCommand
+	input, err := validator.Inspect("CreateTestCommand", legacyJSON, &decoded)
+	if err != nil || input.Valid || !reflect.DeepEqual(decoded, legacy) {
+		t.Fatalf("legacy input: %+v %v", input, err)
+	}
+	identity := input.Identity
+	recordBody, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`UPDATE tests SET record = ? WHERE id = ?`, recordBody, created.TestId.String()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`UPDATE commands SET request = ? WHERE id = ?`, identity, command.CommandId.String()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`ALTER TABLE test_actions DROP COLUMN kind; PRAGMA user_version = 4`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	got, err := store.Test(ctx, *created.TestId)
+	if err != nil || !reflect.DeepEqual(got.Parameters, legacy.Parameters) {
+		t.Fatalf("legacy parameters: %+v %v", got.Parameters, err)
+	}
+	status, err := store.LookupCreateExact(ctx, legacy, identity)
+	if err != nil || status.TestId == nil || *status.TestId != *created.TestId {
+		t.Fatalf("legacy exact lookup: %+v %v", status, err)
+	}
+	legacy.CommandId = uuid.New()
+	if _, err := store.Create(ctx, legacy); !errors.Is(err, ErrInvalidCommand) {
+		t.Fatalf("new request without pressure limits: %v", err)
+	}
+}
+
 func TestCreatePreservesExactInputIdentityAcrossReopen(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -120,7 +192,7 @@ func TestCreatePreservesExactInputIdentityAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	base := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":13,"postCloseStabilizationSeconds":17,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
+	base := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"lowerPressureLimitPa":0,"upperPressureLimitPa":1080,"lowerPressureHoldSeconds":0,"upperPressureHoldSeconds":0,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":13,"postCloseStabilizationSeconds":17,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	var command contract.CreateTestCommand
 	first, err := validator.Inspect("CreateTestCommand", []byte(base), &command)
 	if err != nil || !first.Valid {
@@ -140,7 +212,7 @@ func TestCreatePreservesExactInputIdentityAcrossReopen(t *testing.T) {
 	}
 	var changed contract.CreateTestCommand
 	different, err := validator.Inspect("CreateTestCommand", []byte(strings.Replace(base, `"areaM2":1`, `"areaM2":1.0000000000000001`, 1)), &changed)
-	if err != nil || !different.Valid || changed != command {
+	if err != nil || !different.Valid || !reflect.DeepEqual(changed, command) {
 		t.Fatalf("different decimal: %v", err)
 	}
 	if _, err := store.LookupCreateExact(ctx, changed, different.Identity); !errors.Is(err, ErrCommandConflict) {
@@ -173,7 +245,7 @@ func TestExactMeasurementDurationAboveLimitIsRejectedBeforeRounding(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":300.00000000000001,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"lowerPressureLimitPa":0,"upperPressureLimitPa":1080,"lowerPressureHoldSeconds":0,"upperPressureHoldSeconds":0,"pmaxPa":1000,"measurementSeconds":300.00000000000001,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	var command contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &command)
 	if err != nil || command.Parameters.MeasurementSeconds != 300 {
@@ -199,7 +271,7 @@ func TestCanonicalIdentityMayExceedInputLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"` + strings.Repeat("<", 200) + `","areaM2":1.` + strings.Repeat("0", 7400) + `1,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"` + strings.Repeat("<", 200) + `","areaM2":1.` + strings.Repeat("0", 7400) + `1,"lowerPressureLimitPa":0,"upperPressureLimitPa":1080,"lowerPressureHoldSeconds":0,"upperPressureHoldSeconds":0,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	if len(body) >= 8192 {
 		t.Fatalf("input unexpectedly large: %d", len(body))
 	}
@@ -264,7 +336,7 @@ func TestLegacyRejectedLongInputSurvivesCanonicalExpansion(t *testing.T) {
 	}
 	defer func() { _ = store.Close() }()
 	command := createCommand()
-	command.Parameters.Valve = strings.Repeat("V", 7850)
+	command.Parameters.Valve = strings.Repeat("V", 7720)
 	command.Parameters.AreaM2 = math.SmallestNonzeroFloat64
 	command.Parameters.PmaxPa = math.SmallestNonzeroFloat64
 	command.Parameters.MeasurementSeconds = math.SmallestNonzeroFloat64
@@ -345,7 +417,7 @@ func TestCreatePersistsAtomicRecordAuditAndCommandAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Parameters != command.Parameters || !first.Demo || first.OperatorId != "demo-operator" || first.StopCommandId == uuid.Nil || first.Stage != "preparing" {
+	if !reflect.DeepEqual(first.Parameters, command.Parameters) || !first.Demo || first.OperatorId != "demo-operator" || first.StopCommandId == uuid.Nil || first.Stage != "preparing" {
 		t.Fatalf("unexpected record: %+v", first)
 	}
 	audit, err := store.Audit(ctx, first.TestId, 0, 100)
@@ -365,7 +437,7 @@ func TestCreatePersistsAtomicRecordAuditAndCommandAcrossReopen(t *testing.T) {
 		t.Fatalf("repeat: %+v, %v", repeated, err)
 	}
 	reopened, err := store.Test(ctx, first.TestId)
-	if err != nil || reopened != first {
+	if err != nil || !reflect.DeepEqual(reopened, first) {
 		t.Fatalf("reopen: %+v, %v", reopened, err)
 	}
 	changed := command

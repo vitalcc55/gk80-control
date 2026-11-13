@@ -1,5 +1,26 @@
 import { expect, type Locator, type Page, test } from '@playwright/test';
 
+test('линия этапов соединяет отметки только в пределах строки', async ({ page }) => {
+  await page.goto('/?fixture=measuring');
+  const stages = page.getByRole('complementary', { name: 'Этапы испытания' });
+  await expect(stages).toBeVisible();
+  for (const width of [1920, 1405, 1200, 960, 560, 400]) {
+    await page.setViewportSize({ width, height: 900 });
+    const wrongConnections = await stages.getByRole('listitem').evaluateAll((items) =>
+      items.flatMap((item, index) => {
+        const next = items[index + 1];
+        const hasNextOnRow =
+          next !== undefined &&
+          next.getBoundingClientRect().top === item.getBoundingClientRect().top;
+        const line = getComputedStyle(item, '::before');
+        const hasLine = line.content !== 'none' && line.display !== 'none';
+        return hasLine === hasNextOnRow ? [] : [index + 1];
+      }),
+    );
+    expect(wrongConnections, `Ширина окна ${width} px`).toEqual([]);
+  }
+});
+
 async function captureAxisText(page: Page) {
   await page.addInitScript(() => {
     const drawText = CanvasRenderingContext2D.prototype.fillText;
@@ -86,7 +107,7 @@ for (const viewport of [
       await page
         .getByRole('textbox', { name: 'Обозначение или наименование клапана' })
         .fill('Клапан для показа');
-      await page.getByLabel('Допустимое число повторов стабилизации после закрытия').fill('1');
+      await page.getByLabel('Число повторов для каждой стабилизации').fill('1');
       await page.getByRole('button', { name: 'Проверить готовность' }).click();
       await expect(page.getByRole('heading', { name: 'Готовность', exact: true })).toBeVisible();
       const start = page.getByRole('button', { name: 'Перейти к проведению' });
@@ -269,7 +290,7 @@ for (const viewport of [
         .getByRole('textbox', { name: 'Обозначение или наименование клапана' })
         .fill('Клапан 100');
       await page.getByRole('textbox', { name: 'Длительность измерения, с' }).fill('99');
-      await page.getByLabel('Допустимое число повторов стабилизации после закрытия').fill('1');
+      await page.getByLabel('Число повторов для каждой стабилизации').fill('1');
       await page.getByRole('button', { name: 'Проверить готовность' }).click();
       await page.getByRole('checkbox', { name: /Клапан закрыт/ }).check();
       await page.getByRole('checkbox', { name: /Подключение соответствует направлению/ }).check();
@@ -314,7 +335,7 @@ for (const viewport of [
           .fill('Клапан для проверки осей');
         await page.getByRole('textbox', { name: 'Pmax производителя, Па' }).fill(example.pressure);
         await page.getByRole('textbox', { name: 'Длительность измерения, с' }).fill(example.period);
-        await page.getByLabel('Допустимое число повторов стабилизации после закрытия').fill('1');
+        await page.getByLabel('Число повторов для каждой стабилизации').fill('1');
         await page.getByRole('button', { name: 'Проверить готовность' }).click();
         await page.getByRole('checkbox', { name: /Клапан закрыт/ }).check();
         await page.getByRole('checkbox', { name: /Подключение соответствует направлению/ }).check();
@@ -367,9 +388,10 @@ for (const viewport of [
           .locator('.chart-data-table tbody tr:last-child td:nth-child(2)')
           .textContent();
         if (lastPressure === null) throw new Error('Последнее давление отсутствует');
-        expect(Math.abs(parseLabel(lastPressure) / (example.expectedY * 1.001) - 1)).toBeLessThan(
-          1e-12,
-        );
+        const pressure = example.expectedY * 1.001;
+        const rounded =
+          pressure < 0.005 ? Number(pressure.toExponential(2)) : Math.round(pressure * 100) / 100;
+        expect(parseLabel(lastPressure)).toBe(rounded);
       }
       expect(errors).toEqual([]);
     });
@@ -412,7 +434,7 @@ for (const viewport of [
         page.getByRole('textbox', { name: 'Площадь клапана, квадратные метры' }),
       ).toHaveValue('0,');
       await page.getByRole('textbox', { name: 'Площадь клапана, квадратные метры' }).fill('0,12');
-      await page.getByLabel('Допустимое число повторов стабилизации после закрытия').fill('1');
+      await page.getByLabel('Число повторов для каждой стабилизации').fill('1');
       await page.getByRole('button', { name: 'Проверить готовность' }).click();
       await page.getByRole('checkbox', { name: /Клапан закрыт/ }).check();
       await page.getByRole('checkbox', { name: /Подключение соответствует направлению/ }).check();
@@ -434,7 +456,7 @@ test('обычные слова в истории остаются читаем�
   await page.goto('/?fixture=empty');
   await page.getByRole('button', { name: 'Новое испытание' }).click();
   await page.getByLabel('Обозначение или наименование клапана').fill('Проверка Windows');
-  await page.getByLabel('Допустимое число повторов стабилизации после закрытия').fill('1');
+  await page.getByLabel('Число повторов для каждой стабилизации').fill('1');
   await page.getByRole('button', { name: 'Проверить готовность' }).click();
   await page.getByRole('checkbox', { name: /Клапан закрыт/ }).check();
   await page.getByRole('checkbox', { name: /Подключение соответствует направлению/ }).check();

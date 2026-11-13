@@ -55,7 +55,9 @@ export class MeasurementSeriesContext {
       return;
     }
     const pressure = snapshot?.measurements?.find((item) => item.channel === 'dd1');
-    const differential = snapshot?.measurements?.find((item) => item.channel === 'dd2');
+    const differential = snapshot?.measurements?.find(
+      (item) => item.channel === (snapshot.activeDifferential ?? 'dd2'),
+    );
     if (
       pressure?.quality !== 'valid' ||
       pressure.value === null ||

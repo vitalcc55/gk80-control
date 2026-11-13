@@ -14,6 +14,13 @@ import type { TestParameters } from '../model';
 import { PressureNotation } from './PressureNotation';
 import './screens.css';
 
+const pressureLimitFields = [
+  ['lowerPressureLimitPa', 'Нижний аварийный предел, Па', 'decimal'],
+  ['lowerPressureHoldSeconds', 'Выдержка ниже нижнего предела, с', 'numeric'],
+  ['upperPressureLimitPa', 'Верхний аварийный предел, Па', 'decimal'],
+  ['upperPressureHoldSeconds', 'Выдержка выше верхнего предела, с', 'numeric'],
+] as const;
+
 type Direction = TestParameters['direction'];
 export interface Draft {
   valve: string;
@@ -28,6 +35,10 @@ export interface Draft {
   preOpenStabilizationSeconds: string;
   postCloseStabilizationSeconds: string;
   postCloseStabilizationRetries: string;
+  lowerPressureLimitPa?: string;
+  lowerPressureHoldSeconds?: string;
+  upperPressureLimitPa?: string;
+  upperPressureHoldSeconds?: string;
 }
 type Errors = Partial<
   Record<
@@ -39,7 +50,11 @@ type Errors = Partial<
     | 'measurementSeconds'
     | 'preOpenStabilizationSeconds'
     | 'postCloseStabilizationSeconds'
-    | 'postCloseStabilizationRetries',
+    | 'postCloseStabilizationRetries'
+    | 'lowerPressureLimitPa'
+    | 'lowerPressureHoldSeconds'
+    | 'upperPressureLimitPa'
+    | 'upperPressureHoldSeconds',
     string
   >
 >;
@@ -55,11 +70,11 @@ function RequiredLabel({ id, children }: { id?: string; children: ReactNode }) {
   );
 }
 
-function positiveNumber(value: string): number | null {
+function positiveNumber(value: string, minimum = Number.MIN_VALUE): number | null {
   const normalized = value.trim().replace(',', '.');
   if (!/^\d+(?:\.\d+)?$/.test(normalized)) return null;
   const parsed = Number(normalized);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  return Number.isFinite(parsed) && parsed >= minimum ? parsed : null;
 }
 
 function wholeNumber(value: string, min: number, max: number): number | null {
@@ -110,6 +125,22 @@ export function draftFrom(parameters: TestParameters): Draft {
       parameters.postCloseStabilizationRetries === null
         ? ''
         : String(parameters.postCloseStabilizationRetries),
+    lowerPressureLimitPa:
+      parameters.lowerPressureLimitPa === undefined
+        ? ''
+        : draftNumber(parameters.lowerPressureLimitPa),
+    lowerPressureHoldSeconds:
+      parameters.lowerPressureHoldSeconds === undefined
+        ? ''
+        : draftNumber(parameters.lowerPressureHoldSeconds),
+    upperPressureLimitPa:
+      parameters.upperPressureLimitPa === undefined
+        ? ''
+        : draftNumber(parameters.upperPressureLimitPa),
+    upperPressureHoldSeconds:
+      parameters.upperPressureHoldSeconds === undefined
+        ? ''
+        : draftNumber(parameters.upperPressureHoldSeconds),
   };
 }
 
@@ -184,6 +215,31 @@ export function ParametersScreen({
       nextErrors.openSeconds = 'Введите длительность команды больше нуля, с.';
     if (draft.actuator && closeSeconds === null)
       nextErrors.closeSeconds = 'Введите длительность команды больше нуля, с.';
+    const lowerPressureLimitPa = positiveNumber(draft.lowerPressureLimitPa ?? '', 0);
+    const upperPressureLimitPa = positiveNumber(draft.upperPressureLimitPa ?? '');
+    const lowerPressureHoldSeconds = wholeNumber(
+      draft.lowerPressureHoldSeconds ?? '',
+      0,
+      measurementSeconds ?? 300,
+    );
+    const upperPressureHoldSeconds = wholeNumber(
+      draft.upperPressureHoldSeconds ?? '',
+      0,
+      measurementSeconds ?? 300,
+    );
+    if (live) {
+      if (lowerPressureLimitPa === null || (pmax !== null && lowerPressureLimitPa >= pmax))
+        nextErrors.lowerPressureLimitPa = 'Введите давление от 0 до Pmax, не включая Pmax.';
+      if (
+        upperPressureLimitPa === null ||
+        (pmax !== null && (upperPressureLimitPa <= pmax || upperPressureLimitPa > 1.1 * pmax))
+      )
+        nextErrors.upperPressureLimitPa = 'Введите давление выше Pmax и не более 110% Pmax.';
+      if (lowerPressureHoldSeconds === null)
+        nextErrors.lowerPressureHoldSeconds = 'Введите целое число от 0 до длительности измерения.';
+      if (upperPressureHoldSeconds === null)
+        nextErrors.upperPressureHoldSeconds = 'Введите целое число от 0 до длительности измерения.';
+    }
     setErrors(nextErrors);
     const firstInvalid = (
       [
@@ -194,6 +250,10 @@ export function ParametersScreen({
         'preOpenStabilizationSeconds',
         'postCloseStabilizationSeconds',
         'postCloseStabilizationRetries',
+        'lowerPressureLimitPa',
+        'lowerPressureHoldSeconds',
+        'upperPressureLimitPa',
+        'upperPressureHoldSeconds',
         'openSeconds',
         'closeSeconds',
       ] as const
@@ -208,7 +268,7 @@ export function ParametersScreen({
       preOpenStabilizationSeconds === null ||
       postCloseStabilizationSeconds === null ||
       postCloseStabilizationRetries === null ||
-      nextErrors.valve !== undefined ||
+      firstInvalid !== undefined ||
       (live && (draft.direction !== 'pressure' || draft.actuator)) ||
       (draft.actuator && (openSeconds === null || closeSeconds === null))
     )
@@ -222,6 +282,10 @@ export function ParametersScreen({
       preOpenStabilizationSeconds,
       postCloseStabilizationSeconds,
       postCloseStabilizationRetries,
+      ...(lowerPressureLimitPa === null ? {} : { lowerPressureLimitPa }),
+      ...(lowerPressureHoldSeconds === null ? {} : { lowerPressureHoldSeconds }),
+      ...(upperPressureLimitPa === null ? {} : { upperPressureLimitPa }),
+      ...(upperPressureHoldSeconds === null ? {} : { upperPressureHoldSeconds }),
       direction: draft.direction,
       actuator: draft.actuator,
       voltage: draft.voltage === '24' ? 24 : 220,
@@ -243,6 +307,10 @@ export function ParametersScreen({
 
   function updateInput(name: keyof Errors, value: string) {
     setDraft({ ...draft, [name]: value });
+    if (pressureLimitFields.some(([field]) => field === name)) {
+      setErrors((current) => ({ ...current, [name]: undefined }));
+      return;
+    }
     if (
       name === 'measurementSeconds' ||
       name === 'preOpenStabilizationSeconds' ||
@@ -408,7 +476,7 @@ export function ParametersScreen({
               </label>
               <label className="form-field">
                 <RequiredLabel id="postCloseStabilizationRetries-label">
-                  Допустимое число повторов стабилизации после закрытия
+                  Число повторов для каждой стабилизации
                 </RequiredLabel>
                 <input
                   className="work-input"
@@ -456,6 +524,34 @@ export function ParametersScreen({
               </fieldset>
             </div>
           </div>
+          {live && (
+            <div className="form-section">
+              <div className="section-heading">
+                <h2>Аварийные пределы давления</h2>
+                <p>Выдержка 0 с означает остановку при первом выходе за предел.</p>
+              </div>
+              <div className="form-grid">
+                {pressureLimitFields.map(([name, label, inputMode]) => (
+                  <label className="form-field" key={name}>
+                    <RequiredLabel id={`${name}-label`}>{label}</RequiredLabel>
+                    <input
+                      className="work-input"
+                      aria-labelledby={`${name}-label`}
+                      inputMode={inputMode}
+                      value={draft[name] ?? ''}
+                      {...inputError(name)}
+                      onChange={(event) => updateInput(name, event.target.value)}
+                    />
+                    {errors[name] && (
+                      <small className="field-error" id={`${name}-error`}>
+                        {errors[name]}
+                      </small>
+                    )}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="form-section">
             <div className="section-heading">
               <h2>Привод клапана</h2>
@@ -559,7 +655,15 @@ export function ParametersScreen({
   );
 }
 
-export function ActiveParametersScreen({ parameters }: { parameters: TestParameters }) {
+export function ActiveParametersScreen({
+  parameters,
+  stop,
+  onReturn,
+}: {
+  parameters: TestParameters;
+  stop: ReactNode;
+  onReturn: () => void;
+}) {
   return (
     <section className="workpage workpage-narrow" aria-labelledby="active-parameters-title">
       <div className="workpage-heading">
@@ -567,6 +671,7 @@ export function ActiveParametersScreen({ parameters }: { parameters: TestParamet
           <h1 id="active-parameters-title">Параметры испытания</h1>
           <p>Текущее испытание · только просмотр</p>
         </div>
+        <div>{stop}</div>
       </div>
       <div className="work-surface result-section">
         <dl className="result-details">
@@ -603,9 +708,21 @@ export function ActiveParametersScreen({ parameters }: { parameters: TestParamet
             <dd>{formatNumber(parameters.postCloseStabilizationSeconds)} с</dd>
           </div>
           <div>
-            <dt>Повторы стабилизации после закрытия</dt>
+            <dt>Повторы для каждой стабилизации</dt>
             <dd>{parameters.postCloseStabilizationRetries ?? 'Не указано'}</dd>
           </div>
+          {[
+            ['Нижний аварийный предел', parameters.lowerPressureLimitPa, 'Па'],
+            ['Выдержка ниже нижнего предела', parameters.lowerPressureHoldSeconds, 'с'],
+            ['Верхний аварийный предел', parameters.upperPressureLimitPa, 'Па'],
+            ['Выдержка выше верхнего предела', parameters.upperPressureHoldSeconds, 'с'],
+          ].map(([label, value, unit]) => (
+            <div key={label}>
+              <dt>{label}</dt>
+              <dd>{typeof value === 'number' ? `${formatNumber(value)} ${unit}` : 'Не указано'}</dd>
+            </div>
+          ))}
+
           <div>
             <dt>Направление</dt>
             <dd>
@@ -635,6 +752,11 @@ export function ActiveParametersScreen({ parameters }: { parameters: TestParamet
             </>
           )}
         </dl>
+      </div>
+      <div className="work-actions">
+        <button className="work-button work-button-secondary" type="button" onClick={onReturn}>
+          <ArrowLeft aria-hidden="true" size={16} /> Вернуться к испытанию
+        </button>
       </div>
     </section>
   );

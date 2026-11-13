@@ -1,49 +1,27 @@
-const numberFormats = new Map<string, Intl.NumberFormat>();
+const numberFormat = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 });
+const scientificFormat = new Intl.NumberFormat('ru-RU', {
+  notation: 'scientific',
+  maximumFractionDigits: 2,
+});
 const dateFormat = new Intl.DateTimeFormat('ru-RU', { dateStyle: 'short', timeStyle: 'short' });
 const eventDateFormat = new Intl.DateTimeFormat('ru-RU', {
   dateStyle: 'short',
   timeStyle: 'medium',
 });
-const measurementFormat = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 3 });
-const ungroupedMeasurementFormat = new Intl.NumberFormat('en-US', {
-  useGrouping: false,
-  maximumFractionDigits: 3,
-});
 
 /** Format the displayed reading without changing the stored or charted measurement. */
 export function formatMeasurement(value: number): string {
-  if (value > 0 && value < 0.001) return '< 0,001 Па';
-  if (value < 0 && value > -0.001) return '−0,001 < значение < 0 Па';
-  if (Math.abs(value) >= 1e12) {
-    const rounded = Number(ungroupedMeasurementFormat.format(value));
-    return `≈ ${formatNumber(rounded)} Па`;
-  }
-  return `≈ ${measurementFormat.format(Object.is(value, -0) ? 0 : value)} Па`;
+  if (value > 0 && value < 0.005) return '< 0,01 Па';
+  if (value < 0 && value > -0.005) return '−0,01 < значение < 0 Па';
+  return `≈ ${formatNumber(value)} Па`;
 }
 
-/** Display precision never changes the underlying measurements. At most 42 formatter variants. */
-export function formatNumber(
-  value: number,
-  maximumSignificantDigits = 21,
-  notationOverride?: 'standard' | 'scientific',
-): string {
-  if (
-    !Number.isInteger(maximumSignificantDigits) ||
-    maximumSignificantDigits < 1 ||
-    maximumSignificantDigits > 21
-  )
-    throw new RangeError('Invalid display precision');
+/** Display precision never changes the underlying measurements. */
+export function formatNumber(value: number): string {
   const magnitude = Math.abs(value);
-  const notation =
-    notationOverride ??
-    (magnitude >= 1e12 || (magnitude > 0 && magnitude < 1e-9) ? 'scientific' : 'standard');
-  const key = `${notation}:${maximumSignificantDigits}`;
-  let formatter = numberFormats.get(key);
-  if (!formatter) {
-    formatter = new Intl.NumberFormat('ru-RU', { notation, maximumSignificantDigits });
-    numberFormats.set(key, formatter);
-  }
-  return formatter.format(value);
+  const formatter =
+    magnitude >= 1e12 || (magnitude > 0 && magnitude < 0.005) ? scientificFormat : numberFormat;
+  return formatter.format(Object.is(value, -0) ? 0 : value);
 }
 
 export function formatDateTime(value: string): string {

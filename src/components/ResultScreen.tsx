@@ -116,9 +116,22 @@ export function ResultScreen({
                   <dd>{formatNumber(parameters.postCloseStabilizationSeconds)} с</dd>
                 </div>
                 <div>
-                  <dt>Повторы стабилизации после закрытия</dt>
+                  <dt>Повторы для каждой стабилизации</dt>
                   <dd>{parameters.postCloseStabilizationRetries ?? 'Не указано'}</dd>
                 </div>
+                {[
+                  ['Нижний аварийный предел', parameters.lowerPressureLimitPa, 'Па'],
+                  ['Выдержка ниже нижнего предела', parameters.lowerPressureHoldSeconds, 'с'],
+                  ['Верхний аварийный предел', parameters.upperPressureLimitPa, 'Па'],
+                  ['Выдержка выше верхнего предела', parameters.upperPressureHoldSeconds, 'с'],
+                ].map(([label, value, unit]) => (
+                  <div key={label}>
+                    <dt>{label}</dt>
+                    <dd>
+                      {typeof value === 'number' ? `${formatNumber(value)} ${unit}` : 'Не указано'}
+                    </dd>
+                  </div>
+                ))}
               </dl>
             </div>
             <div className="work-surface result-section">

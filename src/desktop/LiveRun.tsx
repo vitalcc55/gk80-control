@@ -13,7 +13,7 @@ import {
 } from '../lib/format';
 import { measurementQualityLabel } from './display';
 import type { MeasurementSeriesContext } from './measurement-series';
-import { isStartMeasurementInstruction, measurementLabel } from './presentation';
+import { measurementLabel } from './presentation';
 import { useMeasurementSeries } from './use-measurement-series';
 
 function shown(item: Measurement | undefined): string {
@@ -42,38 +42,53 @@ export function LiveRun({
 }) {
   const series = useMeasurementSeries(measurementContext, measurementKey);
   const [detailsOpen, setDetailsOpen] = useState(false);
-  const pressure = snapshot.measurements?.find((item) => item.channel === 'dd1');
-  const differential = snapshot.measurements?.find((item) => item.channel === 'dd2');
+  const readings = snapshot.currentReadings?.length
+    ? snapshot.currentReadings
+    : snapshot.measurements;
+  const pressure = readings?.find((item) => item.channel === 'dd1');
+  const differential = readings?.find(
+    (item) => item.channel === (snapshot.activeDifferential ?? 'dd2'),
+  );
   const stopping = record.stage === 'stopping';
   const awaiting = !!snapshot.pendingAction;
-  const startsMeasurement = isStartMeasurementInstruction(snapshot.pendingAction?.instruction);
-  const timing = snapshot.measurementTiming;
-  const phase = stopping ? 2 : awaiting ? 0 : 1;
+  const readingNote =
+    snapshot.runPhase === 'awaitingValveOpening' || snapshot.runPhase === 'awaitingValveClosing'
+      ? 'Показания на момент запроса подтверждения.'
+      : undefined;
+  const timing = snapshot.phaseTiming ?? snapshot.measurementTiming;
+  const phases = [
+    ['awaitingPreparation', 'Подготовительные циклы'],
+    ['searchingPressure', 'Набор давления'],
+    ['stabilizingBeforeOpening', 'Стабилизация перед открытием'],
+    ['awaitingValveOpening', 'Открытие клапана'],
+    ['awaitingValveClosing', 'Закрытие клапана'],
+    ['stabilizingAfterClosing', 'Стабилизация после закрытия'],
+    ['measuring', 'Измерение'],
+    ['stopping', 'Остановка'],
+  ] as const;
+  const phase = phases.findIndex(([id]) => id === (stopping ? 'stopping' : snapshot.runPhase));
   const instruction = stopping
-    ? 'По последнему снимку: этап остановки; безопасное давление не подтверждено.'
-    : startsMeasurement
-      ? undefined
-      : (snapshot.pendingAction?.instruction ??
-        (timing ? undefined : 'Ожидаем данные измерения ядра.'));
+    ? 'По последнему снимку: этап остановки. Безопасное давление не подтверждено.'
+    : snapshot.pendingAction?.instruction;
+  const confirmationLabel = {
+    confirmPreparation: 'Подтвердить подготовку',
+    confirmValveOpen: 'Подтвердить открытие клапана',
+    confirmValveClosed: 'Подтвердить закрытие клапана',
+    confirmStopped: 'Подтвердить остановку вала',
+  } as const;
   return (
     <RunScreen
       subtitle={<>{record.parameters.valve} · Нагнетание · Без привода</>}
-      stages={['Ожидание подтверждения', 'Измерение', 'Остановка'].map((label, index) => ({
-        id: String(index),
+      stages={phases.map(([id, label], index) => ({
+        id,
         label,
         state:
-          index === phase
-            ? phase === 1 && !timing
-              ? 'next'
-              : 'current'
-            : stopping
-              ? 'inactive'
-              : index < phase
-                ? 'done'
-                : 'next',
+          index === phase ? 'current' : stopping ? 'inactive' : index < phase ? 'done' : 'next',
       }))}
       pressure={shown(pressure)}
       differential={shown(differential)}
+      differentialChannel={snapshot.activeDifferential === 'dd3' ? 'ДД3' : 'ДД2'}
+      readingNote={readingNote}
       target={`${formatNumber(record.parameters.pmaxPa)} Па`}
       pressureNote={<p>{measurementQualityLabel(pressure?.quality)} · последний отсчёт</p>}
       differentialNote={<p>{measurementQualityLabel(differential?.quality)} · последний отсчёт</p>}
@@ -81,7 +96,7 @@ export function LiveRun({
         <details className="reading-details" onToggle={(e) => setDetailsOpen(e.currentTarget.open)}>
           <summary>Время и качество показаний</summary>
           {detailsOpen &&
-            snapshot.measurements?.map((item) => (
+            readings?.map((item) => (
               <p key={item.channel}>
                 {item.channel.replace('dd', 'ДД')}: {shown(item)} ·{' '}
                 {item.measuredAt ?? 'время неизвестно'} · качество последнего наблюдения:{' '}
@@ -102,9 +117,7 @@ export function LiveRun({
           }
         />
       }
-      actionTitle={
-        stopping ? 'Остановка' : awaiting ? 'Подтверждение оператора' : measurementLabel(timing)
-      }
+      actionTitle={phases[phase]?.[1] ?? measurementLabel(timing)}
       actionLabel={
         stopping
           ? 'Состояние по последнему полученному снимку'
@@ -136,7 +149,9 @@ export function LiveRun({
             disabled={!fresh || pending}
             onClick={onConfirm}
           >
-            {startsMeasurement ? 'Запуск испытания' : 'Подтвердить действие'}
+            {snapshot.pendingAction?.kind
+              ? confirmationLabel[snapshot.pendingAction.kind]
+              : 'Подтвердить действие'}
           </button>
         )
       }

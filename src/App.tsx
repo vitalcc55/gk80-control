@@ -19,8 +19,6 @@ import {
 } from './lib/format';
 import type { Fixture, FixtureId, Screen, TestParameters } from './model';
 
-const number = (value: number) => formatNumber(value, 12);
-
 function initialFixture(): Fixture {
   const query = new URLSearchParams(window.location.search);
   const fixture = fixtureSource.find(query.get('fixture')) ?? fixtureSource.get('empty');
@@ -152,7 +150,7 @@ function RunScreen({
               }
               note={
                 item.stage === 'measurement'
-                  ? `Прошло ${number(parameters.measurementSeconds / 2)} с · длительность ${number(parameters.measurementSeconds)} с`
+                  ? `Прошло ${formatNumber(parameters.measurementSeconds / 2)} с · длительность ${formatNumber(parameters.measurementSeconds)} с`
                   : 'Ряд: 60 с'
               }
             />

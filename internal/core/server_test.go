@@ -170,7 +170,7 @@ func TestCoreShutdownRetainsResourcesForBlockedWriter(t *testing.T) {
 	}
 	token := lease.LeaseId.String()
 	var created contract.CommandStatus
-	body := fmt.Sprintf(`{"commandId":%q,"expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`, uuid.NewString())
+	body := fmt.Sprintf(`{"commandId":%q,"expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"lowerPressureLimitPa":0,"upperPressureLimitPa":1080,"lowerPressureHoldSeconds":0,"upperPressureHoldSeconds":0,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`, uuid.NewString())
 	if code := send("POST", "/v1/tests", body, token, &created); code != http.StatusOK || created.TestId == nil {
 		t.Fatalf("create: %d %+v", code, created)
 	}
@@ -190,9 +190,29 @@ func TestCoreShutdownRetainsResourcesForBlockedWriter(t *testing.T) {
 	if code := send("POST", path, confirm, token, &confirmed); code != http.StatusOK {
 		t.Fatalf("confirm: %d", code)
 	}
+	for _, kind := range []contract.PendingActionKind{"confirmValveOpen", "confirmValveClosed"} {
+		deadline := time.Now().Add(15 * time.Second)
+		for {
+			if code := send("GET", "/v1/snapshot", "", token, &snapshot); code != http.StatusOK {
+				t.Fatalf("snapshot: %d", code)
+			}
+			if snapshot.PendingAction != nil && snapshot.PendingAction.Kind != nil && *snapshot.PendingAction.Kind == kind {
+				confirm := fmt.Sprintf(`{"commandId":%q,"expectedRevision":%d}`, uuid.NewString(), snapshot.Revision)
+				path := "/v1/tests/" + id.String() + "/actions/" + snapshot.PendingAction.ActionId.String() + "/confirm"
+				if code := send("POST", path, confirm, token, &confirmed); code != http.StatusOK {
+					t.Fatalf("confirm %s: %d", kind, code)
+				}
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("missing %s", kind)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
 	select {
 	case <-held.entered:
-	case <-time.After(5 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatal("writer did not start")
 	}
 	if err := owner.Close(); err != nil {

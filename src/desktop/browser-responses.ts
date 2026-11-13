@@ -141,17 +141,26 @@ function desktopStatus(value: unknown): value is Contract.DesktopStatus {
 
 function parameters(value: unknown): value is Contract.TestParameters {
   return (
-    fields(value, [
-      'valve',
-      'areaM2',
-      'pmaxPa',
-      'measurementSeconds',
-      'preOpenStabilizationSeconds',
-      'postCloseStabilizationSeconds',
-      'postCloseStabilizationRetries',
-      'direction',
-      'actuator',
-    ]) &&
+    fields(
+      value,
+      [
+        'valve',
+        'areaM2',
+        'pmaxPa',
+        'measurementSeconds',
+        'preOpenStabilizationSeconds',
+        'postCloseStabilizationSeconds',
+        'postCloseStabilizationRetries',
+        'direction',
+        'actuator',
+      ],
+      [
+        'lowerPressureLimitPa',
+        'lowerPressureHoldSeconds',
+        'upperPressureLimitPa',
+        'upperPressureHoldSeconds',
+      ],
+    ) &&
     text(value['valve']) &&
     [...value['valve']].length >= 1 &&
     [...value['valve']].length <= 200 &&
@@ -175,6 +184,14 @@ function parameters(value: unknown): value is Contract.TestParameters {
     Number.isInteger(value['postCloseStabilizationRetries']) &&
     value['postCloseStabilizationRetries'] >= 0 &&
     value['postCloseStabilizationRetries'] <= 100 &&
+    (!Object.hasOwn(value, 'lowerPressureLimitPa') ||
+      (finite(value['lowerPressureLimitPa']) && value['lowerPressureLimitPa'] >= 0)) &&
+    (!Object.hasOwn(value, 'upperPressureLimitPa') ||
+      (finite(value['upperPressureLimitPa']) && value['upperPressureLimitPa'] > 0)) &&
+    (!Object.hasOwn(value, 'lowerPressureHoldSeconds') ||
+      (counter(value['lowerPressureHoldSeconds']) && value['lowerPressureHoldSeconds'] <= 300)) &&
+    (!Object.hasOwn(value, 'upperPressureHoldSeconds') ||
+      (counter(value['upperPressureHoldSeconds']) && value['upperPressureHoldSeconds'] <= 300)) &&
     value['direction'] === 'pressure' &&
     value['actuator'] === false
   );
@@ -240,7 +257,14 @@ function measurement(value: unknown): value is Contract.Measurement {
 
 function pendingAction(value: unknown): value is Contract.PendingAction {
   return (
-    fields(value, ['actionId', 'testId', 'instruction']) &&
+    fields(value, ['actionId', 'testId', 'instruction'], ['kind']) &&
+    (!Object.hasOwn(value, 'kind') ||
+      oneOf(value['kind'], [
+        'confirmPreparation',
+        'confirmValveOpen',
+        'confirmValveClosed',
+        'confirmStopped',
+      ])) &&
     uuid(value['actionId']) &&
     uuid(value['testId']) &&
     text(value['instruction'])
@@ -289,17 +313,38 @@ function measurementTiming(value: unknown): value is Contract.MeasurementTiming 
 
 function snapshot(value: unknown): value is Contract.Snapshot {
   return (
-    fields(value, [
-      'apiVersion',
-      'backendRunId',
-      'revision',
-      'lastEventSequence',
-      'activeTest',
-      'pendingAction',
-      'measurements',
-      'measurementBatch',
-      'measurementTiming',
-    ]) &&
+    fields(
+      value,
+      [
+        'apiVersion',
+        'backendRunId',
+        'revision',
+        'lastEventSequence',
+        'activeTest',
+        'pendingAction',
+        'measurements',
+        'measurementBatch',
+        'measurementTiming',
+      ],
+      ['runPhase', 'phaseTiming', 'activeDifferential', 'currentReadings'],
+    ) &&
+    (!Object.hasOwn(value, 'runPhase') ||
+      oneOf(value['runPhase'], [
+        'awaitingPreparation',
+        'searchingPressure',
+        'stabilizingBeforeOpening',
+        'awaitingValveOpening',
+        'awaitingValveClosing',
+        'stabilizingAfterClosing',
+        'measuring',
+      ])) &&
+    (!Object.hasOwn(value, 'phaseTiming') || measurementTiming(value['phaseTiming'])) &&
+    (!Object.hasOwn(value, 'activeDifferential') ||
+      oneOf(value['activeDifferential'], ['dd2', 'dd3'])) &&
+    (!Object.hasOwn(value, 'currentReadings') ||
+      (Array.isArray(value['currentReadings']) &&
+        value['currentReadings'].length <= 3 &&
+        value['currentReadings'].every(measurement))) &&
     text(value['apiVersion']) &&
     uuid(value['backendRunId']) &&
     counter(value['revision']) &&

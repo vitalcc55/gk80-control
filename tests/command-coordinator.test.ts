@@ -244,7 +244,7 @@ it('releases past terminal Stop results throughout sequential saved tests', asyn
     value.update(input(api, finishedRecord(record)));
     await flush();
 
-    expect(value.getSnapshot().stopMessage).toBe('Остановка подтверждена ядром.');
+    expect(value.getSnapshot().stopMessage).toBe('');
     expect(value.getSnapshot().pending).toEqual([]);
     expect(localStorage.getItem(storageKey)).toBe('[]');
     expect(memoryFor(databaseId).statuses.size).toBe(0);
@@ -313,7 +313,7 @@ it.each(['current', 'previous'] as const)(
       await sent;
       await flush();
       if (context === 'current') {
-        expect(value.getSnapshot().stopMessage).toBe('Остановка подтверждена ядром.');
+        expect(value.getSnapshot().stopMessage).toBe('');
         expect(cache?.has(key)).toBe(true);
         value.update(input(api, b));
         await flush();
@@ -430,7 +430,7 @@ it.each(['active', 'disposed'] as const)(
       await flush();
       expect(value.getSnapshot().pending).toEqual([item]);
       expect(value.getSnapshot().commandMessages.size).toBe(0);
-      expect(value.getSnapshot().stopMessage).toBe('Остановка подтверждена ядром.');
+      expect(value.getSnapshot().stopMessage).toBe('');
 
       value.update(input(api, finishedRecord(a)));
       await flush();

@@ -286,9 +286,9 @@ export enum MeasurementChannel {
     /**
      * Defines values for MeasurementChannel.
      */
-    Dd1 = "dd1",
-    Dd2 = "dd2",
-    Dd3 = "dd3",
+    MeasurementChannelDd1 = "dd1",
+    MeasurementChannelDd2 = "dd2",
+    MeasurementChannelDd3 = "dd3",
 };
 
 /**
@@ -380,8 +380,27 @@ export enum MeasurementUnit {
 export interface PendingAction {
     "actionId": types$0.UUID;
     "instruction": string;
+    "kind"?: PendingActionKind | null;
     "testId": types$0.UUID;
 }
+
+/**
+ * PendingActionKind defines model for PendingAction.Kind.
+ */
+export enum PendingActionKind {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    /**
+     * Defines values for PendingActionKind.
+     */
+    ConfirmPreparation = "confirmPreparation",
+    ConfirmStopped = "confirmStopped",
+    ConfirmValveClosed = "confirmValveClosed",
+    ConfirmValveOpen = "confirmValveOpen",
+};
 
 /**
  * Readiness defines model for Readiness.
@@ -420,6 +439,27 @@ export enum ReadinessCheckSource {
 };
 
 /**
+ * RunPhase defines model for RunPhase.
+ */
+export enum RunPhase {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    /**
+     * Defines values for RunPhase.
+     */
+    AwaitingPreparation = "awaitingPreparation",
+    AwaitingValveClosing = "awaitingValveClosing",
+    AwaitingValveOpening = "awaitingValveOpening",
+    Measuring = "measuring",
+    SearchingPressure = "searchingPressure",
+    StabilizingAfterClosing = "stabilizingAfterClosing",
+    StabilizingBeforeOpening = "stabilizingBeforeOpening",
+};
+
+/**
  * SessionView defines model for SessionView.
  */
 export interface SessionView {
@@ -437,9 +477,15 @@ export interface SessionView {
  * Snapshot defines model for Snapshot.
  */
 export interface Snapshot {
+    "activeDifferential"?: SnapshotActiveDifferential | null;
     "activeTest": TestRecord | null;
     "apiVersion": string;
     "backendRunId": types$0.UUID;
+
+    /**
+     * CurrentReadings Последний опрос каналов до основного измерения. Нумерация локальна для этой проекции, показания не входят в архив.
+     */
+    "currentReadings"?: Measurement[] | null;
     "lastEventSequence": number;
 
     /**
@@ -453,8 +499,30 @@ export interface Snapshot {
     "measurementTiming": MeasurementTiming | null;
     "measurements": Measurement[] | null;
     "pendingAction": PendingAction | null;
+
+    /**
+     * PhaseTiming Монотонное время Engine на последнем принятом отсчёте. Нулевой остаток не подтверждает завершение этапа.
+     */
+    "phaseTiming"?: MeasurementTiming | null;
     "revision": number;
+    "runPhase"?: RunPhase | null;
 }
+
+/**
+ * SnapshotActiveDifferential defines model for Snapshot.ActiveDifferential.
+ */
+export enum SnapshotActiveDifferential {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    /**
+     * Defines values for SnapshotActiveDifferential.
+     */
+    SnapshotActiveDifferentialDd2 = "dd2",
+    SnapshotActiveDifferentialDd3 = "dd3",
+};
 
 /**
  * TestList defines model for TestList.
@@ -476,6 +544,8 @@ export interface TestParameters {
     "actuator": boolean;
     "areaM2": number;
     "direction": TestParametersDirection;
+    "lowerPressureHoldSeconds"?: number | null;
+    "lowerPressureLimitPa"?: number | null;
 
     /**
      * MeasurementSeconds Длительность измерения в целых секундах.
@@ -484,7 +554,7 @@ export interface TestParameters {
     "pmaxPa": number;
 
     /**
-     * PostCloseStabilizationRetries Допустимое число повторов стабилизации после закрытия.
+     * PostCloseStabilizationRetries Отдельный лимит повторов для каждой стабилизации.
      */
     "postCloseStabilizationRetries": number;
 
@@ -497,6 +567,8 @@ export interface TestParameters {
      * PreOpenStabilizationSeconds Длительность стабилизации перед открытием клапана, с.
      */
     "preOpenStabilizationSeconds": number;
+    "upperPressureHoldSeconds"?: number | null;
+    "upperPressureLimitPa"?: number | null;
     "valve": string;
 }
 

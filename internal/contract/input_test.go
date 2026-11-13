@@ -10,7 +10,7 @@ func TestDecodeInputChecksOriginalJSONBeforeDTO(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	valid := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":0.1,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
+	valid := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":0.1,"lowerPressureLimitPa":0,"upperPressureLimitPa":1080,"lowerPressureHoldSeconds":0,"upperPressureHoldSeconds":0,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	cases := []struct {
 		name, body string
 		valid      bool
@@ -92,7 +92,7 @@ func TestInspectInputPreservesExactIdentityAndLegacyRejection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	base := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
+	base := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"lowerPressureLimitPa":0,"upperPressureLimitPa":1080,"lowerPressureHoldSeconds":0,"upperPressureHoldSeconds":0,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	var first, different, equivalent CreateTestCommand
 	a, err := validator.Inspect("CreateTestCommand", []byte(base), &first)
 	if err != nil || !a.Valid {
@@ -131,7 +131,7 @@ func TestLongInputNumberRemainsValidAfterCanonicalization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.` + strings.Repeat("1", 7890) + `e-322,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.` + strings.Repeat("1", 7750) + `e-322,"lowerPressureLimitPa":0,"upperPressureLimitPa":1080,"lowerPressureHoldSeconds":0,"upperPressureHoldSeconds":0,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	if len(body) >= 8192 {
 		t.Fatalf("input size: %d", len(body))
 	}

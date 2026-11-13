@@ -19,7 +19,6 @@ const (
 	awaitingValveOpening
 	awaitingValveClosing
 	stabilizingAfterClosing
-	pressureRetryExpired
 	measuringManualPressure
 	manualPressureMeasurementComplete
 	manualPressureInterrupted
@@ -41,27 +40,37 @@ const (
 	startPressureSearch
 	stopInitialPressureSearchTimedOut
 	stopStabilizationRetriesExhausted
-	retryPressureSearchTimedOut
+	stopPressureAboveMaximum
+	stopDifferentialAboveMaximum
+	stopPressureBelowLimit
+	stopPressureAboveLimit
+	stopPressureChannelLost
+	stopDifferentialChannelsLost
 )
 
 type manualPressureParameters struct {
-	targetPa            float64
-	preOpenHold         time.Duration
-	postCloseHold       time.Duration
-	retryLimit          int
-	measurementDuration time.Duration
+	targetPa             float64
+	preOpenHold          time.Duration
+	postCloseHold        time.Duration
+	retryLimit           int
+	measurementDuration  time.Duration
+	lowerPa, upperPa     float64
+	lowerHold, upperHold time.Duration
 }
 
 // manualPressureRun takes phase decisions from confirmed actions and monotonic
 // times supplied by the Engine. The Engine owns execution of those decisions.
 type manualPressureRun struct {
-	parameters         manualPressureParameters
-	phase              manualPressurePhase
-	stabilizationPhase manualPressurePhase
-	retriesUsed        int
-	searchDeadline     time.Time
-	stableSince        time.Time
-	window             measurementWindow
+	parameters             manualPressureParameters
+	phase                  manualPressurePhase
+	stabilizationPhase     manualPressurePhase
+	retriesUsed            int
+	searchDeadline         time.Time
+	stableSince            time.Time
+	window                 measurementWindow
+	lowerSince, upperSince time.Time
+	missed                 [3]int
+	activeDifferential     int
 }
 
 type measurementWindow struct {
@@ -118,9 +127,7 @@ func (r *manualPressureRun) advanceTime(now time.Time) manualPressureDecision {
 	switch {
 	case r.phase == searchingPressure && !now.Before(r.searchDeadline):
 		if r.retriesUsed > 0 {
-			// The outcome of a repeat-search timeout awaits laboratory agreement.
-			r.phase = pressureRetryExpired
-			return retryPressureSearchTimedOut
+			return r.retryPressureSearch(now)
 		}
 		r.phase = manualPressureInterrupted
 		return stopInitialPressureSearchTimedOut
@@ -166,12 +173,7 @@ func (r *manualPressureRun) withinStabilizationBand(pressurePa float64) bool {
 
 func (r *manualPressureRun) observeStabilization(now time.Time, pressurePa float64) manualPressureDecision {
 	if !r.withinStabilizationBand(pressurePa) {
-		if r.retriesUsed >= r.parameters.retryLimit {
-			r.phase = manualPressureInterrupted
-			return stopStabilizationRetriesExhausted
-		}
-		r.retriesUsed++
-		return r.beginPressureSearch(now)
+		return r.retryPressureSearch(now)
 	}
 	if r.stableSince.IsZero() {
 		r.stableSince = now
@@ -185,4 +187,74 @@ func (r *manualPressureRun) observeStabilization(now time.Time, pressurePa float
 		r.window = measurementWindow{start: now, end: now.Add(r.parameters.measurementDuration)}
 	}
 	return manualPressureNoDecision
+}
+
+func (r *manualPressureRun) retryPressureSearch(now time.Time) manualPressureDecision {
+	if r.retriesUsed >= r.parameters.retryLimit {
+		r.phase = manualPressureInterrupted
+		return stopStabilizationRetriesExhausted
+	}
+	r.retriesUsed++
+	return r.beginPressureSearch(now)
+}
+
+func (r *manualPressureRun) observe(now time.Time, readings [3]*float64) manualPressureDecision {
+	for i, value := range readings {
+		if value == nil || math.IsNaN(*value) || math.IsInf(*value, 0) {
+			readings[i] = nil
+			r.missed[i] = min(10, r.missed[i]+1)
+		} else {
+			r.missed[i] = 0
+		}
+	}
+	dd1 := readings[0]
+	switch {
+	case dd1 != nil && *dd1 > r.parameters.targetPa*1.1:
+		return r.interrupt(stopPressureAboveMaximum)
+	case readings[1] != nil && *readings[1] > 10000 || readings[2] != nil && *readings[2] > 10000:
+		return r.interrupt(stopDifferentialAboveMaximum)
+	case r.missed[0] == 10:
+		return r.interrupt(stopPressureChannelLost)
+	case r.missed[1] == 10 && r.missed[2] == 10:
+		return r.interrupt(stopDifferentialChannelsLost)
+	}
+	if r.activeDifferential == 0 && (readings[1] != nil || readings[2] != nil) {
+		r.activeDifferential = 1
+	}
+	if r.activeDifferential == 1 && readings[2] != nil && (readings[1] == nil || *readings[1] >= 2400) {
+		r.activeDifferential = 2
+	} else if r.activeDifferential == 2 && readings[1] != nil && (readings[2] == nil || *readings[2] <= 2300) {
+		r.activeDifferential = 1
+	}
+	if r.phase == measuringManualPressure {
+		if outsideFor(now, &r.lowerSince, dd1 != nil && *dd1 < r.parameters.lowerPa, r.parameters.lowerHold) {
+			return r.interrupt(stopPressureBelowLimit)
+		}
+		if outsideFor(now, &r.upperSince, dd1 != nil && *dd1 > r.parameters.upperPa, r.parameters.upperHold) {
+			return r.interrupt(stopPressureAboveLimit)
+		}
+	}
+	return r.observePressure(now, dd1)
+}
+
+func (r *manualPressureRun) interrupt(reason manualPressureDecision) manualPressureDecision {
+	r.phase = manualPressureInterrupted
+	return reason
+}
+
+func (r *manualPressureRun) breakPressureHolds() {
+	r.stableSince = time.Time{}
+	r.lowerSince = time.Time{}
+	r.upperSince = time.Time{}
+}
+
+func outsideFor(now time.Time, since *time.Time, outside bool, hold time.Duration) bool {
+	if !outside {
+		*since = time.Time{}
+		return false
+	}
+	if since.IsZero() {
+		*since = now
+	}
+	return now.Sub(*since) >= hold
 }

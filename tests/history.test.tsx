@@ -67,7 +67,7 @@ function measurementPage(nextAfter: number | null): MeasurementPage {
     items: [
       {
         sequence,
-        channel: MeasurementChannel.Dd1,
+        channel: MeasurementChannel.MeasurementChannelDd1,
         measuredAt: record.createdAt,
         observedAt: record.createdAt,
         quality: MeasurementQuality.MeasurementQualityValid,
@@ -111,7 +111,7 @@ it('показывает все страницы графика без слия�
             ...Array.from({ length: 499 }, (_, index) => ({
               ...first,
               sequence: index + 2,
-              channel: MeasurementChannel.Dd3,
+              channel: MeasurementChannel.MeasurementChannelDd3,
             })),
           ],
           nextAfter: 500,

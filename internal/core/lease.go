@@ -182,6 +182,8 @@ func (l *uiLeases) snapshot(id uuid.UUID, feed *eventFeed) (contract.Snapshot, e
 		ApiVersion: "v1", BackendRunId: state.BackendRunID, Revision: state.Revision,
 		LastEventSequence: observation.sequence, ActiveTest: state.Record,
 		PendingAction: state.PendingAction, Measurements: state.Measurements, MeasurementTiming: state.MeasurementTiming, MeasurementBatch: state.MeasurementBatch,
+		RunPhase: state.RunPhase, PhaseTiming: state.PhaseTiming, ActiveDifferential: state.ActiveDifferential,
+		CurrentReadings: state.CurrentReadings,
 	}, nil
 }
 

@@ -15,6 +15,10 @@ export interface TestParameters {
   preOpenStabilizationSeconds: number;
   postCloseStabilizationSeconds: number;
   postCloseStabilizationRetries: number | null;
+  lowerPressureLimitPa?: number;
+  lowerPressureHoldSeconds?: number;
+  upperPressureLimitPa?: number;
+  upperPressureHoldSeconds?: number;
 }
 
 export type FixtureId =

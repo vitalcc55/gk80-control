@@ -30,7 +30,10 @@ import {
   MeasurementQuantity,
   MeasurementSource,
   MeasurementUnit,
+  PendingActionKind,
+  RunPhase,
   type Snapshot,
+  SnapshotActiveDifferential,
   TestParametersDirection,
   type TestRecord,
   TestRecordDataQuality,
@@ -71,7 +74,7 @@ const record: TestRecord = {
   },
 };
 const first = {
-  channel: MeasurementChannel.Dd1,
+  channel: MeasurementChannel.MeasurementChannelDd1,
   measuredAt: '2026-10-30T00:00:01Z',
   observedAt: '2026-10-30T00:00:01Z',
   quality: MeasurementQuality.MeasurementQualityValid,
@@ -94,20 +97,20 @@ const snapshot: Snapshot = {
 };
 
 it('округляет показания и различает малые значения обоих знаков и ноль', () => {
-  expect([0, -0, 0.0001, -0.0001, 0.001, -0.001, 1.2344, 1.2346].map(formatMeasurement)).toEqual([
+  expect([0, -0, 0.0001, -0.0001, 0.005, -0.005, 8.319, 1.235].map(formatMeasurement)).toEqual([
     '≈ 0 Па',
     '≈ 0 Па',
-    '< 0,001 Па',
-    '−0,001 < значение < 0 Па',
-    '≈ 0,001 Па',
-    '≈ -0,001 Па',
-    '≈ 1,234 Па',
-    '≈ 1,235 Па',
+    '< 0,01 Па',
+    '−0,01 < значение < 0 Па',
+    '≈ 0,01 Па',
+    '≈ -0,01 Па',
+    '≈ 8,32 Па',
+    '≈ 1,24 Па',
   ]);
   expect(formatMeasurement(1e200)).toMatch(/E\+?200/i);
   expect(formatMeasurement(1e200).length).toBeLessThan(40);
-  expect(formatMeasurement(1000000000000.1234)).toBe('≈ 1,000000000000123E12 Па');
-  expect(formatMeasurement(-1000000000000.1234)).toBe('≈ -1,000000000000123E12 Па');
+  expect(formatMeasurement(1000000000000.1234)).toBe('≈ 1E12 Па');
+  expect(formatMeasurement(-1000000000000.1234)).toBe('≈ -1E12 Па');
   expect(formatMeasurement(Number.MAX_VALUE)).not.toMatch(/Infinity|∞/);
   expect(formatMeasurement(-Number.MAX_VALUE)).not.toMatch(/Infinity|∞/);
 });
@@ -117,29 +120,30 @@ it('показывает точные границы малых показани
     ...snapshot,
     measurements: [
       { ...first, value: 0.0001 },
-      { ...first, channel: MeasurementChannel.Dd2, value: -0.0001 },
-      { ...first, channel: MeasurementChannel.Dd3, value: 1.23456 },
+      { ...first, channel: MeasurementChannel.MeasurementChannelDd2, value: -0.0001 },
+      { ...first, channel: MeasurementChannel.MeasurementChannelDd3, value: 1.23456 },
     ],
   };
   render(
     <LiveRun record={record} snapshot={measured} fresh pending={false} onConfirm={() => {}} />,
   );
-  expect(screen.getByText('< 0,001 Па')).toBeTruthy();
-  expect(screen.getByText('−0,001 < значение < 0 Па')).toBeTruthy();
+  expect(screen.getByText('< 0,01 Па')).toBeTruthy();
+  expect(screen.getByText('−0,01 < значение < 0 Па')).toBeTruthy();
   await userEvent.setup().click(screen.getByText('Время и качество показаний'));
-  expect(await screen.findByText(/ДД3: ≈ 1,235 Па/)).toBeTruthy();
+  expect(await screen.findByText(/ДД3: ≈ 1,23 Па/)).toBeTruthy();
   expect(screen.getByTestId('chart').getAttribute('data-points')).toContain('0.0001');
   expect(screen.queryByText(/округление до 6/)).toBeNull();
 });
 
-it('называет запуском только известное подтверждение начала измерения', () => {
+it('выбирает подпись подтверждения по типу действия', () => {
   const confirm = vi.fn();
   const action = {
     testId: record.testId,
     actionId: 'action',
-    instruction: 'Подтвердите начало демонстрационного измерения',
+    kind: PendingActionKind.ConfirmPreparation,
+    instruction: 'Выполните 10 циклов.',
   };
-  const draw = (pendingAction: typeof action, fresh = true) => (
+  const draw = (pendingAction: NonNullable<Snapshot['pendingAction']>, fresh = true) => (
     <LiveRun
       record={record}
       snapshot={{ ...snapshot, pendingAction }}
@@ -149,13 +153,13 @@ it('называет запуском только известное подтв
     />
   );
   const view = render(draw(action));
-  fireEvent.click(screen.getByRole('button', { name: 'Запуск испытания' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Подтвердить подготовку' }));
   expect(confirm).toHaveBeenCalledOnce();
-  expect(screen.queryByText(action.instruction)).toBeNull();
+  expect(screen.getByText(action.instruction)).toBeTruthy();
   view.rerender(draw(action, false));
-  expect(screen.getByRole('button', { name: 'Запуск испытания' }).hasAttribute('disabled')).toBe(
-    true,
-  );
+  expect(
+    screen.getByRole('button', { name: 'Подтвердить подготовку' }).hasAttribute('disabled'),
+  ).toBe(true);
   view.rerender(
     <LiveRun
       record={record}
@@ -165,9 +169,9 @@ it('называет запуском только известное подтв
       onConfirm={confirm}
     />,
   );
-  expect(screen.getByRole('button', { name: 'Запуск испытания' }).hasAttribute('disabled')).toBe(
-    true,
-  );
+  expect(
+    screen.getByRole('button', { name: 'Подтвердить подготовку' }).hasAttribute('disabled'),
+  ).toBe(true);
   view.rerender(
     <LiveRun
       record={{ ...record, stage: TestRecordStage.Stopping }}
@@ -177,8 +181,14 @@ it('называет запуском только известное подтв
       onConfirm={confirm}
     />,
   );
-  expect(screen.queryByRole('button', { name: 'Запуск испытания' })).toBeNull();
-  view.rerender(draw({ ...action, instruction: 'Проверьте подключение' }));
+  expect(screen.queryByRole('button', { name: 'Подтвердить подготовку' })).toBeNull();
+  view.rerender(
+    draw({
+      testId: action.testId,
+      actionId: action.actionId,
+      instruction: 'Проверьте подключение',
+    }),
+  );
   expect(screen.getByText('Проверьте подключение')).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Подтвердить действие' })).toBeTruthy();
 });
@@ -432,10 +442,14 @@ it('does not claim measurement progress before the first accepted observation', 
     draw({ ...snapshot, measurements: [], measurementBatch: null, measurementTiming: null }),
   );
   expect(screen.getByRole('heading', { name: 'Ожидание данных измерения' })).toBeTruthy();
-  expect(screen.getByText('Ожидаем данные измерения ядра.')).toBeTruthy();
+  expect(screen.queryByText('0 с')).toBeNull();
   expect(screen.getByText('Измерение').closest('li')?.getAttribute('aria-current')).toBeNull();
   view.rerender(
-    draw({ ...snapshot, measurementTiming: { elapsedSeconds: 0, remainingSeconds: 60 } }),
+    draw({
+      ...snapshot,
+      runPhase: RunPhase.Measuring,
+      measurementTiming: { elapsedSeconds: 0, remainingSeconds: 60 },
+    }),
   );
   expect(screen.getByRole('heading', { name: 'Измерение' })).toBeTruthy();
   expect(
@@ -457,7 +471,7 @@ it('shows channel staleness without opening details and identifies the time obse
           first,
           {
             ...first,
-            channel: MeasurementChannel.Dd2,
+            channel: MeasurementChannel.MeasurementChannelDd2,
             value: 150,
             quality: MeasurementQuality.MeasurementQualityStale,
           },
@@ -476,6 +490,30 @@ it('shows channel staleness without opening details and identifies the time obse
   expect(screen.getByText('55 с')).toBeTruthy();
 });
 
+it('labels the selected differential sensor with its own reading', () => {
+  render(
+    <LiveRun
+      record={record}
+      snapshot={{
+        ...snapshot,
+        activeDifferential: SnapshotActiveDifferential.SnapshotActiveDifferentialDd3,
+        measurements: [
+          first,
+          { ...first, channel: MeasurementChannel.MeasurementChannelDd2, value: 150 },
+          { ...first, channel: MeasurementChannel.MeasurementChannelDd3, value: 2400.126 },
+        ],
+      }}
+      fresh
+      pending={false}
+      onConfirm={() => {}}
+    />,
+  );
+  const reading = screen.getByText('Перепад на диафрагме').closest('.reading');
+  if (!(reading instanceof HTMLElement)) throw new Error('Differential reading missing');
+  expect(within(reading).getByText('ДД3')).toBeTruthy();
+  expect(within(reading).getByText(/≈ 2\s?400,13 Па/)).toBeTruthy();
+});
+
 it('does not invent completed measurement or pressure reduction after an early Stop', () => {
   render(
     <LiveRun
@@ -489,8 +527,8 @@ it('does not invent completed measurement or pressure reduction after an early S
   const stages = screen.getByRole('complementary', { name: 'Этапы испытания' });
   expect(within(stages).queryByText('Предыдущий этап')).toBeNull();
   expect(within(stages).queryByText('Снижение давления')).toBeNull();
-  expect(within(stages).getByText('Остановка')).toBeTruthy();
-  expect(screen.getByText(/безопасное давление не подтверждено/)).toBeTruthy();
+  expect(within(stages).getByText('Остановка', { selector: 'strong' })).toBeTruthy();
+  expect(screen.getByText(/безопасное давление не подтверждено/i)).toBeTruthy();
 });
 
 it('retains isolated recent source contexts and evicts the least recently observed context', () => {
@@ -526,50 +564,37 @@ it('retains isolated recent source contexts and evicts the least recently observ
 });
 
 it('isolates a new test and bounds retained points without changing the original time axis', () => {
-  const view = render(
-    <LiveRun record={record} snapshot={snapshot} fresh pending={false} onConfirm={() => {}} />,
-  );
+  const context = new MeasurementSeriesContext();
+  context.accept(record.testId, snapshot, true, 0);
   for (let index = 1; index <= 300; index++) {
-    view.rerender(
-      <LiveRun
-        record={record}
-        snapshot={{
-          ...snapshot,
-          measurementBatch: index + 1,
-          measurementTiming: null,
-          measurements: [
-            {
-              ...first,
-              sequence: index + 1,
-              value: 1000 + index,
-              measuredAt: new Date(Date.parse(first.measuredAt) + index * 1000).toISOString(),
-            },
-          ],
-        }}
-        fresh
-        pending={false}
-        onConfirm={() => {}}
-      />,
+    context.accept(
+      record.testId,
+      {
+        ...snapshot,
+        measurementBatch: index + 1,
+        measurementTiming: null,
+        measurements: [
+          {
+            ...first,
+            sequence: index + 1,
+            value: 1000 + index,
+            measuredAt: new Date(Date.parse(first.measuredAt) + index * 1000).toISOString(),
+          },
+        ],
+      },
+      true,
+      0,
     );
   }
-  const chart = screen.getByTestId('chart');
-  const retained: GraphPoint[] = JSON.parse(chart.getAttribute('data-points') ?? '[]');
+  const retained = context.read(record.testId).points;
   expect(retained).toHaveLength(300);
   expect(retained[0]).toEqual({ seconds: 1, pressure: 1001, differential: null });
   expect(retained[299]).toEqual({ seconds: 300, pressure: 1300, differential: null });
   const other = { ...record, testId: '88888888-8888-4888-8888-888888888888' };
-  view.rerender(
-    <LiveRun
-      record={other}
-      snapshot={{ ...snapshot, activeTest: other }}
-      fresh
-      pending={false}
-      onConfirm={() => {}}
-    />,
-  );
-  expect(chart.getAttribute('data-points')).toBe(
-    JSON.stringify([{ seconds: 0, pressure: 1000, differential: null }]),
-  );
+  context.accept(other.testId, { ...snapshot, activeTest: other }, true, 0);
+  expect(context.read(other.testId).points).toEqual([
+    { seconds: 0, pressure: 1000, differential: null },
+  ]);
 });
 
 it('keeps the last received reading visible while a new snapshot is being confirmed', async () => {
@@ -578,8 +603,8 @@ it('keeps the last received reading visible while a new snapshot is being confir
     measurementTiming: null,
     measurements: [
       first,
-      { ...first, channel: MeasurementChannel.Dd2, value: 150 },
-      { ...first, channel: MeasurementChannel.Dd3, value: 80 },
+      { ...first, channel: MeasurementChannel.MeasurementChannelDd2, value: 150 },
+      { ...first, channel: MeasurementChannel.MeasurementChannelDd3, value: 80 },
     ],
     pendingAction: {
       testId: record.testId,
@@ -710,7 +735,7 @@ it('breaks the chart across an unavailable measurement and labels pending confir
       onConfirm={() => {}}
     />,
   );
-  expect(screen.getByText('Ожидание подтверждения')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Подтвердить действие' })).toBeTruthy();
   const next = { ...first, sequence: 3, measuredAt: '2026-10-30T00:00:03Z', value: 1002 };
   view.rerender(
     <LiveRun
@@ -775,6 +800,6 @@ it('rounds displayed readings without changing chart samples', () => {
       onConfirm={() => {}}
     />,
   );
-  expect(screen.getByText(/≈ 9\s?986,022 Па/)).toBeTruthy();
+  expect(screen.getByText(/≈ 9\s?986,02 Па/)).toBeTruthy();
   expect(screen.getByTestId('chart').textContent).toBe('9986.022284815022');
 });

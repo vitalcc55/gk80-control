@@ -85,10 +85,15 @@ func TestLateFinalResultDoesNotReplaceNewRun(t *testing.T) {
 				if _, err := engine.Confirm(ctx, id, action.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: 2}); err != nil {
 					t.Fatal(err)
 				}
+				confirmValveActions(t, engine, id)
 			} else if _, err := engine.Stop(ctx, id, engine.State().Record.StopCommandId); err != nil {
 				t.Fatal(err)
 			}
-			<-wrapped.entered
+			select {
+			case <-wrapped.entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("finalization did not reach storage")
+			}
 			// Isolate the late-result identity guard without opening another real
 			// test while finalization is pending (normal admission forbids that).
 			engine.mu.Lock()
@@ -119,11 +124,11 @@ func TestLateFinalResultDoesNotReplaceNewRun(t *testing.T) {
 	}
 }
 
-func (s *finalResultRepository) Complete(ctx context.Context, id uuid.UUID, elapsed time.Duration) (storage.OperationResult, error) {
+func (s *finalResultRepository) Complete(ctx context.Context, id uuid.UUID, elapsed time.Duration, stopped ...contract.PendingAction) (storage.OperationResult, error) {
 	if s.failBefore && !s.failedBefore.Swap(true) {
 		return storage.OperationResult{}, context.DeadlineExceeded
 	}
-	return s.report(s.Store.Complete(ctx, id, elapsed))
+	return s.report(s.Store.Complete(ctx, id, elapsed, stopped...))
 }
 
 func (s *finalResultRepository) FinishStop(ctx context.Context, id, cmd uuid.UUID, details storage.StopDetails) (storage.OperationResult, error) {
@@ -182,6 +187,7 @@ func TestEngineFinalizationUsesCommittedResult(t *testing.T) {
 					if _, err := engine.Confirm(ctx, id, action.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: 2}); err != nil {
 						t.Fatal(err)
 					}
+					confirmValveActions(t, engine, id)
 				} else {
 					if _, err := engine.Stop(ctx, id, engine.State().Record.StopCommandId); err != nil {
 						t.Fatal(err)
@@ -237,11 +243,7 @@ func TestEngineFinalizationUsesCommittedResult(t *testing.T) {
 				if wrapped.calls.Load() != 1 {
 					t.Fatalf("finalization was repeated: %d", wrapped.calls.Load())
 				}
-				quality := contract.TestRecordDataQuality("complete")
-				if operation == "finishStop" {
-					quality = "incomplete"
-				}
-				if state.Record.DataQuality != quality {
+				if state.Record.DataQuality != "incomplete" {
 					t.Fatalf("final quality: %+v", state.Record)
 				}
 				if operation == "complete" && (simulator.starts.Load() != 1 || simulator.finishes.Load() != 1 || simulator.stops.Load() != 0) {
@@ -270,8 +272,8 @@ func (s *lostStartResult) Start(ctx context.Context, id uuid.UUID, cmd contract.
 	return result, err
 }
 
-func (s *lostStartResult) Confirm(ctx context.Context, id, action uuid.UUID, cmd contract.ConfirmActionCommand) (storage.OperationResult, error) {
-	result, err := s.Store.Confirm(ctx, id, action, cmd)
+func (s *lostStartResult) Confirm(ctx context.Context, id, action uuid.UUID, cmd contract.ConfirmActionCommand, next ...contract.PendingAction) (storage.OperationResult, error) {
+	result, err := s.Store.Confirm(ctx, id, action, cmd, next...)
 	if err == nil && s.operation == "confirm" {
 		return storage.OperationResult{}, context.DeadlineExceeded
 	}
@@ -380,8 +382,8 @@ func (s *reportedStartResults) Start(ctx context.Context, id uuid.UUID, cmd cont
 	return result, err
 }
 
-func (s *reportedStartResults) Confirm(ctx context.Context, id, action uuid.UUID, cmd contract.ConfirmActionCommand) (storage.OperationResult, error) {
-	result, err := s.Store.Confirm(ctx, id, action, cmd)
+func (s *reportedStartResults) Confirm(ctx context.Context, id, action uuid.UUID, cmd contract.ConfirmActionCommand, next ...contract.PendingAction) (storage.OperationResult, error) {
+	result, err := s.Store.Confirm(ctx, id, action, cmd, next...)
 	if result.Saved != nil {
 		result.Saved.Revision = 73
 	}

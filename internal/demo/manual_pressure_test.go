@@ -109,7 +109,7 @@ func TestManualPressureUsesIndependentRetryLimitsAndRestartsHolds(t *testing.T) 
 	expectManualPressure(t, &run, manualPressureInterrupted, run.observePressure(start.Add(36*time.Second), &lowAfterClose), stopStabilizationRetriesExhausted)
 }
 
-func TestManualPressureRepeatSearchExpiryLeavesOutcomeOpen(t *testing.T) {
+func TestManualPressureRepeatSearchExpiryConsumesAttempt(t *testing.T) {
 	start := time.Date(2026, time.November, 10, 12, 0, 0, 0, time.UTC)
 	run := manualPressureTestRun(2)
 	target, outside := 1000.0, 979.0
@@ -118,8 +118,9 @@ func TestManualPressureRepeatSearchExpiryLeavesOutcomeOpen(t *testing.T) {
 	retryAt := start.Add(599 * time.Second)
 	expectManualPressure(t, &run, searchingPressure, run.observePressure(retryAt, &outside), startPressureSearch)
 	expectManualPressure(t, &run, searchingPressure, run.advanceTime(retryAt.Add(599*time.Second)), manualPressureNoDecision)
-	expectManualPressure(t, &run, pressureRetryExpired, run.observePressure(retryAt.Add(600*time.Second), &target), retryPressureSearchTimedOut)
-	expectManualPressure(t, &run, pressureRetryExpired, run.observePressure(retryAt.Add(601*time.Second), &target), manualPressureNoDecision)
+	expectManualPressure(t, &run, searchingPressure, run.observePressure(retryAt.Add(600*time.Second), &target), startPressureSearch)
+	expectManualPressure(t, &run, searchingPressure, run.advanceTime(retryAt.Add(1199*time.Second)), manualPressureNoDecision)
+	expectManualPressure(t, &run, manualPressureInterrupted, run.advanceTime(retryAt.Add(1200*time.Second)), stopStabilizationRetriesExhausted)
 }
 
 func TestManualPressureMissingObservationCannotProveContinuousHold(t *testing.T) {
@@ -132,6 +133,85 @@ func TestManualPressureMissingObservationCannotProveContinuousHold(t *testing.T)
 	resumed := start.Add(10 * time.Second)
 	expectManualPressure(t, &run, stabilizingBeforeOpening, run.observePressure(resumed, &target), manualPressureNoDecision)
 	expectManualPressure(t, &run, awaitingValveOpening, run.observePressure(resumed.Add(10*time.Second), &target), manualPressureNoDecision)
+}
+
+func TestManualPressureProtection(t *testing.T) {
+	start := time.Now()
+	target := 1000.0
+	dd2, dd3 := 100.0, 100.0
+	newRun := func() manualPressureRun {
+		run := manualPressureTestRun(0)
+		run.phase = measuringManualPressure
+		run.parameters.lowerPa, run.parameters.upperPa = 900, 1080
+		run.parameters.lowerHold, run.parameters.upperHold = 2*time.Second, time.Second
+		return run
+	}
+	t.Run("separate holds and missing reset", func(t *testing.T) {
+		run := newRun()
+		low, high := 899.0, 1081.0
+		for _, point := range []struct {
+			seconds  int
+			value    *float64
+			decision manualPressureDecision
+		}{
+			{0, &low, manualPressureNoDecision}, {1, nil, manualPressureNoDecision},
+			{2, &low, manualPressureNoDecision}, {3, &high, manualPressureNoDecision}, {4, &high, stopPressureAboveLimit},
+		} {
+			if got := run.observe(start.Add(time.Duration(point.seconds)*time.Second), [3]*float64{point.value, &dd2, &dd3}); got != point.decision {
+				t.Fatalf("second %d: got %v, want %v", point.seconds, got, point.decision)
+			}
+		}
+	})
+	t.Run("tenth missing pressure and differential fallback", func(t *testing.T) {
+		run := newRun()
+		run.observe(start, [3]*float64{&target, &dd2, &dd3})
+		for i := 1; i <= 10; i++ {
+			want := manualPressureNoDecision
+			if i == 10 {
+				want = stopPressureChannelLost
+			}
+			if got := run.observe(start.Add(time.Duration(i)*demoMeasurementInterval), [3]*float64{nil, nil, &dd3}); got != want {
+				t.Fatalf("tick %d: %v", i, got)
+			}
+			if run.activeDifferential != 2 {
+				t.Fatalf("did not fall back to dd3 on tick %d", i)
+			}
+		}
+	})
+	t.Run("independent immediate limits", func(t *testing.T) {
+		run := newRun()
+		high := 1101.0
+		if got := run.observe(start, [3]*float64{&high, &dd2, &dd3}); got != stopPressureAboveMaximum {
+			t.Fatal(got)
+		}
+		run = newRun()
+		dd3High := 10001.0
+		if got := run.observe(start, [3]*float64{&target, &dd2, &dd3High}); got != stopDifferentialAboveMaximum {
+			t.Fatal(got)
+		}
+	})
+	t.Run("differential hysteresis and loss", func(t *testing.T) {
+		run := newRun()
+		for i, point := range []struct {
+			pressure float64
+			channel  string
+		}{{2350, "dd2"}, {2400, "dd3"}, {2350, "dd3"}, {2300, "dd2"}} {
+			now := start.Add(time.Duration(i) * demoMeasurementInterval)
+			if got := run.observe(now, [3]*float64{&target, &point.pressure, &point.pressure}); got != manualPressureNoDecision || run.differential() != point.channel {
+				t.Fatalf("at %.0f Pa: %s, %v", point.pressure, run.differential(), got)
+			}
+		}
+		for i := 1; i <= 10; i++ {
+			now := start.Add(time.Duration(i+3) * demoMeasurementInterval)
+			want := manualPressureNoDecision
+			if i == 10 {
+				want = stopDifferentialChannelsLost
+			}
+			if got := run.observe(now, [3]*float64{&target, nil, nil}); got != want {
+				t.Fatalf("tick %d: %v, want %v", i, got, want)
+			}
+		}
+	})
 }
 
 func TestManualPressureMeasuresOnlyAfterPostCloseHold(t *testing.T) {

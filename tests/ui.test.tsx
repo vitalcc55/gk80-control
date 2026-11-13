@@ -11,6 +11,9 @@ import { ReadinessCheckSource } from '../src/generated/wails/github.com/vitalcc5
 vi.mock('../src/components/MeasurementChart', () => ({
   MeasurementChart: () => <div role="img" aria-label="График подготовленных показаний" />,
 }));
+vi.mock('../src/components/LeakageChart', () => ({
+  LeakageChart: () => <div />,
+}));
 
 beforeEach(() => {
   window.history.replaceState(null, '', '/');
@@ -160,13 +163,8 @@ describe('подготовленные состояния оператора', (
       screen.getByRole('textbox', { name: 'Обозначение или наименование клапана' }),
       'Второй клапан',
     );
-    await user.clear(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-    );
-    await user.type(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-      '1',
-    );
+    await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+    await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
     await user.click(screen.getByRole('button', { name: 'Проверить готовность' }));
     await user.click(screen.getByRole('checkbox', { name: /Клапан закрыт/ }));
     await user.click(
@@ -199,13 +197,8 @@ describe('подготовленные состояния оператора', (
       screen.getByRole('textbox', { name: 'Обозначение или наименование клапана' }),
       'Клапан П',
     );
-    await user.clear(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-    );
-    await user.type(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-      '1',
-    );
+    await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+    await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
     await user.click(screen.getByRole('button', { name: 'Проверить готовность' }));
     await user.click(screen.getByRole('checkbox', { name: /Клапан закрыт/ }));
     await user.click(
@@ -237,13 +230,8 @@ describe('подготовленные состояния оператора', (
     const valve = screen.getByRole('textbox', { name: 'Обозначение или наименование клапана' });
     const area = screen.getByRole('textbox', { name: /Площадь клапана/ });
     await user.clear(area);
-    await user.clear(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-    );
-    await user.type(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-      '1',
-    );
+    await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+    await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
     await user.click(screen.getByRole('button', { name: 'Проверить готовность' }));
     expect(valve.getAttribute('aria-invalid')).toBe('true');
     expect(area.getAttribute('aria-invalid')).toBe('true');
@@ -289,15 +277,10 @@ describe('подготовленные состояния оператора', (
     await user.type(area, '0,0001');
     await user.clear(pressure);
     await user.type(pressure, '0,0001');
-    await user.clear(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-    );
-    await user.type(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-      '1',
-    );
+    await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+    await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
     await user.click(screen.getByRole('button', { name: 'Проверить готовность' }));
-    expect(screen.getByText(/0,0001\s*Па/)).toBeTruthy();
+    expect(screen.getByText(/1E-4\s*Па/)).toBeTruthy();
     await user.click(screen.getByRole('checkbox', { name: /Клапан закрыт/ }));
     await user.click(
       screen.getByRole('checkbox', { name: /Подключение соответствует направлению/ }),
@@ -315,15 +298,15 @@ describe('подготовленные состояния оператора', (
     ]) {
       await user.click(screen.getByRole('button', { name: action }));
     }
-    expect(screen.getByText(/0,0001\s*Па/)).toBeTruthy();
-    expect(screen.getByText(/0,0001\s*м/)).toBeTruthy();
+    expect(screen.getByText(/1E-4\s*Па/)).toBeTruthy();
+    expect(screen.getByText(/1E-4\s*м/)).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'К списку' }));
     const row = screen.getByText('Малый клапан').closest('tr');
     if (!(row instanceof HTMLElement)) throw new Error('History row missing');
-    expect(within(row).getByText(/0,0001\s*Па/)).toBeTruthy();
+    expect(within(row).getByText(/1E-4\s*Па/)).toBeTruthy();
     await user.click(within(row).getByRole('button', { name: /^Открыть / }));
     expect(screen.getByRole('heading', { name: 'Результат испытания' })).toBeTruthy();
-    expect(screen.getByText(/0,0001\s*Па/)).toBeTruthy();
+    expect(screen.getByText(/1E-4\s*Па/)).toBeTruthy();
     expect(screen.getByText('Малый клапан')).toBeTruthy();
   });
 
@@ -338,13 +321,8 @@ describe('подготовленные состояния оператора', (
     const pressure = screen.getByRole('textbox', { name: 'Pmax производителя, Па' });
     await user.clear(pressure);
     await user.type(pressure, '0,0000001');
-    await user.clear(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-    );
-    await user.type(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-      '1',
-    );
+    await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+    await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
     await user.click(screen.getByRole('button', { name: 'Проверить готовность' }));
     await user.click(screen.getByRole('checkbox', { name: /Клапан закрыт/ }));
     await user.click(
@@ -368,16 +346,11 @@ describe('подготовленные состояния оператора', (
       'value',
       '0.0000001',
     );
-    await user.clear(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-    );
-    await user.type(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-      '1',
-    );
+    await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+    await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
     await user.click(screen.getByRole('button', { name: 'Проверить готовность' }));
     expect(screen.getByRole('heading', { name: 'Готовность' })).toBeTruthy();
-    expect(screen.getByText(/0,0000001\s*Па/)).toBeTruthy();
+    expect(screen.getByText(/1E-7\s*Па/)).toBeTruthy();
   });
 
   it('объявляет потерю данных ДД1 и запрос остановки без объявления каждого измерения', async () => {
@@ -458,25 +431,15 @@ describe('подготовленные состояния оператора', (
       screen.getByRole('textbox', { name: 'Обозначение или наименование клапана' }),
     ).toHaveProperty('value', 'Клапан П-9');
     await user.type(screen.getByRole('textbox', { name: /Площадь клапана/ }), '12');
-    await user.clear(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-    );
-    await user.type(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-      '1',
-    );
+    await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+    await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
     await user.click(screen.getByRole('button', { name: 'Проверить готовность' }));
     await user.click(screen.getByRole('checkbox', { name: /Клапан закрыт/ }));
     await user.click(
       within(screen.getByRole('navigation')).getByRole('button', { name: 'Параметры' }),
     );
-    await user.clear(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-    );
-    await user.type(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-      '1',
-    );
+    await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+    await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
     await user.click(screen.getByRole('button', { name: 'Проверить готовность' }));
     expect(screen.getByRole('checkbox', { name: /Клапан закрыт/ })).toHaveProperty(
       'checked',
@@ -511,13 +474,8 @@ describe('подготовленные состояния оператора', (
     const area = screen.getByRole('textbox', { name: /Площадь клапана/ });
     await user.clear(area);
     await user.type(area, '0,12');
-    await user.clear(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-    );
-    await user.type(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-      '1',
-    );
+    await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+    await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
     await user.click(screen.getByRole('button', { name: 'Проверить готовность' }));
     expect(screen.getByText('Укажите обозначение или наименование клапана.')).toBeTruthy();
     expect(area).toHaveProperty('value', '0,12');
@@ -593,13 +551,8 @@ describe('подготовленные состояния оператора', (
     const pmax = screen.getByRole('textbox', { name: 'Pmax производителя, Па' });
     await user.clear(pmax);
     await user.type(pmax, '0,0001');
-    await user.clear(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-    );
-    await user.type(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-      '1',
-    );
+    await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+    await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
     await user.click(screen.getByRole('button', { name: 'Проверить готовность' }));
     await user.click(screen.getByRole('checkbox', { name: /Клапан закрыт/ }));
     await user.click(
@@ -608,11 +561,11 @@ describe('подготовленные состояния оператора', (
     await user.click(screen.getByRole('button', { name: 'Перейти к проведению' }));
     const target = screen.getByText('max').closest('.reading');
     if (!(target instanceof HTMLElement)) throw new Error('Target reading missing');
-    expect(target.textContent).toMatch(/0,0001\s*Па/);
+    expect(target.textContent).toMatch(/1E-4\s*Па/);
     await user.click(screen.getByRole('button', { name: 'Подтверждаю завершение серии' }));
     const pressure = screen.getByText('Давление в ёмкости').closest('.reading');
     if (!(pressure instanceof HTMLElement)) throw new Error('Pressure reading missing');
-    expect(pressure.querySelector('strong')?.textContent).toBe('< 0,001 Па');
+    expect(pressure.querySelector('strong')?.textContent).toBe('< 0,01 Па');
   });
 
   it('сообщает ошибку сохранения и не выдаёт её за успешную запись', async () => {

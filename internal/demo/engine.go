@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"sync"
 	"time"
 
@@ -25,35 +24,47 @@ type Repository interface {
 	LookupStart(context.Context, uuid.UUID, contract.StartTestCommand) (contract.CommandStatus, error)
 	RejectStartNotReady(context.Context, uuid.UUID, contract.StartTestCommand) (contract.CommandStatus, error)
 	RejectStartUnavailable(context.Context, uuid.UUID, contract.StartTestCommand) (contract.CommandStatus, error)
-	Confirm(context.Context, uuid.UUID, uuid.UUID, contract.ConfirmActionCommand) (storage.OperationResult, error)
+	Confirm(context.Context, uuid.UUID, uuid.UUID, contract.ConfirmActionCommand, ...contract.PendingAction) (storage.OperationResult, error)
+	RequestRunAction(context.Context, contract.PendingAction) (storage.OperationResult, error)
+	RecordDifferentialSwitch(context.Context, uuid.UUID, string) error
+	PendingAction(context.Context, uuid.UUID) (*contract.PendingAction, error)
 	LookupConfirm(context.Context, uuid.UUID, uuid.UUID, contract.ConfirmActionCommand) (contract.CommandStatus, error)
 	RejectConfirmUnavailable(context.Context, uuid.UUID, uuid.UUID, contract.ConfirmActionCommand) (contract.CommandStatus, error)
 	CompleteStart(context.Context, uuid.UUID, uuid.UUID) (storage.OperationResult, error)
 	RecordMeasurements(context.Context, uuid.UUID, []storage.TimedMeasurement) error
-	Complete(context.Context, uuid.UUID, time.Duration) (storage.OperationResult, error)
+	Complete(context.Context, uuid.UUID, time.Duration, ...contract.PendingAction) (storage.OperationResult, error)
 	FinishStop(context.Context, uuid.UUID, uuid.UUID, storage.StopDetails) (storage.OperationResult, error)
 	LookupStop(context.Context, uuid.UUID, uuid.UUID) (contract.CommandStatus, error)
 }
 
 // State is an internal observation, not yet the transport snapshot or event stream.
 type State struct {
-	MeasurementTiming *contract.MeasurementTiming
-	MeasurementBatch  *int64
-	BackendRunID      uuid.UUID
-	Record            *contract.TestRecord
-	PendingAction     *contract.PendingAction
-	Measurements      []contract.Measurement
-	Stop              *contract.CommandStatus
-	Revision          int64
+	RunPhase           *contract.RunPhase
+	PhaseTiming        *contract.MeasurementTiming
+	ActiveDifferential *contract.SnapshotActiveDifferential
+	MeasurementTiming  *contract.MeasurementTiming
+	MeasurementBatch   *int64
+	BackendRunID       uuid.UUID
+	Record             *contract.TestRecord
+	PendingAction      *contract.PendingAction
+	Measurements       []contract.Measurement
+	CurrentReadings    *[]contract.Measurement
+	Stop               *contract.CommandStatus
+	Revision           int64
 }
 
 type run struct {
+	manual            manualPressureRun
+	searchStarted     time.Time
+	observedAt        time.Time
+	stopConfirmation  *contract.PendingAction
 	measurementTiming *contract.MeasurementTiming
 	measurementBatch  int64
 	record            contract.TestRecord
 	revision          int64
 	pending           *contract.PendingAction
 	latest            []contract.Measurement
+	currentReadings   []contract.Measurement
 	startID           uuid.UUID
 	started           bool
 	stopping          bool
@@ -106,7 +117,7 @@ func NewEngine(ctx context.Context, store Repository, equipment Equipment, runID
 		return nil, err
 	}
 	lifeCtx, lifeCancel := context.WithCancel(context.Background())
-	return &Engine{store: store, equipment: equipment, runID: runID, revision: revision, ordinary: make(chan struct{}, 1), changed: make(chan struct{}, 1), lifeCtx: lifeCtx, lifeCancel: lifeCancel, measurementNow: time.Now}, nil
+	return &Engine{store: store, equipment: equipment, runID: runID, revision: revision, ordinary: make(chan struct{}, 1), changed: make(chan struct{}, 1), lifeCtx: lifeCtx, lifeCancel: lifeCancel}, nil
 }
 
 func (e *Engine) acquire(ctx context.Context) error {
@@ -621,6 +632,13 @@ func (e *Engine) State() State {
 		record.FinishedAt = &finished
 	}
 	state.Record = &record
+	if record.Stage == "running" && !e.active.stopping {
+		state.RunPhase, state.PhaseTiming = e.active.manual.presentation(e.active.observedAt)
+	}
+	if channel := e.active.manual.differential(); channel != "" {
+		value := contract.SnapshotActiveDifferential(channel)
+		state.ActiveDifferential = &value
+	}
 	if e.active.measurementBatch > 0 {
 		batch := e.active.measurementBatch
 		state.MeasurementBatch = &batch
@@ -638,7 +656,17 @@ func (e *Engine) State() State {
 		status := copyCommand(*e.active.stopStatus)
 		state.Stop = &status
 	}
-	for _, measurement := range e.active.latest {
+	state.Measurements = copyReadings(e.active.latest)
+	if e.active.record.Stage == "running" && len(e.active.currentReadings) > 0 {
+		readings := copyReadings(e.active.currentReadings)
+		state.CurrentReadings = &readings
+	}
+	return state
+}
+
+func copyReadings(readings []contract.Measurement) []contract.Measurement {
+	copies := make([]contract.Measurement, 0, len(readings))
+	for _, measurement := range readings {
 		copy := measurement
 		if copy.Value != nil {
 			value := *copy.Value
@@ -648,9 +676,9 @@ func (e *Engine) State() State {
 			measured := *copy.MeasuredAt
 			copy.MeasuredAt = &measured
 		}
-		state.Measurements = append(state.Measurements, copy)
+		copies = append(copies, copy)
 	}
-	return state
+	return copies
 }
 
 func copyCommand(status contract.CommandStatus) contract.CommandStatus {
@@ -720,7 +748,7 @@ func (e *Engine) create(ctx context.Context, command contract.CreateTestCommand,
 		return known, lookupErr
 	}
 	e.mu.Lock()
-	uncertain := e.active != nil && (e.active.naturalDone || e.active.stopping) && !e.active.finalized
+	uncertain := e.active != nil && (e.active.naturalDone || e.active.stopping) && (!e.active.finalized || e.active.pending != nil || !e.equipment.Ready())
 	allowed = e.allowedLocked(control)
 	e.mu.Unlock()
 	if !allowed {
@@ -841,6 +869,7 @@ func (e *Engine) refreshFinished(ctx context.Context) error {
 	}
 	testID, stopID, details, elapsed := current.record.TestId, current.record.StopCommandId, current.stopDetails, current.finishElapsed
 	stopping := current.stopping
+	stopConfirmation := current.stopConfirmation
 	e.mu.Unlock()
 	var saved *storage.SavedState
 	if stopping {
@@ -867,7 +896,11 @@ func (e *Engine) refreshFinished(ctx context.Context) error {
 		}
 	}
 	if !stopping && record.Stage != "finished" {
-		result, err := e.store.Complete(ctx, testID, elapsed)
+		var actions []contract.PendingAction
+		if stopConfirmation != nil {
+			actions = append(actions, *stopConfirmation)
+		}
+		result, err := e.store.Complete(ctx, testID, elapsed, actions...)
 		if err != nil {
 			return err
 		}
@@ -894,10 +927,15 @@ func (e *Engine) refreshFinished(ctx context.Context) error {
 			return err
 		}
 	}
+	pending, err := e.store.PendingAction(ctx, testID)
+	if err != nil {
+		return err
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.active == current {
 		current.record = record
+		current.pending = pending
 		current.finalized = true
 		current.revision = revision
 		e.revision = revision
@@ -985,7 +1023,7 @@ func (e *Engine) Readiness(testID uuid.UUID) (contract.Readiness, error) {
 	if current == nil || current.record.TestId != testID {
 		return contract.Readiness{}, storage.ErrTestNotFound
 	}
-	coreReady := current.record.Stage == "preparing" && !current.stopping
+	coreReady := current.record.Stage == "preparing" && !current.stopping && storage.ValidPressureLimits(current.record.Parameters)
 	simulatorReady := e.equipment.Ready()
 	return contract.Readiness{TestId: testID, Revision: current.revision, Ready: coreReady && simulatorReady, Checks: []contract.ReadinessCheck{
 		{Code: "demo", Label: "Демонстрационный режим ядра", Ready: coreReady, Source: "core"},
@@ -1053,7 +1091,7 @@ func (e *Engine) start(ctx context.Context, testID uuid.UUID, command contract.S
 			opCtx, cancel := operationContextLocked(ctx, control)
 			e.mu.Unlock()
 			defer cancel()
-			action := contract.PendingAction{ActionId: uuid.New(), TestId: testID, Instruction: "Подтвердите начало демонстрационного измерения"}
+			action := newRunAction(testID, "confirmPreparation")
 			result, err := e.store.Start(opCtx, testID, command, action)
 			err = operationError(opCtx, err)
 			if !e.allowed(control) {
@@ -1071,11 +1109,11 @@ func (e *Engine) start(ctx context.Context, testID uuid.UUID, command contract.S
 		if !saved {
 			return contract.CommandStatus{}, storage.ErrStorageUnavailable
 		}
-		action := contract.PendingAction{ActionId: uuid.New(), TestId: testID, Instruction: "Подтвердите начало демонстрационного измерения"}
+		action := newRunAction(testID, "confirmPreparation")
 		result, err := e.store.Start(ctx, testID, command, action)
 		return result.CommandStatus(), err
 	}
-	notReady := current.record.Stage == "preparing" && !e.equipment.Ready()
+	notReady := current.record.Stage == "preparing" && (!e.equipment.Ready() || !storage.ValidPressureLimits(current.record.Parameters))
 	baseCtx, cancelBase := context.WithTimeout(current.ctx, 2*time.Second)
 	opCtx, cancel := operationContextLocked(baseCtx, control)
 	e.mu.Unlock()
@@ -1087,7 +1125,7 @@ func (e *Engine) start(ctx context.Context, testID uuid.UUID, command contract.S
 		e.abortOnStorageError(err)
 		return result, err
 	}
-	action := contract.PendingAction{ActionId: uuid.New(), TestId: testID, Instruction: "Подтвердите начало демонстрационного измерения"}
+	action := newRunAction(testID, "confirmPreparation")
 	result, err := e.store.Start(opCtx, testID, command, action)
 	status := result.CommandStatus()
 	if replayed != nil && result.Replayed {
@@ -1109,6 +1147,7 @@ func (e *Engine) start(ctx context.Context, testID uuid.UUID, command contract.S
 		e.revision = current.revision
 		current.pending = result.Saved.PendingAction
 		current.startID = command.CommandId
+		current.manual = newManualPressureRun(manualParameters(current.record.Parameters))
 		e.signal()
 	}
 	return status, nil
@@ -1168,7 +1207,7 @@ func (e *Engine) confirm(ctx context.Context, testID, actionID uuid.UUID, comman
 		}
 		return result, err
 	}
-	if current.stopping {
+	if current.stopping && !current.finalized {
 		done := current.stopDone
 		if control != nil {
 			opCtx, cancel := operationContextLocked(ctx, control)
@@ -1194,12 +1233,28 @@ func (e *Engine) confirm(ctx context.Context, testID, actionID uuid.UUID, comman
 		result, err := e.store.Confirm(ctx, testID, actionID, command)
 		return result.CommandStatus(), err
 	}
-	baseCtx, cancelBase := context.WithTimeout(current.ctx, 2*time.Second)
+	kind := contract.PendingActionKind("")
+	if current.pending != nil && current.pending.ActionId == actionID && current.pending.Kind != nil {
+		kind = *current.pending.Kind
+	}
+	if kind == "confirmStopped" && (!current.finalized || !e.equipment.Ready()) {
+		e.mu.Unlock()
+		return contract.CommandStatus{}, ErrBusy
+	}
+	var next []contract.PendingAction
+	if kind == "confirmValveOpen" {
+		next = append(next, newRunAction(testID, "confirmValveClosed"))
+	}
+	parent := current.ctx
+	if current.finalized {
+		parent = ctx
+	}
+	baseCtx, cancelBase := context.WithTimeout(parent, 2*time.Second)
 	opCtx, cancel := operationContextLocked(baseCtx, control)
 	e.mu.Unlock()
 	defer cancel()
 	defer cancelBase()
-	result, err := e.store.Confirm(opCtx, testID, actionID, command)
+	result, err := e.store.Confirm(opCtx, testID, actionID, command, next...)
 	status := result.CommandStatus()
 	if replayed != nil && result.Replayed {
 		*replayed = true
@@ -1213,11 +1268,26 @@ func (e *Engine) confirm(ctx context.Context, testID, actionID uuid.UUID, comman
 	}
 	e.emitCommand(status, &actionID)
 	e.mu.Lock()
-	if !result.Applied || result.Saved == nil || e.active != current || current.stopping || current.started || !e.allowedLocked(control) {
+	if !result.Applied || result.Saved == nil || e.active != current || (current.stopping && !current.finalized) || !e.allowedLocked(control) {
 		e.mu.Unlock()
 		return status, nil
 	}
 	if current.pending == nil || current.pending.ActionId != actionID {
+		e.mu.Unlock()
+		return status, nil
+	}
+	if kind != "confirmPreparation" {
+		current.record = result.Saved.Record
+		current.pending = result.Saved.PendingAction
+		current.revision = result.Saved.Revision
+		e.revision = current.revision
+		switch kind {
+		case "confirmValveOpen":
+			current.manual.confirm(e.runTime(time.Now()), confirmValveOpened)
+		case "confirmValveClosed":
+			current.manual.confirm(e.runTime(time.Now()), confirmValveClosed)
+		}
+		e.signal()
 		e.mu.Unlock()
 		return status, nil
 	}
@@ -1230,6 +1300,9 @@ func (e *Engine) confirm(ctx context.Context, testID, actionID uuid.UUID, comman
 	current.record = result.Saved.Record
 	current.pending = result.Saved.PendingAction
 	current.started = true
+	current.searchStarted = e.runTime(time.Now())
+	current.observedAt = current.searchStarted
+	current.manual.confirm(current.searchStarted, confirmPreparation)
 	current.revision = result.Saved.Revision
 	e.revision = current.revision
 	current.record.SaveStatus = "pending"
@@ -1270,7 +1343,7 @@ func (e *Engine) confirm(ctx context.Context, testID, actionID uuid.UUID, comman
 	e.revision = current.revision
 	e.signal()
 	e.mu.Unlock()
-	go e.measure(current)
+	go e.runManualPressure(current, testID)
 	return status, nil
 }
 
@@ -1404,6 +1477,10 @@ func (e *Engine) finishStop(current *run) {
 		current.stopDetails.Reason += ";simulator_stop_failed"
 	} else {
 		current.stopStatus.Status = "completed"
+		if current.started {
+			action := newRunAction(current.record.TestId, "confirmStopped")
+			current.stopDetails.Confirmation = &action
+		}
 		current.record.Stage = "finished"
 		current.record.Outcome = "interrupted"
 	}
@@ -1444,8 +1521,12 @@ func (e *Engine) finishStop(current *run) {
 		if err == nil {
 			revision, err = e.store.Revision(stopCtx)
 		}
+		var pending *contract.PendingAction
 		if err == nil {
-			saved = &storage.SavedState{Record: record, Revision: revision}
+			pending, err = e.store.PendingAction(stopCtx, testID)
+		}
+		if err == nil {
+			saved = &storage.SavedState{Record: record, Revision: revision, PendingAction: pending}
 		}
 	}
 	e.mu.Lock()
@@ -1457,6 +1538,7 @@ func (e *Engine) finishStop(current *run) {
 		current.record.SaveStatus = saveFailure(err, confirmed)
 	} else {
 		current.record = saved.Record
+		current.pending = saved.PendingAction
 		current.finalized = true
 		current.revision = saved.Revision
 		e.revision = saved.Revision
@@ -1501,164 +1583,6 @@ func waitStartCompletion(ctx context.Context, deadline time.Time, done <-chan st
 		return completed, true
 	}
 	return completed, false
-}
-
-func (e *Engine) measure(current *run) {
-	e.mu.Lock()
-	if e.active != current || current.stopping {
-		e.mu.Unlock()
-		return
-	}
-	testID := current.record.TestId
-	duration := time.Duration(math.Ceil(current.record.Parameters.MeasurementSeconds * float64(time.Second)))
-	e.mu.Unlock()
-	queue := make(chan samplePacket, sampleQueueLimit)
-	e.mu.Lock()
-	if e.active != current || current.stopping {
-		e.mu.Unlock()
-		return
-	}
-	current.writerDone = make(chan struct{})
-	e.mu.Unlock()
-	go e.writeSamples(current, testID, queue)
-	var started time.Time
-	sequence := int64(0)
-	emit := func() (time.Duration, bool) {
-		e.mu.Lock()
-		if e.active != current || current.stopping {
-			e.mu.Unlock()
-			return 0, false
-		}
-		sampledAt := time.Now()
-		measurementAt := e.measurementNow()
-		if started.IsZero() {
-			started = measurementAt
-		}
-		elapsed := measurementAt.Sub(started)
-		pressure, dd2, dd3, err := e.equipment.Observe(elapsed)
-		if err != nil {
-			e.acceptStopLocked(current, "system", "simulator_error")
-			e.mu.Unlock()
-			go e.finishStop(current)
-			return 0, false
-		}
-		now := sampledAt.UTC()
-		measured := now.Format(time.RFC3339Nano)
-		values := []struct {
-			channel  contract.MeasurementChannel
-			quantity contract.MeasurementQuantity
-			value    float64
-		}{{"dd1", "pressure", pressure}, {"dd2", "differentialPressure", dd2}, {"dd3", "differentialPressure", dd3}}
-		packet := make(samplePacket, 0, len(values))
-		latest := make([]contract.Measurement, 0, len(values))
-		for _, value := range values {
-			sequence++
-			v := value.value
-			sample := contract.Measurement{Sequence: sequence, Channel: value.channel, Quantity: value.quantity, Value: &v, Unit: "Pa", ObservedAt: now, MeasuredAt: &measured, Quality: "valid", Source: "simulator"}
-			latest = append(latest, sample)
-			packet = append(packet, storage.TimedMeasurement{Measurement: sample, Elapsed: elapsed})
-		}
-		select {
-		case queue <- packet:
-			current.measurementBatch++
-			current.measurementTiming = &contract.MeasurementTiming{
-				ElapsedSeconds: elapsed.Seconds(), RemainingSeconds: max(0, (duration - elapsed).Seconds()),
-			}
-			current.pendingSamples += len(packet)
-			current.record.SaveStatus = "pending"
-			current.latest = latest
-			e.signal()
-			e.mu.Unlock()
-			return elapsed, true
-		default:
-			e.acceptStopLocked(current, "system", "measurement_queue_full:3")
-			current.stopDetails.MeasurementsLost = true
-			e.mu.Unlock()
-			go e.finishStop(current)
-			return 0, false
-		}
-	}
-	if _, ok := emit(); !ok {
-		close(queue)
-		return
-	}
-	interval := min(time.Second, duration)
-	timer := time.NewTimer(interval)
-	defer timer.Stop()
-	var elapsed time.Duration
-	for {
-		select {
-		case <-current.ctx.Done():
-			close(queue)
-			return
-		case <-timer.C:
-			var ok bool
-			elapsed, ok = emit()
-			if !ok {
-				close(queue)
-				return
-			}
-			if elapsed >= duration {
-				close(queue)
-				goto flush
-			}
-			timer.Reset(min(time.Second, duration-elapsed))
-		}
-	}
-flush:
-	select {
-	case <-current.ctx.Done():
-		return
-	case <-current.writerDone:
-		e.mu.Lock()
-		err := current.writerErr
-		e.mu.Unlock()
-		if err != nil {
-			e.requestStop(current, "storage_error")
-			return
-		}
-	}
-	e.mu.Lock()
-	if e.active != current || current.stopping {
-		e.mu.Unlock()
-		return
-	}
-	if err := e.equipment.Finish(); err != nil {
-		e.acceptStopLocked(current, "system", "simulator_error")
-		e.mu.Unlock()
-		go e.finishStop(current)
-		return
-	}
-	current.naturalDone = true
-	current.finishDone = make(chan struct{})
-	defer close(current.finishDone)
-	current.finishElapsed = elapsed
-	current.record.Stage = "finished"
-	current.record.Outcome = "completed"
-	current.record.DataQuality = "pending"
-	current.record.SaveStatus = "pending"
-	current.revision++
-	e.revision = current.revision
-	e.signal()
-	e.mu.Unlock()
-	completeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	result, err := e.store.Complete(completeCtx, testID, elapsed)
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.active != current {
-		return
-	}
-	if err != nil || result.Saved == nil {
-		current.record.SaveStatus = saveFailure(err, false)
-		current.record.DataQuality = "unknown"
-	} else {
-		current.record = result.Saved.Record
-		current.finalized = true
-		current.revision = result.Saved.Revision
-		e.revision = result.Saved.Revision
-	}
-	e.signal()
 }
 
 func saveFailure(err error, committed bool) contract.TestRecordSaveStatus {

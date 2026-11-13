@@ -25,6 +25,7 @@ export function RunScreen({
   stages,
   pressure,
   differential,
+  differentialChannel = 'ДД2',
   differentialNote,
   target,
   readingNote,
@@ -43,8 +44,9 @@ export function RunScreen({
   stages: readonly { id: string; label: string; state: 'done' | 'current' | 'next' | 'inactive' }[];
   pressure: ReactNode;
   differential: ReactNode;
+  differentialChannel?: string | undefined;
   target: ReactNode;
-  readingNote?: ReactNode;
+  readingNote?: ReactNode | undefined;
   details?: ReactNode;
   pressureNote?: ReactNode;
   differentialNote?: ReactNode;
@@ -120,7 +122,7 @@ export function RunScreen({
               </div>
               <div className="reading differential-reading">
                 <span>
-                  Перепад на диафрагме <small>ДД2</small>
+                  Перепад на диафрагме <small>{differentialChannel}</small>
                 </span>
                 <strong>{differential}</strong>
                 {differentialNote}

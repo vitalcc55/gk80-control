@@ -35,11 +35,14 @@ func (s *Store) Start(ctx context.Context, testID uuid.UUID, command contract.St
 		if record.Stage != "preparing" {
 			return ErrInvalidState
 		}
+		if !ValidPressureLimits(record.Parameters) {
+			return ErrInvalidCommand
+		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		*wrote = true
-		if _, err := tx.ExecContext(ctx, `INSERT INTO test_actions(test_id, action_id, instruction, state) VALUES(?, ?, ?, 'pending')`, testID.String(), action.ActionId.String(), action.Instruction); err != nil {
+		if err := insertPendingAction(ctx, tx, testID, action); err != nil {
 			return err
 		}
 		record.Stage = "running"
@@ -114,7 +117,7 @@ func (s *Store) RejectStartUnavailable(ctx context.Context, testID uuid.UUID, co
 }
 
 // Confirm records confirmation of the current action, scoped to its test and action IDs.
-func (s *Store) Confirm(ctx context.Context, testID, actionID uuid.UUID, command contract.ConfirmActionCommand) (OperationResult, error) {
+func (s *Store) Confirm(ctx context.Context, testID, actionID uuid.UUID, command contract.ConfirmActionCommand, next ...contract.PendingAction) (OperationResult, error) {
 	request, err := confirmRequest(testID, actionID, command)
 	if err != nil {
 		return OperationResult{}, ErrInvalidCommand
@@ -133,16 +136,17 @@ func (s *Store) Confirm(ctx context.Context, testID, actionID uuid.UUID, command
 		if revision != command.ExpectedRevision {
 			return ErrRevision
 		}
-		if record.Stage != "running" {
-			return ErrInvalidState
-		}
 		var pending string
-		err = tx.QueryRowContext(ctx, `SELECT action_id FROM test_actions WHERE test_id = ? AND state = 'pending'`, testID.String()).Scan(&pending)
+		var kind sql.NullString
+		err = tx.QueryRowContext(ctx, `SELECT action_id, kind FROM test_actions WHERE test_id = ? AND state = 'pending'`, testID.String()).Scan(&pending, &kind)
 		if errors.Is(err, sql.ErrNoRows) || (err == nil && pending != actionID.String()) {
 			return ErrActionMismatch
 		}
 		if err != nil {
 			return err
+		}
+		if record.Stage != "running" && !(record.Stage == "finished" && kind.String == "confirmStopped") {
+			return ErrInvalidState
 		}
 		if err := ctx.Err(); err != nil {
 			return err
@@ -151,13 +155,31 @@ func (s *Store) Confirm(ctx context.Context, testID, actionID uuid.UUID, command
 		if _, err := tx.ExecContext(ctx, `UPDATE test_actions SET state = 'confirmed' WHERE test_id = ? AND state = 'pending'`, testID.String()); err != nil {
 			return err
 		}
+		var following *contract.PendingAction
+		if len(next) != 0 {
+			if len(next) != 1 || kind.String != "confirmValveOpen" || next[0].Kind == nil || *next[0].Kind != "confirmValveClosed" {
+				return ErrInvalidCommand
+			}
+			if err := insertPendingAction(ctx, tx, testID, next[0]); err != nil {
+				return err
+			}
+			following = &next[0]
+		}
 		if err := saveTransition(ctx, tx, record, revision+1, operatorID, "confirm", "completed", &command.CommandId, &actionID); err != nil {
 			return err
 		}
-		prepared = &SavedState{Record: record, Revision: revision + 1, PendingAction: nil}
+		prepared = &SavedState{Record: record, Revision: revision + 1, PendingAction: following}
 		return nil
 	})
 	return operatorResult(status, prepared, attempted, err)
+}
+
+func insertPendingAction(ctx context.Context, tx *sql.Tx, testID uuid.UUID, action contract.PendingAction) error {
+	if action.TestId != testID || action.ActionId == uuid.Nil || action.Instruction == "" {
+		return ErrInvalidCommand
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO test_actions(test_id, action_id, instruction, kind, state) VALUES(?, ?, ?, ?, 'pending')`, testID.String(), action.ActionId.String(), action.Instruction, action.Kind)
+	return err
 }
 
 func confirmRequest(testID, actionID uuid.UUID, command contract.ConfirmActionCommand) ([]byte, error) {
@@ -383,7 +405,8 @@ func saveTransition(ctx context.Context, tx *sql.Tx, record contract.TestRecord,
 
 func (s *Store) PendingAction(ctx context.Context, testID uuid.UUID) (*contract.PendingAction, error) {
 	var id, instruction string
-	err := s.db.QueryRowContext(ctx, `SELECT action_id, instruction FROM test_actions WHERE test_id = ? AND state = 'pending'`, testID.String()).Scan(&id, &instruction)
+	var kind sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT action_id, instruction, kind FROM test_actions WHERE test_id = ? AND state = 'pending'`, testID.String()).Scan(&id, &instruction, &kind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -394,7 +417,64 @@ func (s *Store) PendingAction(ctx context.Context, testID uuid.UUID) (*contract.
 	if err != nil {
 		return nil, err
 	}
-	return &contract.PendingAction{TestId: testID, ActionId: parsed, Instruction: instruction}, nil
+	action := &contract.PendingAction{TestId: testID, ActionId: parsed, Instruction: instruction}
+	if kind.Valid {
+		value := contract.PendingActionKind(kind.String)
+		action.Kind = &value
+	}
+	return action, nil
+}
+
+// RequestRunAction publishes an Engine-selected action after committing it and its audit.
+func (s *Store) RequestRunAction(ctx context.Context, action contract.PendingAction) (OperationResult, error) {
+	if action.Kind == nil || *action.Kind != "confirmValveOpen" {
+		return OperationResult{}, ErrInvalidCommand
+	}
+	if err := s.lockWrite(ctx); err != nil {
+		return OperationResult{}, err
+	}
+	defer s.unlockWrite()
+	if s.failed {
+		return OperationResult{}, ErrStorageUnavailable
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return OperationResult{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	record, revision, err := currentRecord(ctx, tx, action.TestId)
+	if err != nil {
+		return OperationResult{}, err
+	}
+	if record.Stage != "running" {
+		return OperationResult{}, ErrInvalidState
+	}
+	if err := insertPendingAction(ctx, tx, action.TestId, action); err != nil {
+		return OperationResult{}, err
+	}
+	if err := saveTransition(ctx, tx, record, revision+1, "system", "action_requested", "pending", nil, &action.ActionId); err != nil {
+		return OperationResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return OperationResult{}, err
+	}
+	return OperationResult{Applied: true, Saved: &SavedState{Record: record, Revision: revision + 1, PendingAction: &action}}, nil
+}
+
+func (s *Store) RecordDifferentialSwitch(ctx context.Context, testID uuid.UUID, channel string) error {
+	if channel != "dd2" && channel != "dd3" {
+		return ErrInvalidCommand
+	}
+	if err := s.lockWrite(ctx); err != nil {
+		return err
+	}
+	defer s.unlockWrite()
+	if s.failed {
+		return ErrStorageUnavailable
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO audit(test_id, occurred_at, operator_id, action, outcome, revision, reason)
+		SELECT tests.id, ?, 'system', 'differential_switch', 'completed', meta.revision, ? FROM tests CROSS JOIN meta WHERE tests.id = ? AND tests.stage = 'running' AND meta.id = 1`, time.Now().UTC().Format(time.RFC3339Nano), channel, testID.String())
+	return err
 }
 
 func validMeasurement(m contract.Measurement) bool {
@@ -553,7 +633,7 @@ func (s *Store) MeasurementsPage(ctx context.Context, testID uuid.UUID, after in
 }
 
 // Complete receives the elapsed interval measured by the engine's monotonic clock.
-func (s *Store) Complete(ctx context.Context, testID uuid.UUID, elapsed time.Duration) (OperationResult, error) {
+func (s *Store) Complete(ctx context.Context, testID uuid.UUID, elapsed time.Duration, stopped ...contract.PendingAction) (OperationResult, error) {
 	if elapsed < 0 || elapsed > 24*time.Hour {
 		return OperationResult{}, ErrInvalidCommand
 	}
@@ -591,13 +671,13 @@ func (s *Store) Complete(ctx context.Context, testID uuid.UUID, elapsed time.Dur
 	if pending != 0 {
 		return OperationResult{}, ErrInvalidState
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT payload, elapsed_ns FROM measurements WHERE test_id = ? AND channel = 'dd1' ORDER BY sequence`, testID.String())
+	rows, err := tx.QueryContext(ctx, `SELECT payload, elapsed_ns FROM measurements WHERE test_id = ? ORDER BY sequence`, testID.String())
 	if err != nil {
 		s.noteWriteError(ctx, err, false)
 		return OperationResult{}, err
 	}
-	var first, last int64
-	count := 0
+	count := [3]int{}
+	complete := true
 	for rows.Next() {
 		var body []byte
 		var offset int64
@@ -612,18 +692,21 @@ func (s *Store) Complete(ctx context.Context, testID uuid.UUID, elapsed time.Dur
 			s.failed = true
 			return OperationResult{}, errors.New("invalid stored measurement")
 		}
+		if offset < 0 || offset > int64(elapsed) {
+			_ = rows.Close()
+			return OperationResult{}, ErrInvalidState
+		}
 		if sample.Quality != "valid" || sample.MeasuredAt == nil {
-			_ = rows.Close()
-			return OperationResult{}, ErrInvalidState
+			complete = false
 		}
-		if count == 0 {
-			first = offset
-		} else if offset < last {
-			_ = rows.Close()
-			return OperationResult{}, ErrInvalidState
+		switch sample.Channel {
+		case "dd1":
+			count[0]++
+		case "dd2":
+			count[1]++
+		case "dd3":
+			count[2]++
 		}
-		last = offset
-		count++
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()
@@ -634,7 +717,7 @@ func (s *Store) Complete(ctx context.Context, testID uuid.UUID, elapsed time.Dur
 		s.noteWriteError(ctx, err, false)
 		return OperationResult{}, err
 	}
-	if count < 2 || last > int64(elapsed) || float64(last-first)/float64(time.Second) < record.Parameters.MeasurementSeconds || elapsed.Seconds() < record.Parameters.MeasurementSeconds {
+	if elapsed.Seconds() < record.Parameters.MeasurementSeconds {
 		return OperationResult{}, ErrInvalidState
 	}
 	if err := ctx.Err(); err != nil {
@@ -643,7 +726,11 @@ func (s *Store) Complete(ctx context.Context, testID uuid.UUID, elapsed time.Dur
 	now := time.Now().UTC()
 	record.Stage = "finished"
 	record.Outcome = "completed"
-	record.DataQuality = "complete"
+	record.DataQuality = "incomplete"
+	expected := int(record.Parameters.MeasurementSeconds * 10)
+	if complete && count == [3]int{expected, expected, expected} {
+		record.DataQuality = "complete"
+	}
 	record.FinishedAt = &now
 	if err := saveTransition(ctx, tx, record, revision+1, "system", "complete", "completed", nil, nil); err != nil {
 		s.noteWriteError(ctx, err, false)
@@ -653,11 +740,21 @@ func (s *Store) Complete(ctx context.Context, testID uuid.UUID, elapsed time.Dur
 		s.noteWriteError(ctx, err, false)
 		return OperationResult{}, err
 	}
+	var action *contract.PendingAction
+	if len(stopped) != 0 {
+		if len(stopped) != 1 || stopped[0].Kind == nil || *stopped[0].Kind != "confirmStopped" {
+			return OperationResult{}, ErrInvalidCommand
+		}
+		if err := insertPendingAction(ctx, tx, testID, stopped[0]); err != nil {
+			return OperationResult{}, err
+		}
+		action = &stopped[0]
+	}
 	if err := tx.Commit(); err != nil {
 		s.noteWriteError(ctx, err, false)
 		return OperationResult{}, err
 	}
-	return OperationResult{Applied: true, Saved: &SavedState{Record: record, Revision: revision + 1}}, nil
+	return OperationResult{Applied: true, Saved: &SavedState{Record: record, Revision: revision + 1, PendingAction: action}}, nil
 }
 
 // Recover records that unfinished procedures have an unknown outcome; it never runs them.
@@ -680,6 +777,12 @@ func (s *Store) Recover(ctx context.Context) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	// A stop confirmation belongs to the running core session. A new core
+	// starts with an idle simulator, while the historical result stays intact.
+	if _, err := tx.ExecContext(ctx, `UPDATE test_actions SET state = 'canceled' WHERE state = 'pending' AND kind = 'confirmStopped' AND test_id IN (SELECT id FROM tests WHERE stage = 'finished')`); err != nil {
+		s.noteWriteError(ctx, err, true)
+		return err
+	}
 	rows, err := tx.QueryContext(ctx, `SELECT record FROM tests WHERE stage != 'finished'`)
 	if err != nil {
 		s.noteWriteError(ctx, err, false)
@@ -711,7 +814,7 @@ func (s *Store) Recover(ctx context.Context) error {
 		return err
 	}
 	if len(records) == 0 {
-		return nil
+		return tx.Commit()
 	}
 	var revision int64
 	if err := tx.QueryRowContext(ctx, `SELECT revision FROM meta WHERE id = 1`).Scan(&revision); err != nil {
@@ -862,6 +965,7 @@ func (s *Store) LookupStopExact(ctx context.Context, testID, commandID uuid.UUID
 }
 
 type StopDetails struct {
+	Confirmation     *contract.PendingAction
 	Actor            string
 	Reason           string
 	AcceptedAt       time.Time
@@ -974,12 +1078,20 @@ func (s *Store) FinishStop(ctx context.Context, testID, commandID uuid.UUID, det
 		s.noteWriteError(ctx, err, false)
 		return OperationResult{}, err
 	}
+	if !details.Failed && details.Confirmation != nil {
+		if details.Confirmation.Kind == nil || *details.Confirmation.Kind != "confirmStopped" {
+			return OperationResult{}, ErrInvalidCommand
+		}
+		if err := insertPendingAction(ctx, tx, testID, *details.Confirmation); err != nil {
+			return OperationResult{}, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		s.noteWriteError(ctx, err, false)
 		return OperationResult{}, err
 	}
 	commandStatus := contract.CommandStatus{CommandId: commandID, Status: contract.CommandStatusStatus(status), TestId: &testID, Reason: reason}
-	return OperationResult{Command: &commandStatus, Applied: true, Saved: &SavedState{Record: record, Revision: revision + 1}}, nil
+	return OperationResult{Command: &commandStatus, Applied: true, Saved: &SavedState{Record: record, Revision: revision + 1, PendingAction: details.Confirmation}}, nil
 }
 
 func finalizeAcceptedCommands(ctx context.Context, tx *sql.Tx, testID uuid.UUID, revision *int64, stopping bool) error {

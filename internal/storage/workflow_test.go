@@ -221,7 +221,7 @@ func TestDemoRecordTransitionsAndMeasurementsSurviveReopen(t *testing.T) {
 	defer func() { _ = store.Close() }()
 	assertSavedOperation(t, store, completed)
 	record, err := store.Test(ctx, testID)
-	if err != nil || record.Stage != "finished" || record.Outcome != "completed" || record.DataQuality != "complete" {
+	if err != nil || record.Stage != "finished" || record.Outcome != "completed" || record.DataQuality != "incomplete" {
 		t.Fatalf("reopened record: %+v %v", record, err)
 	}
 	samples, err := store.Measurements(ctx, testID, 0, 100)

@@ -597,7 +597,11 @@ components:
           type: integer
           minimum: 0
           maximum: 100
-          description: Допустимое число повторов стабилизации после закрытия.
+          description: Отдельный лимит повторов для каждой стабилизации.
+        lowerPressureLimitPa: { type: number, format: double, minimum: 0 }
+        upperPressureLimitPa: { type: number, format: double, exclusiveMinimum: 0 }
+        lowerPressureHoldSeconds: { type: integer, minimum: 0, maximum: 300 }
+        upperPressureHoldSeconds: { type: integer, minimum: 0, maximum: 300 }
         direction: { type: string, enum: [pressure] }
         actuator: { type: boolean, const: false, x-go-type: bool }
     CreateTestLookupInput:
@@ -633,12 +637,20 @@ components:
             preOpenStabilizationSeconds: { type: number, format: double }
             postCloseStabilizationSeconds: { type: number, format: double }
             postCloseStabilizationRetries: { type: integer }
+            lowerPressureLimitPa: { type: number, format: double }
+            upperPressureLimitPa: { type: number, format: double }
+            lowerPressureHoldSeconds: { type: integer }
+            upperPressureHoldSeconds: { type: integer }
             direction: { type: string }
             actuator: { type: boolean }
     CreateTestCommand:
       type: object
       additionalProperties: false
       required: [commandId, expectedRevision, parameters]
+      allOf:
+        - properties:
+            parameters:
+              required: [lowerPressureLimitPa, upperPressureLimitPa, lowerPressureHoldSeconds, upperPressureHoldSeconds]
       properties:
         commandId: { type: string, format: uuid }
         expectedRevision: { type: integer, format: int64, minimum: 0 }
@@ -830,6 +842,10 @@ components:
         actionId: { type: string, format: uuid }
         testId: { type: string, format: uuid }
         instruction: { type: string }
+        kind: { type: string, enum: [confirmPreparation, confirmValveOpen, confirmValveClosed, confirmStopped] }
+    RunPhase:
+      type: string
+      enum: [awaitingPreparation, searchingPressure, stabilizingBeforeOpening, awaitingValveOpening, awaitingValveClosing, stabilizingAfterClosing, measuring]
     TestRecordOutcome:
       type: string
       enum: [pending, completed, interrupted, unknown]
@@ -930,6 +946,14 @@ components:
           oneOf:
             - $ref: "#/components/schemas/TestRecord"
             - type: "null"
+        runPhase: { $ref: "#/components/schemas/RunPhase" }
+        phaseTiming: { $ref: "#/components/schemas/MeasurementTiming" }
+        activeDifferential: { type: string, enum: [dd2, dd3] }
+        currentReadings:
+          description: Последний опрос каналов до основного измерения. Нумерация локальна для этой проекции, показания не входят в архив.
+          type: array
+          maxItems: 3
+          items: { $ref: "#/components/schemas/Measurement" }
         pendingAction:
           oneOf:
             - $ref: "#/components/schemas/PendingAction"

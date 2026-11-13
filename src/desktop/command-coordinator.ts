@@ -43,7 +43,7 @@ function stopPendingMessage(record: Snapshot['activeTest']): string {
 
 function stopOutcomeMessage(status: CommandStatus, record: Snapshot['activeTest']): string {
   return status.status === 'completed'
-    ? 'Остановка подтверждена ядром.'
+    ? ''
     : status.status === 'rejected' || status.status === 'failed'
       ? `Остановка не выполнена или отклонена${status.reason ? `: ${status.reason}` : '.'} Безопасное давление не подтверждено.`
       : stopPendingMessage(record);
@@ -512,7 +512,7 @@ export function createCommandCoordinator({
         if (terminalStatus(stopStatus))
           setCommandMessage(item.id, '', stopNoticeKey(item.id, item.testId, item.originalJSON));
         if (lastStopId === stopKey) {
-          if (stopStatus.status === 'completed') setStopMessage('Остановка подтверждена ядром.');
+          if (stopStatus.status === 'completed') setStopMessage('');
           else if (stopStatus.status === 'failed' || stopStatus.status === 'rejected')
             setStopMessage(
               'Остановка не выполнена или отклонена. Безопасное давление не подтверждено.',
@@ -558,9 +558,7 @@ export function createCommandCoordinator({
             true,
           );
         } else {
-          if (merged.reason === 'canceled_by_stop')
-            showMessage('Запуск отменён при остановке испытания до подтверждения оператора.');
-          else
+          if (merged.reason !== 'canceled_by_stop')
             showCommandFailure({
               id: item.id,
               kind: item.kind,
@@ -605,7 +603,7 @@ export function createCommandCoordinator({
         expected === record.testId &&
         (item.kind === 'create' || record.stage !== 'preparing') &&
         (item.kind !== 'stop' || record.stage === 'finished') &&
-        (item.kind !== 'confirm' || !snapshot?.pendingAction)
+        (item.kind !== 'confirm' || snapshot?.pendingAction?.actionId !== item.actionId)
       ) {
         if (item.kind === 'create') {
           createdVersion += 1;
@@ -790,12 +788,13 @@ export function createCommandCoordinator({
       if (memory.volatile) memory.volatile = pending;
       setPending(pending);
       if (merged.status === 'rejected' || merged.status === 'failed') {
-        showCommandFailure({
-          id: item.id,
-          kind,
-          testId,
-          text: 'Команда отклонена или не выполнена.',
-        });
+        if (merged.reason !== 'canceled_by_stop')
+          showCommandFailure({
+            id: item.id,
+            kind,
+            testId,
+            text: 'Команда отклонена или не выполнена.',
+          });
         forget(item);
       } else
         setCommandMessage(
@@ -1025,6 +1024,10 @@ export function createCommandCoordinator({
       | 'preOpenStabilizationSeconds'
       | 'postCloseStabilizationSeconds'
       | 'postCloseStabilizationRetries'
+      | 'lowerPressureLimitPa'
+      | 'lowerPressureHoldSeconds'
+      | 'upperPressureLimitPa'
+      | 'upperPressureHoldSeconds'
     > & { postCloseStabilizationRetries: number },
   ) {
     if (!active) return Promise.resolve();
@@ -1043,6 +1046,18 @@ export function createCommandCoordinator({
           preOpenStabilizationSeconds: parameters.preOpenStabilizationSeconds,
           postCloseStabilizationSeconds: parameters.postCloseStabilizationSeconds,
           postCloseStabilizationRetries: parameters.postCloseStabilizationRetries,
+          ...(parameters.lowerPressureLimitPa === undefined
+            ? {}
+            : { lowerPressureLimitPa: parameters.lowerPressureLimitPa }),
+          ...(parameters.lowerPressureHoldSeconds === undefined
+            ? {}
+            : { lowerPressureHoldSeconds: parameters.lowerPressureHoldSeconds }),
+          ...(parameters.upperPressureLimitPa === undefined
+            ? {}
+            : { upperPressureLimitPa: parameters.upperPressureLimitPa }),
+          ...(parameters.upperPressureHoldSeconds === undefined
+            ? {}
+            : { upperPressureHoldSeconds: parameters.upperPressureHoldSeconds }),
           direction: TestParametersDirection.TestParametersDirectionPressure,
           actuator: false,
         },

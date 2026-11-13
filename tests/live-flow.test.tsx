@@ -110,6 +110,16 @@ const testId = '33333333-3333-4333-8333-333333333333';
 const actionId = '44444444-4444-4444-8444-444444444444';
 const stopId = '55555555-5555-4555-8555-555555555555';
 
+async function fillPressureLimits(user: ReturnType<typeof userEvent.setup>) {
+  const pmax = Number(
+    (screen.getByLabelText(/производителя, Па/) as HTMLInputElement).value.replace(',', '.'),
+  );
+  await user.type(screen.getByLabelText('Нижний аварийный предел, Па'), '0');
+  await user.type(screen.getByLabelText('Выдержка ниже нижнего предела, с'), '0');
+  await user.type(screen.getByLabelText('Верхний аварийный предел, Па'), String(pmax + 1));
+  await user.type(screen.getByLabelText('Выдержка выше верхнего предела, с'), '0');
+}
+
 function pendingList(): HTMLElement {
   const list = screen
     .getByRole('region', { name: 'Сообщения команд' })
@@ -198,7 +208,7 @@ it('keeps the active series and completed result reachable without leaving the r
     measurementTiming: null,
     measurements: [
       {
-        channel: MeasurementChannel.Dd1,
+        channel: MeasurementChannel.MeasurementChannelDd1,
         measuredAt: '2026-10-30T00:00:01Z',
         observedAt: '2026-10-30T00:00:01Z',
         quality: MeasurementQuality.MeasurementQualityValid,
@@ -282,7 +292,7 @@ it('blocks navigation during the run and retains the chart through bridge interr
     measurementTiming: null,
     measurements: [
       {
-        channel: MeasurementChannel.Dd1,
+        channel: MeasurementChannel.MeasurementChannelDd1,
         measuredAt: `2026-10-30T00:00:0${index}Z`,
         observedAt: `2026-10-30T00:00:0${index}Z`,
         quality: MeasurementQuality.MeasurementQualityValid,
@@ -452,9 +462,10 @@ it('copies the saved stabilization retry count into a new draft', async () => {
   const user = userEvent.setup();
   await user.click(await screen.findByRole('button', { name: /Открыть.*К-1/ }));
   await user.click(await screen.findByRole('button', { name: 'Новое по этим параметрам' }));
-  expect(
-    await screen.findByLabelText('Допустимое число повторов стабилизации после закрытия'),
-  ).toHaveProperty('value', '0');
+  expect(await screen.findByLabelText('Число повторов для каждой стабилизации')).toHaveProperty(
+    'value',
+    '0',
+  );
 });
 
 it('does not attribute an unbound legacy command to the confirmed database', async () => {
@@ -835,7 +846,7 @@ it('tracks Stop separately from a restored ordinary command with the same identi
   const mounted = render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   const stop = await screen.findByRole('button', { name: 'Остановить испытание' });
   await userEvent.setup().click(stop);
-  await screen.findByText('Остановка подтверждена ядром.');
+  await screen.findByRole('button', { name: 'Повторить запрос остановки' });
   expect(api.stop).toHaveBeenCalledOnce();
   expect(api.stop).toHaveBeenCalledWith(testId, { commandId: stopId });
   const rows = screen.getAllByText(/Команда:/);
@@ -1700,7 +1711,7 @@ it.each([
           measurementTiming: null,
           measurements: [
             {
-              channel: MeasurementChannel.Dd1,
+              channel: MeasurementChannel.MeasurementChannelDd1,
               measuredAt: '2026-10-30T00:00:01Z',
               observedAt: '2026-10-30T00:00:01Z',
               quality: MeasurementQuality.MeasurementQualityValid,
@@ -1731,13 +1742,9 @@ it.each([
     await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
     await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
     await user.type(screen.getByLabelText(/производителя, Па/), '10000');
-    await user.clear(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-    );
-    await user.type(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-      '1',
-    );
+    await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+    await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
+    await fillPressureLimits(user);
     await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
     expect(api.create).toHaveBeenCalledTimes(1);
     expect(api.create).toHaveBeenCalledWith(
@@ -1753,6 +1760,7 @@ it.each([
       }),
     );
     await screen.findByRole('heading', { name: 'Автоматические проверки' }, { timeout: 8000 });
+    expect(screen.queryByRole('complementary', { name: 'Активное испытание' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Вернуться к испытанию' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Остановить испытание' })).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'К параметрам' }));
@@ -2104,7 +2112,7 @@ it('keeps a storage conflict visible after the direct Stop succeeds', async () =
     finish({ commandId: stopId, testId, status: 'completed' });
     await response;
   });
-  expect(await screen.findByText('Остановка подтверждена ядром.')).toBeTruthy();
+  expect(screen.queryByText('Остановка подтверждена ядром.')).toBeNull();
   expect(screen.getByText(/Сохранённая запись принадлежит другой команде/)).toBeTruthy();
 });
 
@@ -2154,7 +2162,7 @@ it('retains a confirmed Stop in volatile memory after remount', async () => {
     await userEvent
       .setup()
       .click(await screen.findByRole('button', { name: 'Остановить испытание' }));
-    await screen.findByText('Остановка подтверждена ядром.');
+    await screen.findByRole('button', { name: 'Повторить запрос остановки' });
     mounted.unmount();
     const restored = render(
       <LiveApp
@@ -2167,7 +2175,7 @@ it('retains a confirmed Stop in volatile memory after remount', async () => {
     expect(await screen.findByText(/Команда: выполнена/)).toBeTruthy();
     api.stop.mockRejectedValue(new Error('response lost'));
     await userEvent.setup().click(screen.getByRole('button', { name: 'Остановить испытание' }));
-    expect(await screen.findByText('Остановка подтверждена ядром.')).toBeTruthy();
+    expect(screen.queryByText('Остановка подтверждена ядром.')).toBeNull();
     expect(api.stop).toHaveBeenCalledTimes(2);
     setItem.mockRestore();
     await userEvent.setup().click(screen.getByRole('button', { name: 'Повторить чтение команд' }));
@@ -2203,7 +2211,7 @@ it('retains a confirmed Stop in volatile memory after remount', async () => {
       await userEvent
         .setup()
         .click(await screen.findByRole('button', { name: 'Остановить испытание' }));
-      expect(await screen.findByText('Остановка подтверждена ядром.')).toBeTruthy();
+      expect(screen.queryByText('Остановка подтверждена ядром.')).toBeNull();
       expect(screen.getByText(/Команда: выполнена/)).toBeTruthy();
       expect(api.stop).toHaveBeenCalledTimes(3);
     } finally {
@@ -2318,7 +2326,7 @@ it('does not give an old Stop without contents the result of a new attempt', asy
   const old = screen.getByText(/Исходное содержимое команды не сохранилось/);
   expect(old.textContent).toContain('исход неизвестен');
   expect(old.textContent).not.toContain('Команда: выполнена');
-  expect(screen.getByText('Остановка подтверждена ядром.')).toBeTruthy();
+  expect(screen.queryByText('Остановка подтверждена ядром.')).toBeNull();
 });
 
 it('does not attribute another Stop with the same ID but different JSON to the current request', async () => {
@@ -2490,13 +2498,9 @@ it.each([
     await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
     await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
     await user.type(screen.getByLabelText(/производителя, Па/), '10000');
-    await user.clear(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-    );
-    await user.type(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-      '1',
-    );
+    await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+    await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
+    await fillPressureLimits(user);
     await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
     if (retainBefore) {
       await screen.findByText(/Исход команды пока неизвестен/);
@@ -2607,11 +2611,9 @@ it('does not send another creation after an unknown response and remount', async
   await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
   await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
   await user.type(screen.getByLabelText(/производителя, Па/), '10000');
-  await user.clear(screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'));
-  await user.type(
-    screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-    '1',
-  );
+  await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+  await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
+  await fillPressureLimits(user);
   await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
   await screen.findByText(/Исход команды пока неизвестен/);
   mounted.unmount();
@@ -2683,13 +2685,9 @@ it.each(['wails', 'browser'])(
     await user.type(valve, 'К-1');
     await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
     await user.type(screen.getByLabelText(/производителя, Па/), '10000');
-    await user.clear(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-    );
-    await user.type(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-      '1',
-    );
+    await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+    await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
+    await fillPressureLimits(user);
     await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
     await screen.findByText(/Команда: исход неизвестен/);
     await user.click(screen.getByRole('button', { name: 'Проверить состояние' }));
@@ -2775,13 +2773,9 @@ it.each(['lost', 'malformed'] as const)(
     await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
     await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
     await user.type(screen.getByLabelText(/производителя, Па/), '10000');
-    await user.clear(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-    );
-    await user.type(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-      '1',
-    );
+    await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+    await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
+    await fillPressureLimits(user);
     await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
     await screen.findByText(/Исход команды пока неизвестен/);
     mounted.unmount();
@@ -2934,11 +2928,9 @@ it('does not replace a confirmed command with a late unknown exact lookup', asyn
   await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
   await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
   await user.type(screen.getByLabelText(/производителя, Па/), '10000');
-  await user.clear(screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'));
-  await user.type(
-    screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-    '1',
-  );
+  await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+  await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
+  await fillPressureLimits(user);
   await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
   await waitFor(() => expect(api.exact).toHaveBeenCalled());
   const sent = api.create.mock.calls[0]?.[0];
@@ -3016,13 +3008,9 @@ it.each(['failure', 'invalid'])(
     await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
     await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
     await user.type(screen.getByLabelText(/производителя, Па/), '10000');
-    await user.clear(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-    );
-    await user.type(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-      '1',
-    );
+    await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+    await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
+    await fillPressureLimits(user);
     await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
     await screen.findByText(/Команда: принята; завершение команды не подтверждено/);
     await act(async () => {
@@ -3078,11 +3066,9 @@ it('accepts a valid direct receipt without testId', async () => {
   await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
   await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
   await user.type(screen.getByLabelText(/производителя, Па/), '10000');
-  await user.clear(screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'));
-  await user.type(
-    screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-    '1',
-  );
+  await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+  await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
+  await fillPressureLimits(user);
   await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
   await screen.findByText(/Команда: принята; завершение команды не подтверждено/);
   expect(screen.queryByText(/Исход команды пока неизвестен/)).toBeNull();
@@ -3143,11 +3129,9 @@ it('links a completed Create without testId to its exact result and snapshot', a
   await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
   await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
   await user.type(screen.getByLabelText(/производителя, Па/), '10000');
-  await user.clear(screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'));
-  await user.type(
-    screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-    '1',
-  );
+  await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+  await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
+  await fillPressureLimits(user);
   await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
   await waitFor(() => expect(api.exact).toHaveBeenCalled());
   await screen.findByText(/Команда: выполнена/);
@@ -3214,7 +3198,7 @@ it('checks an exact ordinary attempt even when its ID is reserved for Stop', asy
     attempt.originalJSON,
   );
   await userEvent.setup().click(screen.getByRole('button', { name: 'Остановить испытание' }));
-  await screen.findByText('Остановка подтверждена ядром.');
+  await screen.findByRole('button', { name: 'Повторить запрос остановки' });
   expect(api.stop).toHaveBeenCalledOnce();
 });
 
@@ -3261,7 +3245,7 @@ it('can confirm Stop while an exact lookup with the same ID is waiting', async (
   const view = render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   await waitFor(() => expect(api.exact).toHaveBeenCalled());
   await userEvent.setup().click(screen.getByRole('button', { name: 'Остановить испытание' }));
-  await screen.findByText('Остановка подтверждена ядром.');
+  await screen.findByRole('button', { name: 'Повторить запрос остановки' });
   expect(api.exact).toHaveBeenCalledWith(
     database,
     'stop',
@@ -3440,7 +3424,7 @@ it('shows the restored terminal Stop status when the operator requests it again'
   await userEvent
     .setup()
     .click(await screen.findByRole('button', { name: 'Остановить испытание' }));
-  expect(screen.getByText('Остановка подтверждена ядром.')).toBeTruthy();
+  expect(screen.queryByText('Остановка подтверждена ядром.')).toBeNull();
   view.unmount();
   await act(async () => {
     finish({ commandId: stopId, testId, status: 'completed' });
@@ -3542,7 +3526,7 @@ it('does not let a late rejected Stop replace a confirmed finished outcome', asy
   render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   const user = userEvent.setup();
   await user.click(await screen.findByRole('button', { name: 'Остановить испытание' }));
-  await screen.findByText('Остановка подтверждена ядром.');
+  await screen.findByRole('button', { name: 'Повторить запрос остановки' });
   await user.click(screen.getByRole('button', { name: 'Повторить запрос остановки' }));
   snapshot = {
     ...snapshot,
@@ -3563,7 +3547,7 @@ it('does not let a late rejected Stop replace a confirmed finished outcome', asy
     await second.catch(() => {});
   });
   expect(screen.queryByText(/Запрос остановки отклонён/)).toBeNull();
-  expect(screen.getByText('Остановка подтверждена ядром.')).toBeTruthy();
+  expect(screen.queryByText('Остановка подтверждена ядром.')).toBeNull();
 }, 12000);
 
 it('does not discard a Stop observation while an earlier request is still in flight', async () => {
@@ -3870,11 +3854,9 @@ it('does not report an unpersisted Stop when an ordinary browser receipt cannot 
   await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
   await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
   await user.type(screen.getByLabelText(/производителя, Па/), '10000');
-  await user.clear(screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'));
-  await user.type(
-    screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-    '1',
-  );
+  await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+  await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
+  await fillPressureLimits(user);
   await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
   await screen.findByText(/Не удалось обновить список команд/);
   expect(screen.queryByText(/Исход остановки отслеживается только в памяти/)).toBeNull();
@@ -3945,13 +3927,9 @@ it.each(['rejected response', 'not sent response'] as const)(
     await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
     await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
     await user.type(screen.getByLabelText(/производителя, Па/), '10000');
-    await user.clear(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-    );
-    await user.type(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-      '1',
-    );
+    await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+    await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
+    await fillPressureLimits(user);
     await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
     await screen.findByText(/Исход команды пока неизвестен/);
     allowRead = true;
@@ -4320,13 +4298,9 @@ it.each(['notSent', 'rejected', 'failed', 'lookupRejected', 'storageUnavailable'
             throw new Error('storage unavailable');
           })
         : null;
-    await user.clear(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-    );
-    await user.type(
-      screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-      '1',
-    );
+    await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+    await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
+    await fillPressureLimits(user);
     await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
     const oldNotice =
       firstOutcome === 'storageUnavailable'
@@ -4418,11 +4392,9 @@ it('keeps an earlier test command failure when creating an unrelated test', asyn
   await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
   await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
   await user.type(screen.getByLabelText(/производителя, Па/), '10000');
-  await user.clear(screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'));
-  await user.type(
-    screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-    '1',
-  );
+  await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+  await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
+  await fillPressureLimits(user);
   await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
   const newNotice = await screen.findByText(
     'Не удалось подтвердить готовность.',
@@ -4574,11 +4546,9 @@ it('keeps a confirmed not-sent result when the service wrapper changes', async (
   await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
   await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
   await user.type(screen.getByLabelText(/производителя, Па/), '10000');
-  await user.clear(screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'));
-  await user.type(
-    screen.getByLabelText('Допустимое число повторов стабилизации после закрытия'),
-    '1',
-  );
+  await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+  await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
+  await fillPressureLimits(user);
   await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
   await screen.findByText(/Команда: исход неизвестен/);
   await waitFor(() => expect(api.command).toHaveBeenCalled());
@@ -4715,13 +4685,13 @@ it('does not report an unknown stop after its confirmed response', async () => {
     });
     await stop;
   });
-  await screen.findByText('Остановка подтверждена ядром.');
+  await screen.findByRole('button', { name: 'Повторить запрос остановки' });
   await act(async () => {
     rejectLookup(new Error('late failure'));
     await lookup.catch(() => {});
   });
   expect(screen.queryByText(/Исход команды пока неизвестен/)).toBeNull();
-  expect(screen.getByText('Остановка подтверждена ядром.')).toBeTruthy();
+  expect(screen.queryByText('Остановка подтверждена ядром.')).toBeNull();
   expect(screen.getByText(/Команда: выполнена/)).toBeTruthy();
   expect(api.stop).toHaveBeenCalledOnce();
 });
@@ -4879,7 +4849,7 @@ it('clears an unknown stop when the separate stop check confirms it', async () =
     });
     await stopCheck;
   });
-  expect(await screen.findByText('Остановка подтверждена ядром.')).toBeTruthy();
+  expect(screen.queryByText('Остановка подтверждена ядром.')).toBeNull();
   expect(screen.queryByText(/Исход команды пока неизвестен/)).toBeNull();
   expect(pendingRow(stopId).textContent).toContain('Команда: выполнена');
   view.unmount();
@@ -4929,9 +4899,8 @@ it('explains when a pending start was canceled by stop', async () => {
     reason: 'canceled_by_stop',
   });
   render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
-  expect(
-    await screen.findByText('Запуск отменён при остановке испытания до подтверждения оператора.'),
-  ).toBeTruthy();
+  await waitFor(() => expect(api.command).toHaveBeenCalledWith(startId));
+  expect(screen.queryByText(/Запуск отменён при остановке испытания/)).toBeNull();
   expect(api.start).not.toHaveBeenCalled();
 });
 
@@ -5206,7 +5175,7 @@ it('continues checking Stop after the interrupted result and keeps saving separa
       saveStatus: TestRecordSaveStatus.TestRecordSaveStatusFailed,
     },
   };
-  await screen.findByText('Остановка подтверждена ядром.', {}, { timeout: 8000 });
+  await screen.findByRole('heading', { name: 'Результат испытания' }, { timeout: 8000 });
   expect(screen.getByRole('heading', { name: 'Результат испытания' })).toBeTruthy();
   expect(screen.getByText(/ошибка сохранения/i)).toBeTruthy();
 }, 12000);

@@ -80,7 +80,7 @@ func TestNativeClientRunsAndReopensDemo(t *testing.T) {
 	if err != nil || recovered.LeaseId != lease.LeaseId {
 		t.Fatalf("recover lease: %+v %v", recovered, err)
 	}
-	command := contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: 0, Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 13, PostCloseStabilizationSeconds: 17, PostCloseStabilizationRetries: 7, Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 60, Direction: "pressure"}}
+	command := contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: 0, Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 13, PostCloseStabilizationSeconds: 17, PostCloseStabilizationRetries: 7, Valve: "V", AreaM2: 1, PmaxPa: 1000, LowerPressureLimitPa: new(900.0), UpperPressureLimitPa: new(1080.0), LowerPressureHoldSeconds: new(2), UpperPressureHoldSeconds: new(2), MeasurementSeconds: 60, Direction: "pressure"}}
 	created, err := client.CreateTest(ctx, lease.LeaseId, command)
 	if err != nil || created.Status != "completed" || created.TestId == nil {
 		t.Fatalf("create: %+v %v", created, err)
@@ -143,7 +143,21 @@ func TestNativeClientRunsAndReopensDemo(t *testing.T) {
 	if !errors.As(err, &conflict) || conflict.Status != http.StatusConflict || conflict.Code != "command_conflict" {
 		t.Fatalf("confirm path conflict: %v", err)
 	}
-	deadline := time.Now().Add(8 * time.Second)
+	for _, kind := range []contract.PendingActionKind{"confirmValveOpen", "confirmValveClosed"} {
+		waitForCoreAction(t, func() (contract.Snapshot, error) {
+			return client.Snapshot(ctx, lease.LeaseId)
+		}, kind, func(snapshot contract.Snapshot) {
+			status, err := client.ConfirmAction(ctx, lease.LeaseId, id, snapshot.PendingAction.ActionId,
+				contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: snapshot.Revision})
+			if err != nil || status.Status != "completed" {
+				t.Fatalf("confirm %s: %+v %v", kind, status, err)
+			}
+		})
+	}
+	deadline := time.Now().Add(time.Duration(command.Parameters.PostCloseStabilizationSeconds)*time.Second + 5*time.Second)
+	if _, err := client.RenewLease(ctx, lease.LeaseId); err != nil {
+		t.Fatal(err)
+	}
 	for {
 		snapshot, err = client.Snapshot(ctx, lease.LeaseId)
 		if err != nil {
@@ -153,7 +167,8 @@ func TestNativeClientRunsAndReopensDemo(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("no simulator measurements")
+			t.Fatalf("no simulator measurements: phase=%v record=%+v pending=%+v",
+				snapshot.RunPhase, snapshot.ActiveTest, snapshot.PendingAction)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -446,5 +461,24 @@ func TestNativeClientRejectsMalformedCommandResponse(t *testing.T) {
 	var failure *RequestError
 	if !errors.As(err, &failure) || !failure.OutcomeUnknown {
 		t.Fatalf("missing required response status: %v", err)
+	}
+}
+
+func waitForCoreAction(t *testing.T, read func() (contract.Snapshot, error), kind contract.PendingActionKind, confirm func(contract.Snapshot)) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		snapshot, err := read()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if action := snapshot.PendingAction; action != nil && action.Kind != nil && *action.Kind == kind {
+			confirm(snapshot)
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("missing %s", kind)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }

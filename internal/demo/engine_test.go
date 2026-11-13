@@ -23,22 +23,41 @@ func newTestEngine(t *testing.T, store Repository, equipment Equipment, runID uu
 	if err != nil {
 		t.Fatal(err)
 	}
+	origin := time.Now()
+	engine.measurementNow = func() time.Time { return origin.Add(time.Since(origin) * 40) }
 	return engine
 }
 
 func advanceMeasurementOnNextSample(engine *Engine) {
-	start := time.Now()
-	var calls atomic.Int64
+	origin := time.Now()
+	var windowStart time.Time
 	engine.measurementNow = func() time.Time {
-		if calls.Add(1) == 1 {
-			return start
+		now := origin.Add(time.Since(origin) * 40)
+		if engine.active != nil && engine.active.manual.phase == measuringManualPressure {
+			if windowStart.IsZero() {
+				windowStart = engine.active.manual.window.start
+			}
+			return windowStart.Add(min(60*time.Second, now.Sub(windowStart)))
 		}
-		return start.Add(60 * time.Second)
+		return now
+	}
+}
+
+func confirmValveActions(t *testing.T, engine *Engine, testID uuid.UUID) {
+	t.Helper()
+	for _, kind := range []contract.PendingActionKind{"confirmValveOpen", "confirmValveClosed"} {
+		state := waitFor(t, engine, func(state State) bool {
+			return state.PendingAction != nil && state.PendingAction.Kind != nil && *state.PendingAction.Kind == kind
+		})
+		if _, err := engine.Confirm(context.Background(), testID, state.PendingAction.ActionId,
+			contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: state.Revision}); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
 func command(seconds float64) contract.CreateTestCommand {
-	return contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "Демо клапан", AreaM2: 0.01, PmaxPa: 1000, MeasurementSeconds: seconds, Direction: "pressure"}}
+	return contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "Демо клапан", AreaM2: 0.01, PmaxPa: 1000, LowerPressureLimitPa: new(900.0), UpperPressureLimitPa: new(1080.0), LowerPressureHoldSeconds: new(2), UpperPressureHoldSeconds: new(2), MeasurementSeconds: seconds, Direction: "pressure"}}
 }
 
 func waitFor(t *testing.T, engine *Engine, predicate func(State) bool) State {
@@ -93,6 +112,7 @@ func TestMeasurementTimingUsesAcceptedSamplesAndEndsWithMeasurement(t *testing.T
 			if _, err := engine.Confirm(ctx, id, pending.PendingAction.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: 2}); err != nil {
 				t.Fatal(err)
 			}
+			confirmValveActions(t, engine, id)
 			observed := waitFor(t, engine, func(s State) bool {
 				return s.MeasurementTiming != nil && (!stop || s.MeasurementTiming.ElapsedSeconds > 0)
 			})
@@ -182,6 +202,7 @@ func TestSimulatorRunPersistsMeasurementsAndReopens(t *testing.T) {
 	if _, err := engine.Confirm(ctx, id, state.PendingAction.ActionId, confirm); err != nil {
 		t.Fatal(err)
 	}
+	confirmValveActions(t, engine, id)
 	rejected := contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: 4, ValveClosed: true, ConnectionConfirmed: true}
 	if _, err := engine.Start(ctx, id, rejected); !errors.Is(err, storage.ErrInvalidState) && !errors.Is(err, storage.ErrRevision) {
 		t.Fatalf("start while running: %v", err)
@@ -189,7 +210,7 @@ func TestSimulatorRunPersistsMeasurementsAndReopens(t *testing.T) {
 	result := waitFor(t, engine, func(state State) bool {
 		return state.Record != nil && state.Record.Stage == "finished" && state.Record.SaveStatus == "saved"
 	})
-	if result.Record.Outcome != "completed" || result.Record.DataQuality != "complete" {
+	if result.Record.Outcome != "completed" || result.Record.DataQuality != "incomplete" {
 		t.Fatalf("result: %+v", result.Record)
 	}
 	if replay, err := engine.Start(ctx, id, start); err != nil || replay.Status != "completed" {
@@ -211,9 +232,13 @@ func TestSimulatorRunPersistsMeasurementsAndReopens(t *testing.T) {
 	if err != nil || len(samples) < 6 {
 		t.Fatalf("measurements: %+v %v", samples, err)
 	}
-	if samples[0].Channel != "dd1" || samples[1].Channel != "dd2" || samples[2].Channel != "dd3" || samples[0].Source != "simulator" || samples[0].Unit != "Pa" || samples[0].Value == nil || samples[3].Value == nil || *samples[0].Value == *samples[3].Value {
+	if samples[0].Channel != "dd1" || samples[1].Channel != "dd2" || samples[2].Channel != "dd3" || samples[0].Source != "simulator" || samples[0].Unit != "Pa" || samples[0].Value == nil || samples[3].Value == nil || *samples[0].Value != 1000 || *samples[3].Value != 1000 {
 		t.Fatalf("simulated channels: %+v", samples)
 	}
+	if _, err := engine.Confirm(ctx, id, result.PendingAction.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: result.Revision}); err != nil {
+		t.Fatal(err)
+	}
+	result = engine.State()
 	next := command(60)
 	next.ExpectedRevision = result.Revision
 	if _, err := engine.Create(ctx, next); err != nil {
@@ -336,6 +361,7 @@ func TestOtherTestRejectionDeadlineDoesNotStopActiveRun(t *testing.T) {
 			if _, err := engine.Confirm(ctx, id, action.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: 2}); err != nil {
 				t.Fatal(err)
 			}
+			confirmValveActions(t, engine, id)
 			initial := waitFor(t, engine, func(state State) bool { return len(state.Measurements) > 0 })
 			deadline := &controlledDeadline{Context: ctx, done: make(chan struct{})}
 			defer deadline.expire()
@@ -396,6 +422,7 @@ func TestOtherTestRejectionFailureStillStopsActiveRun(t *testing.T) {
 			if _, err := engine.Confirm(context.Background(), id, action.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: 2}); err != nil {
 				t.Fatal(err)
 			}
+			confirmValveActions(t, engine, id)
 			waitFor(t, engine, func(state State) bool { return len(state.Measurements) > 0 })
 			ctx := &controlledDeadline{Context: context.Background(), done: make(chan struct{})}
 			defer ctx.expire()
@@ -466,8 +493,8 @@ func (s *canceledResponse) Start(ctx context.Context, id uuid.UUID, cmd contract
 	return status, err
 }
 
-func (s *canceledResponse) Confirm(ctx context.Context, id, actionID uuid.UUID, cmd contract.ConfirmActionCommand) (storage.OperationResult, error) {
-	status, err := s.Store.Confirm(ctx, id, actionID, cmd)
+func (s *canceledResponse) Confirm(ctx context.Context, id, actionID uuid.UUID, cmd contract.ConfirmActionCommand, next ...contract.PendingAction) (storage.OperationResult, error) {
+	status, err := s.Store.Confirm(ctx, id, actionID, cmd, next...)
 	s.cancel()
 	return status, err
 }
@@ -499,6 +526,7 @@ func TestCommittedCommandsContinueAfterClientCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("confirm after cancellation: %v", err)
 	}
+	confirmValveActions(t, engine, id)
 	waitFor(t, engine, func(state State) bool {
 		return state.Record != nil && state.Record.Stage == "finished" && state.Record.SaveStatus == "saved"
 	})
@@ -532,7 +560,7 @@ func TestRefreshPreservesExactCreateIdentityAfterLostResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"lowerPressureLimitPa":0,"upperPressureLimitPa":1080,"lowerPressureHoldSeconds":0,"upperPressureHoldSeconds":0,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	var command contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &command)
 	if err != nil || !input.Valid {
@@ -549,7 +577,7 @@ func TestRefreshPreservesExactCreateIdentityAfterLostResponse(t *testing.T) {
 	}
 	var other contract.CreateTestCommand
 	changed, err := validator.Inspect("CreateTestCommand", []byte(strings.Replace(body, `1.0000000000000001`, `1`, 1)), &other)
-	if err != nil || command != other {
+	if err != nil || !reflect.DeepEqual(command, other) {
 		t.Fatalf("changed input: %v", err)
 	}
 	if _, err := engine.CreateExact(context.Background(), other, changed.Identity); !errors.Is(err, storage.ErrCommandConflict) {
@@ -680,7 +708,7 @@ func TestFailedStopIsAuditedAndDoesNotReleaseTest(t *testing.T) {
 func (*countedSimulator) Ready() bool           { return true }
 func (s *countedSimulator) Start(float64) error { s.starts.Add(1); return nil }
 func (*countedSimulator) Observe(time.Duration) (float64, float64, float64, error) {
-	return 1, 2, 3, nil
+	return 1000, 2, 3, nil
 }
 func (s *countedSimulator) Stop() error   { s.stops.Add(1); return nil }
 func (s *countedSimulator) Finish() error { s.finishes.Add(1); return nil }
@@ -755,7 +783,7 @@ func TestNaturalCompletionStopsWhenMeasurementWriteStalls(t *testing.T) {
 	}()
 	simulator := &countedSimulator{}
 	engine := newTestEngine(t, blocked, simulator, uuid.New())
-	created, err := engine.Create(ctx, command(60))
+	created, err := engine.Create(ctx, command(300))
 	if err != nil || created.TestId == nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -770,6 +798,7 @@ func TestNaturalCompletionStopsWhenMeasurementWriteStalls(t *testing.T) {
 	if _, err := engine.Confirm(ctx, id, action.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: 2}); err != nil {
 		t.Fatal(err)
 	}
+	confirmValveActions(t, engine, id)
 	select {
 	case <-blocked.entered:
 	case <-time.After(5 * time.Second):
@@ -855,6 +884,7 @@ func TestStopBypassesBlockedMeasurementStorage(t *testing.T) {
 	if _, err := engine.Confirm(ctx, id, state.PendingAction.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: 2}); err != nil {
 		t.Fatal(err)
 	}
+	confirmValveActions(t, engine, id)
 	<-blocked.entered
 	waitFor(t, engine, func(state State) bool { return len(state.Measurements) > 0 && state.Measurements[0].Sequence >= 4 })
 	if _, err := engine.Stop(ctx, id, state.Record.StopCommandId); err != nil {
@@ -903,11 +933,11 @@ type delayedCompleteCommit struct {
 	calls atomic.Int32
 }
 
-func (s *delayedCompleteCommit) Complete(ctx context.Context, id uuid.UUID, elapsed time.Duration) (storage.OperationResult, error) {
+func (s *delayedCompleteCommit) Complete(ctx context.Context, id uuid.UUID, elapsed time.Duration, stopped ...contract.PendingAction) (storage.OperationResult, error) {
 	if s.calls.Add(1) == 1 {
 		return storage.OperationResult{}, context.DeadlineExceeded
 	}
-	return s.Store.Complete(ctx, id, elapsed)
+	return s.Store.Complete(ctx, id, elapsed, stopped...)
 }
 
 func TestRefreshPersistsCompletedRunAfterWriteDeadline(t *testing.T) {
@@ -937,6 +967,7 @@ func TestRefreshPersistsCompletedRunAfterWriteDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	confirmValveActions(t, engine, id)
 	waitFor(t, engine, func(state State) bool { return state.Record != nil && state.Record.SaveStatus == "unknown" })
 	if replay, err := engine.Create(ctx, create); err != nil || replay.TestId == nil || *replay.TestId != id {
 		t.Fatalf("create replay: %+v %v", replay, err)
@@ -1031,6 +1062,7 @@ func TestInvalidMeasurementRecordsSystemStop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	confirmValveActions(t, engine, id)
 	result := waitFor(t, engine, func(state State) bool {
 		return state.Record != nil && state.Record.Stage == "finished" && state.Record.SaveStatus == "failed"
 	})
@@ -1050,6 +1082,12 @@ func TestInvalidMeasurementRecordsSystemStop(t *testing.T) {
 	late := contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: result.Revision, ValveClosed: true, ConnectionConfirmed: true}
 	if _, err := engine.Start(ctx, id, late); !errors.Is(err, storage.ErrInvalidState) {
 		t.Fatalf("late start: %v", err)
+	}
+	if result.PendingAction != nil {
+		if _, err := engine.Confirm(ctx, id, result.PendingAction.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: result.Revision}); err != nil {
+			t.Fatal(err)
+		}
+		result = engine.State()
 	}
 	next := command(60)
 	next.ExpectedRevision = result.Revision
@@ -1095,6 +1133,7 @@ func TestStorageFailureStopsSimulatorWithoutClaimingSaved(t *testing.T) {
 	if _, err := engine.Confirm(ctx, id, state.PendingAction.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: 2}); err != nil {
 		t.Fatal(err)
 	}
+	confirmValveActions(t, engine, id)
 	result := waitFor(t, engine, func(state State) bool { return state.Record != nil && state.Record.SaveStatus == "failed" })
 	if result.Stop == nil || result.Stop.Status != "completed" || result.Record.Outcome != "interrupted" || result.Record.DataQuality != "incomplete" || simulator.stops.Load() != 1 {
 		t.Fatalf("failure state: %+v", result)
@@ -1170,7 +1209,7 @@ func TestRecoveredConfirmationCannotStartNewTest(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldRecord, err := store.Test(ctx, oldID)
-	if err != nil || oldRecord.Stage != "finished" || oldRecord.Outcome != "unknown" || oldRecord.DataQuality != "incomplete" || oldRecord.Parameters != oldCommand.Parameters {
+	if err != nil || oldRecord.Stage != "finished" || oldRecord.Outcome != "unknown" || oldRecord.DataQuality != "incomplete" || !reflect.DeepEqual(oldRecord.Parameters, oldCommand.Parameters) {
 		t.Fatalf("recovered history: %+v %v", oldRecord, err)
 	}
 	oldAudit, err := store.Audit(ctx, oldID, 0, 100)
@@ -1267,8 +1306,8 @@ type stalledConfirm struct {
 	release chan struct{}
 }
 
-func (s *stalledConfirm) Confirm(ctx context.Context, testID, actionID uuid.UUID, cmd contract.ConfirmActionCommand) (storage.OperationResult, error) {
-	result, err := s.Store.Confirm(ctx, testID, actionID, cmd)
+func (s *stalledConfirm) Confirm(ctx context.Context, testID, actionID uuid.UUID, cmd contract.ConfirmActionCommand, next ...contract.PendingAction) (storage.OperationResult, error) {
+	result, err := s.Store.Confirm(ctx, testID, actionID, cmd, next...)
 	close(s.entered)
 	<-s.release
 	return result, err
@@ -1347,7 +1386,7 @@ func TestRevocationStopsCreateCommittedBeforeResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"lowerPressureLimitPa":0,"upperPressureLimitPa":1080,"lowerPressureHoldSeconds":0,"upperPressureHoldSeconds":0,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	var cmd contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &cmd)
 	if err != nil || !input.Valid {
@@ -1410,7 +1449,7 @@ func TestRevocationResolvesCreateAfterUnknownResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"lowerPressureLimitPa":0,"upperPressureLimitPa":1080,"lowerPressureHoldSeconds":0,"upperPressureHoldSeconds":0,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	var cmd contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &cmd)
 	if err != nil || !input.Valid {
@@ -1499,6 +1538,7 @@ func TestShutdownStopsSimulatorWithoutWaitingForBlockedWriter(t *testing.T) {
 	if _, err = engine.Confirm(context.Background(), id, action.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: 2}); err != nil {
 		t.Fatal(err)
 	}
+	confirmValveActions(t, engine, id)
 	select {
 	case <-blocked.entered:
 	case <-time.After(5 * time.Second):
@@ -1545,10 +1585,10 @@ type heldComplete struct {
 	release chan struct{}
 }
 
-func (s *heldComplete) Complete(ctx context.Context, id uuid.UUID, elapsed time.Duration) (storage.OperationResult, error) {
+func (s *heldComplete) Complete(ctx context.Context, id uuid.UUID, elapsed time.Duration, stopped ...contract.PendingAction) (storage.OperationResult, error) {
 	close(s.entered)
 	<-s.release
-	return s.Store.Complete(ctx, id, elapsed)
+	return s.Store.Complete(ctx, id, elapsed, stopped...)
 }
 
 func TestShutdownWaitsForNaturalCompletion(t *testing.T) {
@@ -1575,6 +1615,7 @@ func TestShutdownWaitsForNaturalCompletion(t *testing.T) {
 	if _, err := engine.Confirm(context.Background(), id, action.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: 2}); err != nil {
 		t.Fatal(err)
 	}
+	confirmValveActions(t, engine, id)
 	select {
 	case <-held.entered:
 	case <-time.After(5 * time.Second):
@@ -1624,7 +1665,7 @@ func TestShutdownRetriesLookupUntilRecoveryOrDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"lowerPressureLimitPa":0,"upperPressureLimitPa":1080,"lowerPressureHoldSeconds":0,"upperPressureHoldSeconds":0,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	var cmd contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &cmd)
 	if err != nil || !input.Valid {
@@ -1665,7 +1706,7 @@ func TestRevocationResolverStopsAtShutdown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"lowerPressureLimitPa":0,"upperPressureLimitPa":1080,"lowerPressureHoldSeconds":0,"upperPressureHoldSeconds":0,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	var cmd contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &cmd)
 	if err != nil || !input.Valid {
@@ -1710,7 +1751,7 @@ func TestRevocationResolvesAfterTransientLookupFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"lowerPressureLimitPa":0,"upperPressureLimitPa":1080,"lowerPressureHoldSeconds":0,"upperPressureHoldSeconds":0,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	var cmd contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &cmd)
 	if err != nil || !input.Valid {
@@ -1760,7 +1801,7 @@ func TestShutdownDeadlineIncludesUnresponsiveCreateLookup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"lowerPressureLimitPa":0,"upperPressureLimitPa":1080,"lowerPressureHoldSeconds":0,"upperPressureHoldSeconds":0,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	var cmd contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &cmd)
 	if err != nil || !input.Valid {
@@ -1837,7 +1878,7 @@ func TestShutdownCancelsRevocationLookup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"lowerPressureLimitPa":0,"upperPressureLimitPa":1080,"lowerPressureHoldSeconds":0,"upperPressureHoldSeconds":0,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	var cmd contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &cmd)
 	if err != nil || !input.Valid {
@@ -1891,7 +1932,7 @@ func TestShutdownCancelsPostCreateLookup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"93c5921e-e171-4cd0-a5d1-668d337405c8","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"lowerPressureLimitPa":0,"upperPressureLimitPa":1080,"lowerPressureHoldSeconds":0,"upperPressureHoldSeconds":0,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	var cmd contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &cmd)
 	if err != nil || !input.Valid {
@@ -2263,12 +2304,12 @@ func (s *timedOutOperation) Start(ctx context.Context, id uuid.UUID, cmd contrac
 	return s.Store.Start(ctx, id, cmd, action)
 }
 
-func (s *timedOutOperation) Confirm(ctx context.Context, id, action uuid.UUID, cmd contract.ConfirmActionCommand) (storage.OperationResult, error) {
+func (s *timedOutOperation) Confirm(ctx context.Context, id, action uuid.UUID, cmd contract.ConfirmActionCommand, next ...contract.PendingAction) (storage.OperationResult, error) {
 	if s.operation == "confirm" {
 		<-ctx.Done()
 		return storage.OperationResult{}, context.Canceled
 	}
-	return s.Store.Confirm(ctx, id, action, cmd)
+	return s.Store.Confirm(ctx, id, action, cmd, next...)
 }
 
 func TestControllerStorageTimeoutStillStopsRun(t *testing.T) {
@@ -2376,6 +2417,13 @@ func TestLateLookupFailureDoesNotStopNewOwnerRun(t *testing.T) {
 	second, err := engine.GrantControl()
 	if err != nil {
 		t.Fatal(err)
+	}
+	if finished.PendingAction != nil {
+		if _, err := second.Confirm(context.Background(), finished.Record.TestId, finished.PendingAction.ActionId,
+			contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: finished.Revision}); err != nil {
+			t.Fatal(err)
+		}
+		finished = engine.State()
 	}
 	next := command(60)
 	next.ExpectedRevision = finished.Revision

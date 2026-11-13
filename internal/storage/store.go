@@ -12,6 +12,7 @@ import (
 	"math/big"
 	"net/url"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -142,6 +143,23 @@ func (s *Store) initialize() error {
 		return err
 	}
 	if version == 4 {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.Exec(`ALTER TABLE test_actions ADD COLUMN kind TEXT`); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`PRAGMA user_version = 5`); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		version = 5
+	}
+	if version == 5 {
 		id, err := readDatabaseID(s.db)
 		if err != nil {
 			return err
@@ -179,7 +197,7 @@ func (s *Store) initialize() error {
 	}
 	if version < 2 {
 		statements = append(statements,
-			`CREATE TABLE test_actions (action_id TEXT PRIMARY KEY, test_id TEXT NOT NULL REFERENCES tests(id), instruction TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('pending', 'confirmed', 'canceled', 'unknown')))`,
+			`CREATE TABLE test_actions (action_id TEXT PRIMARY KEY, test_id TEXT NOT NULL REFERENCES tests(id), instruction TEXT NOT NULL, kind TEXT, state TEXT NOT NULL CHECK(state IN ('pending', 'confirmed', 'canceled', 'unknown')))`,
 			`CREATE UNIQUE INDEX one_pending_action ON test_actions(test_id) WHERE state = 'pending'`,
 			`CREATE TABLE measurements (test_id TEXT NOT NULL REFERENCES tests(id), sequence INTEGER NOT NULL CHECK(sequence > 0), elapsed_ns INTEGER NOT NULL CHECK(elapsed_ns >= 0), channel TEXT NOT NULL, quality TEXT NOT NULL, payload BLOB NOT NULL, PRIMARY KEY(test_id, sequence))`,
 			`ALTER TABLE tests ADD COLUMN measurement_elapsed_ns INTEGER`,
@@ -202,7 +220,7 @@ func (s *Store) initialize() error {
 	if count, err := result.RowsAffected(); err != nil || count != 1 {
 		return errors.New("invalid database metadata")
 	}
-	if _, err := tx.Exec(`PRAGMA user_version = 4`); err != nil {
+	if _, err := tx.Exec(`PRAGMA user_version = 5`); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -230,7 +248,17 @@ func valid(command contract.CreateTestCommand) bool {
 	p := command.Parameters
 	number := func(v float64) bool { return v > 0 && !math.IsInf(v, 0) && !math.IsNaN(v) }
 	whole := func(v, min, max float64) bool { return v >= min && v <= max && math.Trunc(v) == v }
-	return command.CommandId != uuid.Nil && command.ExpectedRevision >= 0 && strings.TrimSpace(p.Valve) != "" && utf8.RuneCountInString(p.Valve) <= 200 && p.Direction == "pressure" && !p.Actuator && number(p.AreaM2) && number(p.PmaxPa) && whole(p.MeasurementSeconds, 60, 300) && whole(p.PreOpenStabilizationSeconds, 10, 100) && whole(p.PostCloseStabilizationSeconds, 10, 100) && p.PostCloseStabilizationRetries >= 0 && p.PostCloseStabilizationRetries <= 100
+	return command.CommandId != uuid.Nil && command.ExpectedRevision >= 0 && strings.TrimSpace(p.Valve) != "" && utf8.RuneCountInString(p.Valve) <= 200 && p.Direction == "pressure" && !p.Actuator && number(p.AreaM2) && number(p.PmaxPa) && whole(p.MeasurementSeconds, 60, 300) && whole(p.PreOpenStabilizationSeconds, 10, 100) && whole(p.PostCloseStabilizationSeconds, 10, 100) && p.PostCloseStabilizationRetries >= 0 && p.PostCloseStabilizationRetries <= 100 && ValidPressureLimits(p)
+}
+
+func ValidPressureLimits(p contract.TestParameters) bool {
+	if p.LowerPressureLimitPa == nil || p.UpperPressureLimitPa == nil || p.LowerPressureHoldSeconds == nil || p.UpperPressureHoldSeconds == nil {
+		return false
+	}
+	lower, upper := *p.LowerPressureLimitPa, *p.UpperPressureLimitPa
+	return lower >= 0 && lower < p.PmaxPa && upper > p.PmaxPa && !math.IsInf(upper, 0) && upper <= 1.1*p.PmaxPa &&
+		*p.LowerPressureHoldSeconds >= 0 && float64(*p.LowerPressureHoldSeconds) <= p.MeasurementSeconds &&
+		*p.UpperPressureHoldSeconds >= 0 && float64(*p.UpperPressureHoldSeconds) <= p.MeasurementSeconds
 }
 
 // LookupCreate resolves an uncertain response without re-executing the command.
@@ -265,7 +293,7 @@ func validateCreateIdentity(command contract.CreateTestCommand, identity []byte)
 	}
 	var parsed contract.CreateTestCommand
 	input, err := validator.InspectCanonical("CreateTestCommand", identity, &parsed)
-	if err != nil || parsed != command || !bytes.Equal(identity, input.Identity) {
+	if err != nil || !reflect.DeepEqual(parsed, command) || !bytes.Equal(identity, input.Identity) {
 		return false, ErrInvalidCommand
 	}
 	return input.Valid, nil
@@ -482,6 +510,8 @@ func validParameterNumbers(request []byte) bool {
 			PreOpenStabilizationSeconds   json.Number `json:"preOpenStabilizationSeconds"`
 			PostCloseStabilizationSeconds json.Number `json:"postCloseStabilizationSeconds"`
 			PostCloseStabilizationRetries json.Number `json:"postCloseStabilizationRetries"`
+			LowerPressureHoldSeconds      json.Number `json:"lowerPressureHoldSeconds"`
+			UpperPressureHoldSeconds      json.Number `json:"upperPressureHoldSeconds"`
 		} `json:"parameters"`
 	}
 	if err := json.Unmarshal(request, &body); err != nil {
@@ -491,7 +521,12 @@ func validParameterNumbers(request []byte) bool {
 		value, ok := new(big.Rat).SetString(number.String())
 		return ok && value.IsInt() && value.Cmp(big.NewRat(min, 1)) >= 0 && value.Cmp(big.NewRat(max, 1)) <= 0
 	}
-	return whole(body.Parameters.MeasurementSeconds, 60, 300) && whole(body.Parameters.PreOpenStabilizationSeconds, 10, 100) && whole(body.Parameters.PostCloseStabilizationSeconds, 10, 100) && whole(body.Parameters.PostCloseStabilizationRetries, 0, 100)
+	return whole(body.Parameters.MeasurementSeconds, 60, 300) &&
+		whole(body.Parameters.PreOpenStabilizationSeconds, 10, 100) &&
+		whole(body.Parameters.PostCloseStabilizationSeconds, 10, 100) &&
+		whole(body.Parameters.PostCloseStabilizationRetries, 0, 100) &&
+		whole(body.Parameters.LowerPressureHoldSeconds, 0, 300) &&
+		whole(body.Parameters.UpperPressureHoldSeconds, 0, 300)
 }
 
 func (s *Store) Revision(ctx context.Context) (int64, error) {

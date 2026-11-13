@@ -740,7 +740,7 @@ func TestNativeStreamPinsTLSAndRejectsRedirect(t *testing.T) {
 
 func TestNativeStreamReceivesCoreEvents(t *testing.T) {
 	executable := buildCore(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 28*time.Second)
 	defer cancel()
 	process, handshake, err := Start(ctx, executable, t.TempDir(), "test", "0.1.0")
 	if err != nil {
@@ -764,7 +764,7 @@ func TestNativeStreamReceivesCoreEvents(t *testing.T) {
 		defer closeCancel()
 		_ = stream.Close(closeCtx)
 	})
-	command := contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: snapshot.Revision, Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 60, Direction: "pressure"}}
+	command := contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: snapshot.Revision, Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "V", AreaM2: 1, PmaxPa: 1000, LowerPressureLimitPa: new(900.0), UpperPressureLimitPa: new(1080.0), LowerPressureHoldSeconds: new(2), UpperPressureHoldSeconds: new(2), MeasurementSeconds: 60, Direction: "pressure"}}
 	result, err := client.CreateTest(ctx, lease.LeaseId, command)
 	if err != nil || result.TestId == nil {
 		t.Fatalf("create: %+v %v", result, err)
@@ -797,6 +797,26 @@ func TestNativeStreamReceivesCoreEvents(t *testing.T) {
 	confirmed, err := client.ConfirmAction(ctx, lease.LeaseId, *result.TestId, updated.PendingAction.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: updated.Revision})
 	if err != nil || confirmed.Status != "completed" {
 		t.Fatalf("confirm: %+v %v", confirmed, err)
+	}
+	updated, err = stream.Snapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []contract.PendingActionKind{"confirmValveOpen", "confirmValveClosed"} {
+		for updated.PendingAction == nil || updated.PendingAction.Kind == nil || *updated.PendingAction.Kind != kind {
+			if _, err := stream.Next(ctx); err != nil {
+				t.Fatal(err)
+			}
+			updated, err = stream.Snapshot(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		confirmation, err := client.ConfirmAction(ctx, lease.LeaseId, *result.TestId, updated.PendingAction.ActionId,
+			contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: updated.Revision})
+		if err != nil || confirmation.Status != "completed" {
+			t.Fatalf("confirm %s: %+v %v", kind, confirmation, err)
+		}
 	}
 	updated, err = stream.Snapshot(ctx)
 	if err != nil {

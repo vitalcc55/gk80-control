@@ -1,4 +1,4 @@
-// Package demo executes the first, explicitly simplified simulator-only run.
+// Package demo executes the single-point simulator run.
 package demo
 
 import (
@@ -38,9 +38,9 @@ func (s *Simulator) Observe(elapsed time.Duration) (float64, float64, float64, e
 		return 0, 0, 0, errors.New("demo simulator is not running")
 	}
 	// These bounded synthetic values demonstrate changing channels, not stand physics.
-	factor := 1 - 0.01*math.Abs(math.Sin(elapsed.Seconds()))
-	pressure := s.pmax * factor
-	return pressure, s.pmax * (0.01 + 0.002*math.Sin(elapsed.Seconds())), s.pmax * (0.008 + 0.001*math.Cos(elapsed.Seconds())), nil
+	pressure := s.pmax * min(1, elapsed.Seconds()/2)
+	differential := min(9000, pressure*(0.01+0.002*math.Sin(elapsed.Seconds())))
+	return pressure, differential, differential, nil
 }
 func (s *Simulator) Stop() error { s.running = false; return nil }
 func (s *Simulator) Finish() error {
