@@ -81,13 +81,14 @@ afterEach(() => {
   else Reflect.deleteProperty(document, 'fonts');
 });
 
-function axisNumbers(plot: PlotStub, axis: number, splits: number[]): number[] {
+function axisNumbers(plot: PlotStub, axis: number, splits: number[]): (number | null)[] {
   const values = plot.axes[axis]?.values;
   if (typeof values !== 'function') throw new Error('Missing axis formatter');
   // Invoke the external library callback with its controlled plot double.
   const labels: unknown = Reflect.apply(values, undefined, [plot, splits, axis, 75, 1]);
   if (!Array.isArray(labels)) throw new Error('Axis did not return labels');
   return labels.map((label: unknown) => {
+    if (label === null) return null;
     if (typeof label !== 'string') throw new Error('Expected a finite physical label');
     return Number(label.replace(/\s/g, '').replace(',', '.'));
   });
@@ -211,7 +212,7 @@ it('updates physical axis labels, target, tolerance and raw values together when
   expect(plot.data[4]).toEqual([1.02, 1.02, 1.02]);
   expect(plot.data[5]).toEqual([0.98, 0.98, 0.98]);
   expect(axisNumbers(plot, 0, [0, 0.5, 1])).toEqual([0, 5e-101, 1e-100]);
-  expect(axisNumbers(plot, 1, [1, 1.001])).toEqual([1e-100, 1.001e-100]);
+  expect(axisNumbers(plot, 1, [1, 1.001, 1.02])).toEqual([1e-100, null, 1.02e-100]);
   expect(screen.queryByRole('table')).toBeNull();
   await userEvent.setup().click(screen.getByText('Таблица показаний'));
   expect((await screen.findByRole('table')).textContent).toContain('1E-100');
@@ -225,7 +226,7 @@ it('updates physical axis labels, target, tolerance and raw values together when
   expect(plots.instances).toHaveLength(1);
   expect(plot.data[1]?.[0]).toBe(1);
   expect(plot.data[4]).toEqual([1.05, 1.05, 1.05]);
-  expect(axisNumbers(plot, 1, [1, 1.001])).toEqual([1e200, 1.001e200]);
+  expect(axisNumbers(plot, 1, [1, 1.001, 1.02])).toEqual([1e200, null, 1.02e200]);
   expect(plot.redraw).toHaveBeenLastCalledWith(false, true);
   expect(screen.getByRole('table').textContent).toContain('1E200');
   expect(screen.getByText('Допуск ±5%')).toBeTruthy();
@@ -287,7 +288,7 @@ it('switches normalization for a narrow pressure span and clears an empty auto-r
   );
   expect(plot.root.style.visibility).toBe('');
   expect(plot.data[1]?.[0]).toBeCloseTo(1.001);
-  expect(axisNumbers(plot, 1, [1, 1.001])).toEqual([1e-15, 1.001e-15]);
+  expect(axisNumbers(plot, 1, [1, 1.001, 1.02])).toEqual([1e-15, null, 1.02e-15]);
   expect(screen.getByRole('img', { name: /симулятора/ })).toBeTruthy();
   view.rerender(
     <MeasurementChart points={[{ seconds: 2, pressure: 1, differential: 10 }]} target={1e-15} />,

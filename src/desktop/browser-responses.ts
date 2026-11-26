@@ -141,7 +141,26 @@ function desktopStatus(value: unknown): value is Contract.DesktopStatus {
 
 function parameters(value: unknown): value is Contract.TestParameters {
   return (
-    fields(value, ['valve', 'areaM2', 'pmaxPa', 'measurementSeconds', 'direction', 'actuator']) &&
+    fields(
+      value,
+      [
+        'valve',
+        'areaM2',
+        'pmaxPa',
+        'measurementSeconds',
+        'preOpenStabilizationSeconds',
+        'postCloseStabilizationSeconds',
+        'postCloseStabilizationRetries',
+        'direction',
+        'actuator',
+      ],
+      [
+        'lowerPressureLimitPa',
+        'lowerPressureHoldSeconds',
+        'upperPressureLimitPa',
+        'upperPressureHoldSeconds',
+      ],
+    ) &&
     text(value['valve']) &&
     [...value['valve']].length >= 1 &&
     [...value['valve']].length <= 200 &&
@@ -150,9 +169,117 @@ function parameters(value: unknown): value is Contract.TestParameters {
     finite(value['pmaxPa']) &&
     value['pmaxPa'] > 0 &&
     finite(value['measurementSeconds']) &&
-    value['measurementSeconds'] > 0 &&
+    Number.isInteger(value['measurementSeconds']) &&
+    value['measurementSeconds'] >= 60 &&
+    value['measurementSeconds'] <= 300 &&
+    finite(value['preOpenStabilizationSeconds']) &&
+    Number.isInteger(value['preOpenStabilizationSeconds']) &&
+    value['preOpenStabilizationSeconds'] >= 10 &&
+    value['preOpenStabilizationSeconds'] <= 100 &&
+    finite(value['postCloseStabilizationSeconds']) &&
+    Number.isInteger(value['postCloseStabilizationSeconds']) &&
+    value['postCloseStabilizationSeconds'] >= 10 &&
+    value['postCloseStabilizationSeconds'] <= 100 &&
+    finite(value['postCloseStabilizationRetries']) &&
+    Number.isInteger(value['postCloseStabilizationRetries']) &&
+    value['postCloseStabilizationRetries'] >= 0 &&
+    value['postCloseStabilizationRetries'] <= 100 &&
+    (!Object.hasOwn(value, 'lowerPressureLimitPa') ||
+      (finite(value['lowerPressureLimitPa']) && value['lowerPressureLimitPa'] >= 0)) &&
+    (!Object.hasOwn(value, 'upperPressureLimitPa') ||
+      (finite(value['upperPressureLimitPa']) && value['upperPressureLimitPa'] > 0)) &&
+    (!Object.hasOwn(value, 'lowerPressureHoldSeconds') ||
+      (counter(value['lowerPressureHoldSeconds']) && value['lowerPressureHoldSeconds'] <= 300)) &&
+    (!Object.hasOwn(value, 'upperPressureHoldSeconds') ||
+      (counter(value['upperPressureHoldSeconds']) && value['upperPressureHoldSeconds'] <= 300)) &&
     value['direction'] === 'pressure' &&
     value['actuator'] === false
+  );
+}
+
+function leakageCalculation(value: unknown): value is Contract.LeakageCalculation {
+  const conditionNumbers = [
+    'temperatureC',
+    'relativeHumidity',
+    'atmosphericPressurePa',
+    'orificeDiameterM',
+    'pipeDiameterM',
+    'orificeExpansionPerC',
+    'pipeExpansionPerC',
+    'dischargeCoefficient',
+    'approachCoefficient',
+    'expansibility',
+    'roughnessCorrection',
+  ];
+  const positiveConditions = [
+    'atmosphericPressurePa',
+    'orificeDiameterM',
+    'pipeDiameterM',
+    'dischargeCoefficient',
+    'approachCoefficient',
+    'expansibility',
+    'roughnessCorrection',
+  ];
+  const flows = [
+    'massFlowKgPerSecond',
+    'workingFlowM3PerSecond',
+    'normalizedFlowM3PerHour',
+    'specificLeakageLitresPerSecondPerSquareMetre',
+  ];
+  if (
+    !fields(
+      value,
+      [
+        'pointId',
+        'method',
+        'windowStartedAt',
+        'windowEndedAt',
+        'durationSeconds',
+        'firstSequence',
+        'lastSequence',
+        'channels',
+        'conditions',
+      ],
+      ['values', 'unavailableReason'],
+    )
+  )
+    return false;
+  const conditions = value['conditions'];
+  const channels = value['channels'];
+  const values = value['values'];
+  return (
+    uuid(value['pointId']) &&
+    value['method'] === 'singlePointLeakageV1' &&
+    dateTime(value['windowStartedAt']) &&
+    dateTime(value['windowEndedAt']) &&
+    counter(value['durationSeconds'], 60) &&
+    value['durationSeconds'] <= 300 &&
+    counter(value['firstSequence']) &&
+    counter(value['lastSequence']) &&
+    Array.isArray(channels) &&
+    channels.length <= 2 &&
+    new Set(channels).size === channels.length &&
+    channels.every((item) => oneOf(item, ['dd2', 'dd3'])) &&
+    fields(conditions, ['source', ...conditionNumbers]) &&
+    conditions['source'] === 'simulatorProfile' &&
+    conditionNumbers.every((key) => finite(conditions[key])) &&
+    positiveConditions.every((key) => finite(conditions[key]) && conditions[key] > 0) &&
+    finite(conditions['relativeHumidity']) &&
+    conditions['relativeHumidity'] >= 0 &&
+    conditions['relativeHumidity'] <= 1 &&
+    (Object.hasOwn(value, 'values')
+      ? !Object.hasOwn(value, 'unavailableReason') &&
+        fields(values, ['testPressurePa', 'contributingSeconds', ...flows]) &&
+        finite(values['testPressurePa']) &&
+        counter(values['contributingSeconds'], 1) &&
+        values['contributingSeconds'] <= 300 &&
+        flows.every((key) => finite(values[key]) && values[key] >= 0)
+      : oneOf(value['unavailableReason'], [
+          'missingTestPressure',
+          'missingAirConditions',
+          'noUsableDifferential',
+          'invalidCalculationInputs',
+        ]))
   );
 }
 
@@ -172,7 +299,7 @@ function testRecord(value: unknown): value is Contract.TestRecord {
         'saveStatus',
         'createdAt',
       ],
-      ['finishedAt'],
+      ['finishedAt', 'leakageCalculation'],
     ) &&
     uuid(value['testId']) &&
     uuid(value['stopCommandId']) &&
@@ -184,27 +311,36 @@ function testRecord(value: unknown): value is Contract.TestRecord {
     oneOf(value['dataQuality'], ['pending', 'complete', 'incomplete', 'unknown']) &&
     oneOf(value['saveStatus'], ['saved', 'pending', 'failed', 'unknown']) &&
     dateTime(value['createdAt']) &&
-    optionalNullable(value, 'finishedAt', dateTime)
+    optionalNullable(value, 'finishedAt', dateTime) &&
+    (!Object.hasOwn(value, 'leakageCalculation') || leakageCalculation(value['leakageCalculation']))
   );
 }
 
 function measurement(value: unknown): value is Contract.Measurement {
   return (
-    fields(value, [
-      'sequence',
-      'channel',
-      'quantity',
-      'value',
-      'unit',
-      'observedAt',
-      'measuredAt',
-      'quality',
-      'source',
-    ]) &&
+    fields(
+      value,
+      [
+        'sequence',
+        'channel',
+        'quantity',
+        'value',
+        'unit',
+        'observedAt',
+        'measuredAt',
+        'quality',
+        'source',
+      ],
+      ['selectedDifferential', 'gapBefore'],
+    ) &&
     counter(value['sequence'], 1) &&
     oneOf(value['channel'], ['dd1', 'dd2', 'dd3']) &&
     value['quantity'] === (value['channel'] === 'dd1' ? 'pressure' : 'differentialPressure') &&
     value['unit'] === 'Pa' &&
+    (!Object.hasOwn(value, 'selectedDifferential') ||
+      (value['channel'] !== 'dd1' && typeof value['selectedDifferential'] === 'boolean')) &&
+    (!Object.hasOwn(value, 'gapBefore') ||
+      (value['channel'] === 'dd1' && typeof value['gapBefore'] === 'boolean')) &&
     value['source'] === 'simulator' &&
     dateTime(value['observedAt']) &&
     oneOf(value['quality'], ['valid', 'stale', 'unavailable']) &&
@@ -216,7 +352,14 @@ function measurement(value: unknown): value is Contract.Measurement {
 
 function pendingAction(value: unknown): value is Contract.PendingAction {
   return (
-    fields(value, ['actionId', 'testId', 'instruction']) &&
+    fields(value, ['actionId', 'testId', 'instruction'], ['kind']) &&
+    (!Object.hasOwn(value, 'kind') ||
+      oneOf(value['kind'], [
+        'confirmPreparation',
+        'confirmValveOpen',
+        'confirmValveClosed',
+        'confirmStopped',
+      ])) &&
     uuid(value['actionId']) &&
     uuid(value['testId']) &&
     text(value['instruction'])
@@ -265,17 +408,38 @@ function measurementTiming(value: unknown): value is Contract.MeasurementTiming 
 
 function snapshot(value: unknown): value is Contract.Snapshot {
   return (
-    fields(value, [
-      'apiVersion',
-      'backendRunId',
-      'revision',
-      'lastEventSequence',
-      'activeTest',
-      'pendingAction',
-      'measurements',
-      'measurementBatch',
-      'measurementTiming',
-    ]) &&
+    fields(
+      value,
+      [
+        'apiVersion',
+        'backendRunId',
+        'revision',
+        'lastEventSequence',
+        'activeTest',
+        'pendingAction',
+        'measurements',
+        'measurementBatch',
+        'measurementTiming',
+      ],
+      ['runPhase', 'phaseTiming', 'activeDifferential', 'currentReadings'],
+    ) &&
+    (!Object.hasOwn(value, 'runPhase') ||
+      oneOf(value['runPhase'], [
+        'awaitingPreparation',
+        'searchingPressure',
+        'stabilizingBeforeOpening',
+        'awaitingValveOpening',
+        'awaitingValveClosing',
+        'stabilizingAfterClosing',
+        'measuring',
+      ])) &&
+    (!Object.hasOwn(value, 'phaseTiming') || measurementTiming(value['phaseTiming'])) &&
+    (!Object.hasOwn(value, 'activeDifferential') ||
+      oneOf(value['activeDifferential'], ['dd2', 'dd3'])) &&
+    (!Object.hasOwn(value, 'currentReadings') ||
+      (Array.isArray(value['currentReadings']) &&
+        value['currentReadings'].length <= 3 &&
+        value['currentReadings'].every(measurement))) &&
     text(value['apiVersion']) &&
     uuid(value['backendRunId']) &&
     counter(value['revision']) &&

@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ResultScreen } from '../components/ResultScreen';
 import {
-  emptyHistoryFilters,
   type HistoryFilters,
+  initialHistoryFilters,
   normalizeHistoryQuery,
   TestsScreen,
 } from '../components/TestsScreen';
@@ -83,7 +83,8 @@ export function History({
 }) {
   const [list, setList] = useState<TestList | null>(null);
   const [selected, setSelected] = useState<TestRecord | null>(null);
-  const [filters, setFilters] = useState(emptyHistoryFilters);
+  const [filters, setFilters] = useState(initialHistoryFilters);
+  const [appliedOutcome, setAppliedOutcome] = useState('completed');
   const [pageSize, setPageSize] = useState(20);
   const [pageNumber, setPageNumber] = useState(1);
   const requestedPage = useRef(1);
@@ -99,7 +100,9 @@ export function History({
   const listGeneration = useRef(0);
   const selectedGeneration = useRef(0);
   // Null is an explicitly rejected search, never a fallback to the previous query.
-  const applied = useRef<ListTestsParams | null>({});
+  const applied = useRef<ListTestsParams | null>({
+    outcome: TestRecordOutcome.TestRecordOutcomeCompleted,
+  });
   const cursor = useRef<string | null>(null);
   const needsRead = useRef(true);
   const selectedRefresh = useRef('');
@@ -302,6 +305,7 @@ export function History({
     setListError('');
     try {
       applied.current = queryParameters(value);
+      setAppliedOutcome(value.outcome);
       if (available) void load();
     } catch (reason) {
       setLoading(false);
@@ -386,6 +390,12 @@ export function History({
         active: item.testId === activeTestId,
       }))}
       filters={filters}
+      appliedOutcome={appliedOutcome}
+      onOutcomeTab={(outcome) => {
+        const next = { ...filters, outcome };
+        setFilters(next);
+        search(next);
+      }}
       pageSize={pageSize}
       pageNumber={pageNumber}
       total={list?.total}
@@ -416,8 +426,8 @@ export function History({
       onFilters={setFilters}
       onSearch={() => search(filters)}
       onReset={() => {
-        setFilters(emptyHistoryFilters);
-        search(emptyHistoryFilters);
+        setFilters(initialHistoryFilters);
+        search(initialHistoryFilters);
       }}
       onOpen={(id) => {
         if (id === activeTestId && onCurrent) onCurrent();

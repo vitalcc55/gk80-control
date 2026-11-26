@@ -3,6 +3,7 @@ package demo
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -71,7 +72,8 @@ func TestLateFinalResultDoesNotReplaceNewRun(t *testing.T) {
 			}()
 			simulator := &countedSimulator{}
 			engine := newTestEngine(t, wrapped, simulator, uuid.New())
-			created, err := engine.Create(ctx, command(0.05))
+			advanceMeasurementOnNextSample(engine)
+			created, err := engine.Create(ctx, command(60))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -84,10 +86,15 @@ func TestLateFinalResultDoesNotReplaceNewRun(t *testing.T) {
 				if _, err := engine.Confirm(ctx, id, action.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: 2}); err != nil {
 					t.Fatal(err)
 				}
+				confirmValveActions(t, engine, id)
 			} else if _, err := engine.Stop(ctx, id, engine.State().Record.StopCommandId); err != nil {
 				t.Fatal(err)
 			}
-			<-wrapped.entered
+			select {
+			case <-wrapped.entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("finalization did not reach storage")
+			}
 			// Isolate the late-result identity guard without opening another real
 			// test while finalization is pending (normal admission forbids that).
 			engine.mu.Lock()
@@ -118,11 +125,11 @@ func TestLateFinalResultDoesNotReplaceNewRun(t *testing.T) {
 	}
 }
 
-func (s *finalResultRepository) Complete(ctx context.Context, id uuid.UUID, elapsed time.Duration) (storage.OperationResult, error) {
+func (s *finalResultRepository) Complete(ctx context.Context, id uuid.UUID, completion storage.MeasurementCompletion, calculation *contract.LeakageCalculation, stopped ...contract.PendingAction) (storage.OperationResult, error) {
 	if s.failBefore && !s.failedBefore.Swap(true) {
 		return storage.OperationResult{}, context.DeadlineExceeded
 	}
-	return s.report(s.Store.Complete(ctx, id, elapsed))
+	return s.report(s.Store.Complete(ctx, id, completion, calculation, stopped...))
 }
 
 func (s *finalResultRepository) FinishStop(ctx context.Context, id, cmd uuid.UUID, details storage.StopDetails) (storage.OperationResult, error) {
@@ -167,7 +174,8 @@ func TestEngineFinalizationUsesCommittedResult(t *testing.T) {
 				wrapped := &finalResultRepository{Store: store, lost: lost, failBefore: beforeCommit}
 				simulator := &countedSimulator{}
 				engine := newTestEngine(t, wrapped, simulator, uuid.New())
-				created, err := engine.Create(ctx, command(0.05))
+				advanceMeasurementOnNextSample(engine)
+				created, err := engine.Create(ctx, command(60))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -180,6 +188,7 @@ func TestEngineFinalizationUsesCommittedResult(t *testing.T) {
 					if _, err := engine.Confirm(ctx, id, action.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: 2}); err != nil {
 						t.Fatal(err)
 					}
+					confirmValveActions(t, engine, id)
 				} else {
 					if _, err := engine.Stop(ctx, id, engine.State().Record.StopCommandId); err != nil {
 						t.Fatal(err)
@@ -229,17 +238,17 @@ func TestEngineFinalizationUsesCommittedResult(t *testing.T) {
 					if err != nil || state.Record.SaveStatus != "saved" || state.Revision != revision || wrapped.reads.Load() != 2 {
 						t.Fatalf("read-only recovery: %+v reads=%d %v", state, wrapped.reads.Load(), err)
 					}
+					if operation == "complete" && (record.LeakageCalculation == nil ||
+						!reflect.DeepEqual(record.LeakageCalculation, state.Record.LeakageCalculation)) {
+						t.Fatal("lost reply did not recover the original calculation")
+					}
 				} else if state.Revision != 101 || wrapped.reads.Load() != 0 {
 					t.Fatalf("confirmed result: %+v reads=%d", state, wrapped.reads.Load())
 				}
 				if wrapped.calls.Load() != 1 {
 					t.Fatalf("finalization was repeated: %d", wrapped.calls.Load())
 				}
-				quality := contract.TestRecordDataQuality("complete")
-				if operation == "finishStop" {
-					quality = "incomplete"
-				}
-				if state.Record.DataQuality != quality {
+				if state.Record.DataQuality != "incomplete" {
 					t.Fatalf("final quality: %+v", state.Record)
 				}
 				if operation == "complete" && (simulator.starts.Load() != 1 || simulator.finishes.Load() != 1 || simulator.stops.Load() != 0) {
@@ -268,8 +277,8 @@ func (s *lostStartResult) Start(ctx context.Context, id uuid.UUID, cmd contract.
 	return result, err
 }
 
-func (s *lostStartResult) Confirm(ctx context.Context, id, action uuid.UUID, cmd contract.ConfirmActionCommand) (storage.OperationResult, error) {
-	result, err := s.Store.Confirm(ctx, id, action, cmd)
+func (s *lostStartResult) Confirm(ctx context.Context, id, action uuid.UUID, cmd contract.ConfirmActionCommand, next ...contract.PendingAction) (storage.OperationResult, error) {
+	result, err := s.Store.Confirm(ctx, id, action, cmd, next...)
 	if err == nil && s.operation == "confirm" {
 		return storage.OperationResult{}, context.DeadlineExceeded
 	}
@@ -308,7 +317,7 @@ func TestUnknownCommittedStartResultDoesNotClaimSavedOrRestart(t *testing.T) {
 			}()
 			simulator := &countedSimulator{}
 			engine := newTestEngine(t, wrapped, simulator, uuid.New())
-			created, err := engine.Create(context.Background(), command(3600))
+			created, err := engine.Create(context.Background(), command(300))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -378,8 +387,8 @@ func (s *reportedStartResults) Start(ctx context.Context, id uuid.UUID, cmd cont
 	return result, err
 }
 
-func (s *reportedStartResults) Confirm(ctx context.Context, id, action uuid.UUID, cmd contract.ConfirmActionCommand) (storage.OperationResult, error) {
-	result, err := s.Store.Confirm(ctx, id, action, cmd)
+func (s *reportedStartResults) Confirm(ctx context.Context, id, action uuid.UUID, cmd contract.ConfirmActionCommand, next ...contract.PendingAction) (storage.OperationResult, error) {
+	result, err := s.Store.Confirm(ctx, id, action, cmd, next...)
 	if result.Saved != nil {
 		result.Saved.Revision = 73
 	}
@@ -410,7 +419,7 @@ func TestEngineUsesReportedStartResults(t *testing.T) {
 			wrapped := &reportedStartResults{Store: store, entered: make(chan struct{}), release: make(chan struct{}), noOp: noOp}
 			simulator := &countedSimulator{}
 			engine := newTestEngine(t, wrapped, simulator, uuid.New())
-			created, err := engine.Create(context.Background(), command(3600))
+			created, err := engine.Create(context.Background(), command(300))
 			if err != nil {
 				t.Fatal(err)
 			}

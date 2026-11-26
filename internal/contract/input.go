@@ -63,7 +63,11 @@ func NewInputValidator() (*InputValidator, error) {
 			return nil, fmt.Errorf("compile input schema %s: %w", name, err)
 		}
 		result.schemas[name] = schema
-		structure, err := compiler.Compile(shapeSource + "#/components/schemas/" + name)
+		shape := name
+		if name == "CreateTestCommand" {
+			shape = "CreateTestLookupInput"
+		}
+		structure, err := compiler.Compile(shapeSource + "#/components/schemas/" + shape)
 		if err != nil {
 			return nil, fmt.Errorf("compile input structure %s: %w", name, err)
 		}

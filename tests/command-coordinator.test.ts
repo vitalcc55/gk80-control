@@ -44,7 +44,15 @@ const coordinators: CommandCoordinator[] = [];
 let databaseId = '';
 let storageKey = '';
 const commandId = '986c2358-26df-4b09-bba3-1feaa576d488';
-const parameters = { valve: 'К-1', area: 0.012, pmax: 10000, measurementSeconds: 60 };
+const parameters = {
+  valve: 'К-1',
+  area: 0.012,
+  pmax: 10000,
+  measurementSeconds: 60,
+  preOpenStabilizationSeconds: 10,
+  postCloseStabilizationSeconds: 10,
+  postCloseStabilizationRetries: 1,
+};
 const unknown: ExactLookupResult = {
   outcome: ExactLookupResultOutcome.ExactLookupResultOutcomeUnknown,
   command: null,
@@ -144,6 +152,9 @@ function runningRecord(): NonNullable<Snapshot['activeTest']> {
       areaM2: parameters.area,
       pmaxPa: parameters.pmax,
       measurementSeconds: parameters.measurementSeconds,
+      preOpenStabilizationSeconds: 10,
+      postCloseStabilizationSeconds: 10,
+      postCloseStabilizationRetries: 1,
       direction: TestParametersDirection.TestParametersDirectionPressure,
       actuator: false,
     },
@@ -233,7 +244,7 @@ it('releases past terminal Stop results throughout sequential saved tests', asyn
     value.update(input(api, finishedRecord(record)));
     await flush();
 
-    expect(value.getSnapshot().stopMessage).toBe('Остановка подтверждена ядром.');
+    expect(value.getSnapshot().stopMessage).toBe('');
     expect(value.getSnapshot().pending).toEqual([]);
     expect(localStorage.getItem(storageKey)).toBe('[]');
     expect(memoryFor(databaseId).statuses.size).toBe(0);
@@ -302,7 +313,7 @@ it.each(['current', 'previous'] as const)(
       await sent;
       await flush();
       if (context === 'current') {
-        expect(value.getSnapshot().stopMessage).toBe('Остановка подтверждена ядром.');
+        expect(value.getSnapshot().stopMessage).toBe('');
         expect(cache?.has(key)).toBe(true);
         value.update(input(api, b));
         await flush();
@@ -419,7 +430,7 @@ it.each(['active', 'disposed'] as const)(
       await flush();
       expect(value.getSnapshot().pending).toEqual([item]);
       expect(value.getSnapshot().commandMessages.size).toBe(0);
-      expect(value.getSnapshot().stopMessage).toBe('Остановка подтверждена ядром.');
+      expect(value.getSnapshot().stopMessage).toBe('');
 
       value.update(input(api, finishedRecord(a)));
       await flush();
@@ -684,6 +695,9 @@ it('retains the creation notification when its consumer is disposed during publi
         areaM2: 0.012,
         pmaxPa: 10000,
         measurementSeconds: 60,
+        preOpenStabilizationSeconds: 10,
+        postCloseStabilizationSeconds: 10,
+        postCloseStabilizationRetries: 1,
         direction: TestParametersDirection.TestParametersDirectionPressure,
         actuator: false,
       },

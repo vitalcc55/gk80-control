@@ -1,6 +1,6 @@
-import { ArrowLeft, Check } from 'lucide-react';
-import type { ComponentProps, ReactNode, Ref } from 'react';
-import { MeasurementChart } from './MeasurementChart';
+import { Check } from 'lucide-react';
+import type { ReactNode, Ref } from 'react';
+import { LeakageChart } from './LeakageChart';
 import { PressureNotation } from './PressureNotation';
 
 export function RunScreen({
@@ -8,13 +8,11 @@ export function RunScreen({
   stages,
   pressure,
   differential,
+  differentialChannel = 'ДД2',
   differentialNote,
   target,
-  readingNote,
   pressureNote,
-  details,
-  chart,
-  chartNote,
+  leakageMessage,
   actionTitle,
   instruction,
   actionLabel,
@@ -22,19 +20,16 @@ export function RunScreen({
   action,
   stop,
   headingRef,
-  onList,
 }: {
   subtitle: ReactNode;
   stages: readonly { id: string; label: string; state: 'done' | 'current' | 'next' | 'inactive' }[];
   pressure: ReactNode;
   differential: ReactNode;
+  differentialChannel?: string | undefined;
   target: ReactNode;
-  readingNote?: ReactNode;
-  details?: ReactNode;
   pressureNote?: ReactNode;
   differentialNote?: ReactNode;
-  chart: ComponentProps<typeof MeasurementChart>;
-  chartNote?: ReactNode;
+  leakageMessage: string;
   actionTitle: string;
   instruction?: string | undefined;
   actionLabel?: string;
@@ -42,19 +37,15 @@ export function RunScreen({
   action?: ReactNode;
   stop?: ReactNode;
   headingRef?: Ref<HTMLHeadingElement>;
-  onList?: () => void;
 }) {
   return (
     <section aria-labelledby="run-title">
       <div className="page-heading run-heading">
-        <div>
-          {onList && (
-            <button className="text-link" type="button" onClick={onList}>
-              <ArrowLeft aria-hidden="true" size={16} /> К испытаниям
-            </button>
-          )}
-          <h1 id="run-title">Проведение испытания</h1>
-          <p>{subtitle}</p>
+        <div className="run-heading-content">
+          <div className="run-heading-row">
+            <h1 id="run-title">Проведение испытания</h1>
+            <p>{subtitle}</p>
+          </div>
         </div>
       </div>
       <div className="run-grid">
@@ -93,7 +84,6 @@ export function RunScreen({
             <div className="section-heading">
               <h2>Показания</h2>
             </div>
-            {readingNote && <p className="reading-note">{readingNote}</p>}
             <div className="measurements live-measurements">
               <div className="reading main-reading">
                 <span>
@@ -110,13 +100,12 @@ export function RunScreen({
               </div>
               <div className="reading differential-reading">
                 <span>
-                  Перепад на диафрагме <small>ДД2</small>
+                  Перепад на диафрагме <small>{differentialChannel}</small>
                 </span>
                 <strong>{differential}</strong>
                 {differentialNote}
               </div>
             </div>
-            {details}
           </div>
         </section>
         <aside className="action-panel" aria-label={actionLabel ?? 'Текущее действие'}>
@@ -131,13 +120,7 @@ export function RunScreen({
           {stop && <div className="stop-area">{stop}</div>}
         </aside>
         <div className="chart-panel">
-          <div className="section-heading">
-            <div>
-              <h2>Изменение показаний</h2>
-              {chartNote && <p>{chartNote}</p>}
-            </div>
-          </div>
-          <MeasurementChart {...chart} />
+          <LeakageChart emptyMessage={leakageMessage} />
         </div>
       </div>
     </section>

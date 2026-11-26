@@ -3,7 +3,8 @@ import type { ReactNode } from 'react';
 import { outcomeLabel, qualityLabel, saveLabel } from '../desktop/display';
 import type { TestRecord } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
 import { formatNumber } from '../lib/format';
-import type { TestParameters } from '../model';
+import type { LeakagePoint, TestParameters } from '../model';
+import { LeakageChart } from './LeakageChart';
 import { PressureNotation } from './PressureNotation';
 import './screens.css';
 
@@ -15,10 +16,19 @@ interface ResultScreenProps {
   draftAvailable: boolean;
   onList: () => void;
   onNew: () => void;
+  stopConfirmation?: { disabled: boolean; onConfirm: () => void } | undefined;
   record?: TestRecord;
+  previewPoint?: LeakagePoint | undefined;
   children?: ReactNode;
   hidden?: boolean;
 }
+
+const unavailableLeakage = {
+  missingTestPressure: 'Нет пригодных показаний ДД1.',
+  missingAirConditions: 'Недостаточно данных о параметрах воздуха.',
+  noUsableDifferential: 'Нет пригодных показаний перепада на диафрагме.',
+  invalidCalculationInputs: 'Непригодные исходные данные расчёта.',
+} as const;
 
 export function ResultScreen({
   parameters,
@@ -28,12 +38,26 @@ export function ResultScreen({
   draftAvailable,
   onList,
   onNew,
+  stopConfirmation,
   record,
+  previewPoint,
   children,
   hidden = false,
 }: ResultScreenProps) {
+  const savedCalculation = record?.saveStatus === 'saved' ? record.leakageCalculation : undefined;
+  const values = savedCalculation?.values;
+  const unavailableReason = savedCalculation?.unavailableReason;
+  const emptyMessage = unavailableReason
+    ? unavailableLeakage[unavailableReason]
+    : values
+      ? 'Координаты маркера должны быть положительными для логарифмической шкалы.'
+      : record?.saveStatus === 'pending'
+        ? 'Ожидается сохранение расчёта.'
+        : record?.saveStatus === 'failed' || record?.saveStatus === 'unknown'
+          ? 'Сохранение расчёта не подтверждено.'
+          : 'Расчёт отсутствует.';
   return (
-    <section className="workpage" aria-labelledby="result-title" hidden={hidden}>
+    <section className="workpage result-page" aria-labelledby="result-title" hidden={hidden}>
       {!hidden && (
         <>
           <div className="workpage-heading">
@@ -42,34 +66,11 @@ export function ResultScreen({
               <p>{record ? parameters.valve : `${parameters.id} · ${parameters.valve}`}</p>
             </div>
           </div>
-          <div className="result-overview">
-            <div>
-              <span>Ход испытания</span>
-              <strong>
-                {record ? outcomeLabel(record.outcome) : interrupted ? 'Прервано' : 'Завершено'}
-              </strong>
-            </div>
-            <div>
-              <span>Данные</span>
-              <strong>
-                {record
-                  ? qualityLabel(record.dataQuality)
-                  : interrupted
-                    ? 'Неполные'
-                    : 'Данные доступны'}
-              </strong>
-            </div>
-            <div>
-              <span>Сохранение</span>
-              <strong className={saveError ? 'error-text' : ''}>
-                {record
-                  ? saveLabel(record.saveStatus)
-                  : saveError
-                    ? 'Сохранение не подтверждено'
-                    : 'Сохранение не выполнялось'}
-              </strong>
-              {saveError && <p>Запись результата не подтверждена.</p>}
-            </div>
+          <div className="work-surface result-section">
+            <LeakageChart
+              point={record ? (values ?? undefined) : previewPoint}
+              emptyMessage={record ? emptyMessage : 'Рабочая точка недоступна'}
+            />
           </div>
           <div className="result-layout">
             <div className="work-surface result-section">
@@ -105,42 +106,119 @@ export function ResultScreen({
                   <dt>Длительность измерения</dt>
                   <dd>{formatNumber(parameters.measurementSeconds)} с</dd>
                 </div>
+                <div>
+                  <dt>Стабилизация перед открытием клапана</dt>
+                  <dd>{formatNumber(parameters.preOpenStabilizationSeconds)} с</dd>
+                </div>
+                <div>
+                  <dt>Стабилизация после закрытия клапана</dt>
+                  <dd>{formatNumber(parameters.postCloseStabilizationSeconds)} с</dd>
+                </div>
+                <div>
+                  <dt>Повторы для каждой стабилизации</dt>
+                  <dd>{parameters.postCloseStabilizationRetries ?? 'Не указано'}</dd>
+                </div>
+                {[
+                  ['Нижний аварийный предел', parameters.lowerPressureLimitPa, 'Па'],
+                  ['Выдержка ниже нижнего предела', parameters.lowerPressureHoldSeconds, 'с'],
+                  ['Верхний аварийный предел', parameters.upperPressureLimitPa, 'Па'],
+                  ['Выдержка выше верхнего предела', parameters.upperPressureHoldSeconds, 'с'],
+                ].map(([label, value, unit]) => (
+                  <div key={label}>
+                    <dt>{label}</dt>
+                    <dd>
+                      {typeof value === 'number' ? `${formatNumber(value)} ${unit}` : 'Не указано'}
+                    </dd>
+                  </div>
+                ))}
               </dl>
             </div>
-            <div className="work-surface result-section">
-              <div className="section-heading">
-                <h2>Результаты расчёта</h2>
+            {record && (
+              <div className="work-surface result-section">
+                <div className="section-heading">
+                  <h2>Результаты расчёта</h2>
+                </div>
+                <dl className="result-details">
+                  {values ? (
+                    <>
+                      <div>
+                        <dt>Рабочий объёмный расход</dt>
+                        <dd>{formatNumber(values.workingFlowM3PerSecond)} м³/с</dd>
+                      </div>
+                      <div>
+                        <dt>Приведённый расход при 20 °C и 101 325 Па</dt>
+                        <dd>{formatNumber(values.normalizedFlowM3PerHour)} м³/ч</dd>
+                      </div>
+                      <div>
+                        <dt>Условия расчёта</dt>
+                        <dd>Параметры симулятора</dd>
+                      </div>
+                    </>
+                  ) : (
+                    <div>
+                      <dt>Расход</dt>
+                      <dd>{record.saveStatus !== 'saved' ? 'Недоступен' : 'Не рассчитан'}</dd>
+                    </div>
+                  )}
+                </dl>
               </div>
-              <dl className="result-details">
-                <div>
-                  <dt>Расход</dt>
-                  <dd>Не рассчитан</dd>
-                </div>
-                <div>
-                  <dt>Класс герметичности</dt>
-                  <dd>Не определён</dd>
-                </div>
-              </dl>
-            </div>
+            )}
           </div>
         </>
       )}
       {children}
       {!hidden && (
-        <div className="work-actions">
-          <button className="work-button work-button-secondary" type="button" onClick={onList}>
-            <ArrowLeft aria-hidden="true" size={16} /> К списку
-          </button>
-          <button
-            className="work-button work-button-primary"
-            type="button"
-            onClick={onNew}
-            disabled={active}
-          >
-            {draftAvailable && !active ? 'Продолжить подготовку' : 'Новое по этим параметрам'}{' '}
-            <ArrowRight aria-hidden="true" size={16} />
-          </button>
-        </div>
+        <>
+          <div className="result-overview">
+            <div>
+              <span>Ход испытания</span>
+              <strong>
+                {record ? outcomeLabel(record.outcome) : interrupted ? 'Прервано' : 'Завершено'}
+              </strong>
+            </div>
+            <div>
+              <span>Данные</span>
+              <strong>
+                {record
+                  ? qualityLabel(record.dataQuality)
+                  : interrupted
+                    ? 'Неполные'
+                    : 'Данные доступны'}
+              </strong>
+            </div>
+            <div>
+              <span>Сохранение</span>
+              <strong className={saveError ? 'error-text' : ''}>
+                {record
+                  ? saveLabel(record.saveStatus)
+                  : saveError
+                    ? 'Сохранение не подтверждено'
+                    : 'Сохранение не выполнялось'}
+              </strong>
+              {saveError && <p>Запись результата не подтверждена.</p>}
+            </div>
+          </div>
+          <div className="work-actions">
+            <button className="work-button work-button-secondary" type="button" onClick={onList}>
+              <ArrowLeft aria-hidden="true" size={16} /> К списку
+            </button>
+            <button
+              className="work-button work-button-primary"
+              type="button"
+              onClick={stopConfirmation?.onConfirm ?? onNew}
+              disabled={active || stopConfirmation?.disabled}
+            >
+              {stopConfirmation ? (
+                'Подтвердить остановку вала'
+              ) : (
+                <>
+                  {draftAvailable && !active ? 'Продолжить подготовку' : 'Новое по этим параметрам'}{' '}
+                  <ArrowRight aria-hidden="true" size={16} />
+                </>
+              )}
+            </button>
+          </div>
+        </>
       )}
     </section>
   );

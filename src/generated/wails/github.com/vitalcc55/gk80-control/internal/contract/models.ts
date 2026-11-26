@@ -233,6 +233,99 @@ export interface Handshake {
 }
 
 /**
+ * LeakageCalculation defines model for LeakageCalculation.
+ */
+export interface LeakageCalculation {
+    "channels": LeakageCalculationChannels[] | null;
+    "conditions": LeakageConditions;
+    "durationSeconds": number;
+
+    /**
+     * FirstSequence Ноль при отсутствии отсчётов.
+     */
+    "firstSequence": number;
+
+    /**
+     * LastSequence Ноль при отсутствии отсчётов.
+     */
+    "lastSequence": number;
+    "method": string;
+    "pointId": types$0.UUID;
+    "unavailableReason"?: LeakageCalculationUnavailableReason | null;
+    "values"?: LeakageValues | null;
+    "windowEndedAt": string;
+    "windowStartedAt": string;
+}
+
+/**
+ * LeakageCalculationChannels defines model for LeakageCalculation.Channels.
+ */
+export enum LeakageCalculationChannels {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    /**
+     * Defines values for LeakageCalculationChannels.
+     */
+    LeakageCalculationChannelsDd2 = "dd2",
+    LeakageCalculationChannelsDd3 = "dd3",
+};
+
+/**
+ * LeakageCalculationUnavailableReason defines model for LeakageCalculation.UnavailableReason.
+ */
+export enum LeakageCalculationUnavailableReason {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    /**
+     * Defines values for LeakageCalculationUnavailableReason.
+     */
+    InvalidCalculationInputs = "invalidCalculationInputs",
+    MissingAirConditions = "missingAirConditions",
+    MissingTestPressure = "missingTestPressure",
+    NoUsableDifferential = "noUsableDifferential",
+};
+
+/**
+ * LeakageConditions defines model for LeakageConditions.
+ */
+export interface LeakageConditions {
+    "approachCoefficient": number;
+    "atmosphericPressurePa": number;
+    "dischargeCoefficient": number;
+    "expansibility": number;
+    "orificeDiameterM": number;
+    "orificeExpansionPerC": number;
+    "pipeDiameterM": number;
+    "pipeExpansionPerC": number;
+    "relativeHumidity": number;
+    "roughnessCorrection": number;
+    "source": string;
+    "temperatureC": number;
+}
+
+/**
+ * LeakageValues defines model for LeakageValues.
+ */
+export interface LeakageValues {
+    "contributingSeconds": number;
+    "massFlowKgPerSecond": number;
+
+    /**
+     * NormalizedFlowM3PerHour Объёмный расход, приведённый к 20 °C и 101325 Па.
+     */
+    "normalizedFlowM3PerHour": number;
+    "specificLeakageLitresPerSecondPerSquareMetre": number;
+    "testPressurePa": number;
+    "workingFlowM3PerSecond": number;
+}
+
+/**
  * ListTestsParams defines parameters for ListTests.
  */
 export interface ListTestsParams {
@@ -264,10 +357,20 @@ export interface ListTestsParams {
  */
 export interface Measurement {
     "channel": MeasurementChannel;
+
+    /**
+     * GapBefore У ДД1 значение true означает, что перед этим опросом пропущен хотя бы один тик опроса.
+     */
+    "gapBefore"?: boolean;
     "measuredAt": string | null;
     "observedAt": string;
     "quality": MeasurementQuality;
     "quantity": MeasurementQuantity;
+
+    /**
+     * SelectedDifferential Выбор этого ДД2 или ДД3 в данном опросе. Поле отсутствует у ДД1 и у неразмеченных отсчётов.
+     */
+    "selectedDifferential"?: boolean | null;
     "sequence": number;
     "source": MeasurementSource;
     "unit": MeasurementUnit;
@@ -286,9 +389,9 @@ export enum MeasurementChannel {
     /**
      * Defines values for MeasurementChannel.
      */
-    Dd1 = "dd1",
-    Dd2 = "dd2",
-    Dd3 = "dd3",
+    MeasurementChannelDd1 = "dd1",
+    MeasurementChannelDd2 = "dd2",
+    MeasurementChannelDd3 = "dd3",
 };
 
 /**
@@ -380,8 +483,27 @@ export enum MeasurementUnit {
 export interface PendingAction {
     "actionId": types$0.UUID;
     "instruction": string;
+    "kind"?: PendingActionKind | null;
     "testId": types$0.UUID;
 }
+
+/**
+ * PendingActionKind defines model for PendingAction.Kind.
+ */
+export enum PendingActionKind {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    /**
+     * Defines values for PendingActionKind.
+     */
+    ConfirmPreparation = "confirmPreparation",
+    ConfirmStopped = "confirmStopped",
+    ConfirmValveClosed = "confirmValveClosed",
+    ConfirmValveOpen = "confirmValveOpen",
+};
 
 /**
  * Readiness defines model for Readiness.
@@ -420,6 +542,27 @@ export enum ReadinessCheckSource {
 };
 
 /**
+ * RunPhase defines model for RunPhase.
+ */
+export enum RunPhase {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    /**
+     * Defines values for RunPhase.
+     */
+    AwaitingPreparation = "awaitingPreparation",
+    AwaitingValveClosing = "awaitingValveClosing",
+    AwaitingValveOpening = "awaitingValveOpening",
+    Measuring = "measuring",
+    SearchingPressure = "searchingPressure",
+    StabilizingAfterClosing = "stabilizingAfterClosing",
+    StabilizingBeforeOpening = "stabilizingBeforeOpening",
+};
+
+/**
  * SessionView defines model for SessionView.
  */
 export interface SessionView {
@@ -437,9 +580,15 @@ export interface SessionView {
  * Snapshot defines model for Snapshot.
  */
 export interface Snapshot {
+    "activeDifferential"?: SnapshotActiveDifferential | null;
     "activeTest": TestRecord | null;
     "apiVersion": string;
     "backendRunId": types$0.UUID;
+
+    /**
+     * CurrentReadings Последний опрос каналов до основного измерения. Нумерация локальна для этой проекции, показания не входят в архив.
+     */
+    "currentReadings"?: Measurement[] | null;
     "lastEventSequence": number;
 
     /**
@@ -453,8 +602,30 @@ export interface Snapshot {
     "measurementTiming": MeasurementTiming | null;
     "measurements": Measurement[] | null;
     "pendingAction": PendingAction | null;
+
+    /**
+     * PhaseTiming Монотонное время Engine на последнем принятом отсчёте. Нулевой остаток не подтверждает завершение этапа.
+     */
+    "phaseTiming"?: MeasurementTiming | null;
     "revision": number;
+    "runPhase"?: RunPhase | null;
 }
+
+/**
+ * SnapshotActiveDifferential defines model for Snapshot.ActiveDifferential.
+ */
+export enum SnapshotActiveDifferential {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    /**
+     * Defines values for SnapshotActiveDifferential.
+     */
+    SnapshotActiveDifferentialDd2 = "dd2",
+    SnapshotActiveDifferentialDd3 = "dd3",
+};
 
 /**
  * TestList defines model for TestList.
@@ -476,12 +647,31 @@ export interface TestParameters {
     "actuator": boolean;
     "areaM2": number;
     "direction": TestParametersDirection;
+    "lowerPressureHoldSeconds"?: number | null;
+    "lowerPressureLimitPa"?: number | null;
 
     /**
-     * MeasurementSeconds Для нового demo-испытания максимум 3600 секунд; точный повтор ранее принятой команды сохраняет прежний результат.
+     * MeasurementSeconds Длительность измерения в целых секундах.
      */
     "measurementSeconds": number;
     "pmaxPa": number;
+
+    /**
+     * PostCloseStabilizationRetries Отдельный лимит повторов для каждой стабилизации.
+     */
+    "postCloseStabilizationRetries": number;
+
+    /**
+     * PostCloseStabilizationSeconds Длительность стабилизации после закрытия клапана, с.
+     */
+    "postCloseStabilizationSeconds": number;
+
+    /**
+     * PreOpenStabilizationSeconds Длительность стабилизации перед открытием клапана, с.
+     */
+    "preOpenStabilizationSeconds": number;
+    "upperPressureHoldSeconds"?: number | null;
+    "upperPressureLimitPa"?: number | null;
     "valve": string;
 }
 
@@ -508,6 +698,7 @@ export interface TestRecord {
     "dataQuality": TestRecordDataQuality;
     "demo": boolean;
     "finishedAt"?: string | null;
+    "leakageCalculation"?: LeakageCalculation | null;
     "operatorId": string;
     "outcome": TestRecordOutcome;
     "parameters": TestParameters;

@@ -1,4 +1,4 @@
-import { type ReactNode, useState } from 'react';
+import type { ReactNode } from 'react';
 import { RunScreen } from '../components/RunScreen';
 import type {
   Measurement,
@@ -10,23 +10,20 @@ import {
   formatMeasurement,
   formatNumber,
   formatRemainingSeconds,
+  unavailableValue,
 } from '../lib/format';
 import { measurementQualityLabel } from './display';
-import type { MeasurementSeriesContext } from './measurement-series';
-import { isStartMeasurementInstruction, measurementLabel } from './presentation';
-import { useMeasurementSeries } from './use-measurement-series';
+import { measurementLabel } from './presentation';
 
 function shown(item: Measurement | undefined): string {
-  return (item?.quality === 'valid' || item?.quality === 'stale') && item.value !== null
+  return item?.quality === 'valid' || item?.quality === 'stale'
     ? formatMeasurement(item.value)
-    : 'Неизвестно';
+    : unavailableValue;
 }
 export function LiveRun({
   record,
   snapshot,
   fresh,
-  measurementContext,
-  measurementKey,
   pending,
   onConfirm,
   stop,
@@ -34,75 +31,63 @@ export function LiveRun({
   record: TestRecord;
   snapshot: Snapshot;
   fresh: boolean;
-  measurementContext: MeasurementSeriesContext;
-  measurementKey: string;
   pending: boolean;
   onConfirm: () => void;
   stop?: ReactNode;
 }) {
-  const series = useMeasurementSeries(measurementContext, measurementKey);
-  const [detailsOpen, setDetailsOpen] = useState(false);
-  const pressure = snapshot.measurements?.find((item) => item.channel === 'dd1');
-  const differential = snapshot.measurements?.find((item) => item.channel === 'dd2');
+  const readings = snapshot.currentReadings?.length
+    ? snapshot.currentReadings
+    : snapshot.measurements;
+  const pressure = readings?.find((item) => item.channel === 'dd1');
+  const differential = readings?.find(
+    (item) => item.channel === (snapshot.activeDifferential ?? 'dd2'),
+  );
   const stopping = record.stage === 'stopping';
   const awaiting = !!snapshot.pendingAction;
-  const startsMeasurement = isStartMeasurementInstruction(snapshot.pendingAction?.instruction);
-  const timing = snapshot.measurementTiming;
-  const phase = stopping ? 2 : awaiting ? 0 : 1;
+  const timing = snapshot.phaseTiming ?? snapshot.measurementTiming;
+  const phases = [
+    ['awaitingPreparation', 'Подготовительные циклы'],
+    ['searchingPressure', 'Набор давления'],
+    ['stabilizingBeforeOpening', 'Стабилизация перед открытием'],
+    ['awaitingValveOpening', 'Открытие клапана'],
+    ['awaitingValveClosing', 'Закрытие клапана'],
+    ['stabilizingAfterClosing', 'Стабилизация после закрытия'],
+    ['measuring', 'Измерение'],
+    ['stopping', 'Остановка'],
+  ] as const;
+  const phase = phases.findIndex(([id]) => id === (stopping ? 'stopping' : snapshot.runPhase));
   const instruction = stopping
-    ? 'По последнему снимку: этап остановки; безопасное давление не подтверждено.'
-    : startsMeasurement
-      ? undefined
-      : (snapshot.pendingAction?.instruction ??
-        (timing ? undefined : 'Ожидаем данные измерения ядра.'));
+    ? 'По последнему снимку: этап остановки. Безопасное давление не подтверждено.'
+    : snapshot.pendingAction?.instruction;
+  const confirmationLabel = {
+    confirmPreparation: 'Подтвердить подготовку',
+    confirmValveOpen: 'Подтвердить открытие клапана',
+    confirmValveClosed: 'Подтвердить закрытие клапана',
+    confirmStopped: 'Подтвердить остановку вала',
+  } as const;
   return (
     <RunScreen
       subtitle={<>{record.parameters.valve} · Нагнетание · Без привода</>}
-      stages={['Ожидание подтверждения', 'Измерение', 'Остановка'].map((label, index) => ({
-        id: String(index),
+      stages={phases.map(([id, label], index) => ({
+        id,
         label,
         state:
-          index === phase
-            ? phase === 1 && !timing
-              ? 'next'
-              : 'current'
-            : stopping
-              ? 'inactive'
-              : index < phase
-                ? 'done'
-                : 'next',
+          index === phase ? 'current' : stopping ? 'inactive' : index < phase ? 'done' : 'next',
       }))}
       pressure={shown(pressure)}
       differential={shown(differential)}
+      differentialChannel={snapshot.activeDifferential === 'dd3' ? 'ДД3' : 'ДД2'}
       target={`${formatNumber(record.parameters.pmaxPa)} Па`}
-      pressureNote={<p>{measurementQualityLabel(pressure?.quality)} · последний отсчёт</p>}
-      differentialNote={<p>{measurementQualityLabel(differential?.quality)} · последний отсчёт</p>}
-      details={
-        <details className="reading-details" onToggle={(e) => setDetailsOpen(e.currentTarget.open)}>
-          <summary>Время и качество показаний</summary>
-          {detailsOpen &&
-            snapshot.measurements?.map((item) => (
-              <p key={item.channel}>
-                {item.channel.replace('dd', 'ДД')}: {shown(item)} ·{' '}
-                {item.measuredAt ?? 'время неизвестно'} · качество последнего наблюдения:{' '}
-                {measurementQualityLabel(item.quality)}
-              </p>
-            ))}
-        </details>
+      pressureNote={
+        pressure &&
+        pressure.quality !== 'valid' && <p>{measurementQualityLabel(pressure.quality)}</p>
       }
-      chart={{
-        live: true,
-        points: series.points,
-        target: record.parameters.pmaxPa,
-      }}
-      chartNote={
-        series.clockChanged
-          ? 'Время измерения изменилось: график начат заново с нового отсчёта.'
-          : 'Время от первого полученного отсчёта; пропуски не соединяются.'
+      differentialNote={
+        differential &&
+        differential.quality !== 'valid' && <p>{measurementQualityLabel(differential.quality)}</p>
       }
-      actionTitle={
-        stopping ? 'Остановка' : awaiting ? 'Подтверждение оператора' : measurementLabel(timing)
-      }
+      leakageMessage={stopping ? 'Рабочая точка недоступна' : 'Рабочая точка ещё не получена'}
+      actionTitle={phases[phase]?.[1] ?? measurementLabel(timing)}
       actionLabel={
         stopping
           ? 'Состояние по последнему полученному снимку'
@@ -114,12 +99,14 @@ export function LiveRun({
           <dl className="run-time">
             <div>
               <dt>Прошло</dt>
-              <dd>{timing ? `${formatElapsedSeconds(timing.elapsedSeconds)} с` : 'Неизвестно'}</dd>
+              <dd>
+                {timing ? `${formatElapsedSeconds(timing.elapsedSeconds)} с` : unavailableValue}
+              </dd>
             </div>
             <div>
               <dt>Осталось</dt>
               <dd>
-                {timing ? `${formatRemainingSeconds(timing.remainingSeconds)} с` : 'Неизвестно'}
+                {timing ? `${formatRemainingSeconds(timing.remainingSeconds)} с` : unavailableValue}
               </dd>
             </div>
           </dl>
@@ -134,7 +121,9 @@ export function LiveRun({
             disabled={!fresh || pending}
             onClick={onConfirm}
           >
-            {startsMeasurement ? 'Запуск испытания' : 'Подтвердить действие'}
+            {snapshot.pendingAction?.kind
+              ? confirmationLabel[snapshot.pendingAction.kind]
+              : 'Подтвердить действие'}
           </button>
         )
       }

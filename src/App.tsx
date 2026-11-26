@@ -1,8 +1,7 @@
 import { ArrowRight } from 'lucide-react';
 import { useRef, useState } from 'react';
-import { ActiveTestPanel } from './components/ActiveTestPanel';
 import { AppShell } from './components/AppShell';
-import { ActiveParametersScreen, draftFrom, ParametersScreen } from './components/ParametersScreen';
+import { draftFrom, ParametersScreen } from './components/ParametersScreen';
 import { ReadinessScreen } from './components/ReadinessScreen';
 import { ResultScreen } from './components/ResultScreen';
 import { RunScreen as SharedRunScreen } from './components/RunScreen';
@@ -10,7 +9,7 @@ import { StopButton } from './components/StopButton';
 import { Button } from './components/ui/button';
 import { useScreenFocus } from './components/use-screen-focus';
 import { FixtureTests } from './FixtureTests';
-import { demoSteps, fixtureSource, prepareRunDisplay } from './fixtureAdapter';
+import { demoSteps, fixtureSource, prepareLeakagePoint, prepareRunDisplay } from './fixtureAdapter';
 import {
   formatElapsedSeconds,
   formatMeasurement,
@@ -19,14 +18,12 @@ import {
 } from './lib/format';
 import type { Fixture, FixtureId, Screen, TestParameters } from './model';
 
-const number = (value: number) => formatNumber(value, 12);
-
 function initialFixture(): Fixture {
   const query = new URLSearchParams(window.location.search);
   const fixture = fixtureSource.find(query.get('fixture')) ?? fixtureSource.get('empty');
   if (fixture.id === 'stopping' && query.get('sensor') === 'lost') {
     const lost = fixtureSource.get('sensor-lost');
-    return { ...fixture, pressure: lost.pressure, graph: lost.graph };
+    return { ...fixture, pressure: lost.pressure };
   }
   return fixture;
 }
@@ -47,7 +44,6 @@ function RunScreen({
   fixture,
   parameters,
   onResult,
-  onList,
   onFixture,
   step,
   onAdvance,
@@ -55,7 +51,6 @@ function RunScreen({
   fixture: Fixture;
   parameters: TestParameters;
   onResult: () => void;
-  onList: () => void;
   onFixture: (id: FixtureId) => void;
   step: number;
   onAdvance: () => void;
@@ -67,7 +62,7 @@ function RunScreen({
   const isLost = fixture.pressure.quality !== 'valid';
   const isStopping = fixture.id === 'stopping';
   const isActuator = parameters.actuator;
-  const { graph, pressureValue, lastPressure, differentialValue } = prepareRunDisplay(
+  const { pressureValue, lastPressure, differentialValue } = prepareRunDisplay(
     fixture,
     parameters,
     item.stage,
@@ -98,7 +93,6 @@ function RunScreen({
 
   return (
     <SharedRunScreen
-      onList={onList}
       subtitle={
         <>
           {parameters.id} · {parameters.valve} ·{' '}
@@ -112,10 +106,8 @@ function RunScreen({
         ...stage,
         state: index === stageIndex ? 'current' : index < stageIndex ? 'done' : 'next',
       }))}
-      pressure={pressureValue === null ? 'Неизвестно' : formatMeasurement(pressureValue)}
-      differential={
-        differentialValue === null ? 'Неизвестно' : formatMeasurement(differentialValue)
-      }
+      pressure={formatMeasurement(pressureValue)}
+      differential={formatMeasurement(differentialValue)}
       target={`${formatNumber(parameters.pmax)} Па`}
       pressureNote={
         <>
@@ -131,17 +123,8 @@ function RunScreen({
           {isStopping && isLost && <p>Данные ДД1 недоступны</p>}
         </>
       }
-      chart={{
-        points: graph,
-        target: parameters.pmax,
-        rangeSeconds: item.stage === 'measurement' ? parameters.measurementSeconds : undefined,
-        tolerance:
-          item.stage === 'stabilization' ? 2 : item.stage === 'restabilization' ? 5 : undefined,
-      }}
-      chartNote={
-        item.stage === 'measurement'
-          ? `Прошло ${number(parameters.measurementSeconds / 2)} с · длительность ${number(parameters.measurementSeconds)} с`
-          : 'Ряд: 60 с'
+      leakageMessage={
+        isStopping || isLost ? 'Рабочая точка недоступна' : 'Рабочая точка ещё не получена'
       }
       headingRef={actionHeadingRef}
       actionTitle={isStopping ? 'Остановка' : isLost ? 'Потеря данных ДД1' : item.title}
@@ -211,26 +194,16 @@ export function App() {
   const [showExample, setShowExample] = useState(
     initial.id !== 'empty' && initial.id !== 'save-error',
   );
-  const activeRun = useRef<{ fixture: Fixture; parameters: TestParameters; step: number } | null>(
-    initial.screen === 'run'
-      ? { fixture: initial, parameters: initial.parameters, step: initialStep(initial) }
-      : null,
-  );
-
   function selectFixture(id: FixtureId, preserveParameters = false) {
     const base = fixtureSource.get(id);
-    const context = preserveParameters
-      ? screen === 'run'
-        ? { fixture, parameters, step }
-        : activeRun.current
-      : null;
+    if (active && base.screen !== 'run') return;
+    const context = preserveParameters && screen === 'run' ? { fixture, parameters, step } : null;
     const selected =
       context && id === 'stopping'
         ? {
             ...base,
             pressure: context.fixture.pressure,
             differential: context.fixture.differential,
-            graph: context.fixture.graph,
           }
         : base;
     setFixture(selected);
@@ -254,14 +227,6 @@ export function App() {
             demoSteps.findIndex((item) => item.stage === selected.stage),
           );
     setStep(selectedStep);
-    activeRun.current =
-      selected.screen === 'run'
-        ? {
-            fixture: selected,
-            parameters: context?.parameters ?? selected.parameters,
-            step: selectedStep,
-          }
-        : null;
     const url = new URL(window.location.href);
     url.searchParams.set('fixture', id);
     if (preserveParameters && id === 'stopping') {
@@ -289,7 +254,6 @@ export function App() {
     setNextId((id) => id + 1);
     setFixture(fixtureSource.get('empty'));
     setActive(false);
-    activeRun.current = null;
     setScreen('parameters');
   }
   function startRun() {
@@ -297,11 +261,6 @@ export function App() {
     setStep(0);
     setActive(true);
     setDraftAvailable(false);
-    activeRun.current = {
-      fixture: { ...fixtureSource.get('waiting'), stage: 'cycles' },
-      parameters,
-      step: 0,
-    };
     const url = new URL(window.location.href);
     url.searchParams.set('fixture', 'waiting');
     url.searchParams.set('step', '0');
@@ -309,23 +268,26 @@ export function App() {
     setScreen('run');
   }
   function openList() {
-    if (screen === 'run') activeRun.current = { fixture, parameters, step };
+    if (active) return;
     setScreen('tests');
   }
   function openParameters() {
-    if (screen === 'run') activeRun.current = { fixture, parameters, step };
+    if (active) return;
     setScreen('parameters');
   }
   function openRun() {
-    if (screen === 'run') return;
-    if (activeRun.current) {
-      setFixture(activeRun.current.fixture);
-      setParameters(activeRun.current.parameters);
-      setStep(activeRun.current.step);
-      setScreen('run');
-    }
+    if (active && screen !== 'run') setScreen('run');
   }
-  const activeFixture = screen === 'run' ? fixture : activeRun.current?.fixture;
+  const latestResult = history[0];
+  const leakagePoint =
+    screen === 'result' &&
+    !historyResult &&
+    fixture.id !== 'save-error' &&
+    fixture.id !== 'stopping' &&
+    latestResult?.id === parameters.id
+      ? prepareLeakagePoint(latestResult)
+      : undefined;
+  const activeFixture = screen === 'run' ? fixture : undefined;
   const activeNotice =
     activeFixture?.id === 'stopping'
       ? activeFixture.pressure.quality !== 'valid'
@@ -339,6 +301,7 @@ export function App() {
       screen={screen}
       historyResult={historyResult}
       active={active}
+      navigationLocked={active}
       draftAvailable={draftAvailable}
       announcement={
         screen === 'run' ? (activeNotice ?? `Этап: ${demoSteps[step]?.title ?? ''}`) : null
@@ -347,19 +310,15 @@ export function App() {
       onRun={openRun}
       onParameters={openParameters}
       onResult={
-        !active && history.length
+        !active && latestResult
           ? () => {
-              const last = history[0];
-              if (last) {
-                setParameters(last);
-                setFixture(fixtureSource.get('measuring'));
-                setScreen('result');
-              }
+              setParameters(latestResult);
+              setFixture(fixtureSource.get('measuring'));
+              setScreen('result');
             }
           : undefined
       }
       mainRef={mainRef}
-      notice={active && screen !== 'run' ? activeNotice : null}
       footer={
         <div className="fixture-toolbar">
           <div>
@@ -375,7 +334,11 @@ export function App() {
               }}
             >
               {fixtureSource.ids.map((id) => (
-                <option key={id} value={id}>
+                <option
+                  key={id}
+                  value={id}
+                  disabled={active && fixtureSource.get(id).screen !== 'run'}
+                >
                   {fixtureSource.get(id).label}
                 </option>
               ))}
@@ -384,7 +347,7 @@ export function App() {
         </div>
       }
     >
-      <div className={active && screen !== 'run' ? 'active-route-layout' : undefined}>
+      <div>
         <div className="route-content">
           {screen === 'tests' && (
             <FixtureTests
@@ -403,24 +366,21 @@ export function App() {
               showExample={showExample}
               history={history}
               example={fixtureSource.initial}
-              activeParameters={active ? (activeRun.current?.parameters ?? parameters) : null}
+              activeParameters={null}
             />
           )}
-          {screen === 'parameters' &&
-            (active && activeRun.current ? (
-              <ActiveParametersScreen parameters={activeRun.current.parameters} />
-            ) : (
-              <ParametersScreen
-                initial={draftBase}
-                draft={draft}
-                setDraft={setDraft}
-                onBack={() => setScreen('tests')}
-                onContinue={(value) => {
-                  setParameters(value);
-                  setScreen('readiness');
-                }}
-              />
-            ))}
+          {screen === 'parameters' && (
+            <ParametersScreen
+              initial={draftBase}
+              draft={draft}
+              setDraft={setDraft}
+              onBack={() => setScreen('tests')}
+              onContinue={(value) => {
+                setParameters(value);
+                setScreen('readiness');
+              }}
+            />
+          )}
           {screen === 'readiness' && (
             <ReadinessScreen
               parameters={parameters}
@@ -431,7 +391,6 @@ export function App() {
           )}
           {screen === 'run' && (
             <RunScreen
-              onList={openList}
               fixture={fixture}
               parameters={parameters}
               step={step}
@@ -451,7 +410,6 @@ export function App() {
                 ]);
                 setActive(false);
                 setDraftAvailable(false);
-                activeRun.current = null;
                 setScreen('result');
               }}
               onFixture={(id) => selectFixture(id, true)}
@@ -464,6 +422,7 @@ export function App() {
               interrupted={fixture.id === 'stopping'}
               active={active}
               draftAvailable={draftAvailable}
+              previewPoint={leakagePoint}
               onList={() => setScreen('tests')}
               onNew={() => {
                 if (draftAvailable) {
@@ -484,27 +443,6 @@ export function App() {
             />
           )}
         </div>
-        {active && screen !== 'run' && (
-          <ActiveTestPanel
-            title={`${(activeRun.current?.parameters ?? parameters).id} · ${(activeRun.current?.parameters ?? parameters).valve}`}
-            status="Текущее испытание"
-            description={activeNotice ?? 'Испытание не завершено'}
-            onReturn={openRun}
-            stop={
-              <StopButton
-                disabled={activeFixture?.id === 'stopping'}
-                label={
-                  activeFixture?.id === 'stopping'
-                    ? 'Остановка выполняется'
-                    : 'Остановить испытание'
-                }
-                onStop={() => {
-                  selectFixture('stopping', true);
-                }}
-              />
-            }
-          />
-        )}
       </div>
     </AppShell>
   );

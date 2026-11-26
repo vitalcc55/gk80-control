@@ -272,7 +272,7 @@ func TestMeasurementAndAuditPagesDistinguishEndAndMissing(t *testing.T) {
 	measured, value := now.Format(time.RFC3339Nano), 10.0
 	samples := make([]TimedMeasurement, 0, 3)
 	for sequence := int64(1); sequence <= 3; sequence++ {
-		m := contract.Measurement{Sequence: sequence, Channel: "dd1", Quantity: "pressure", Value: &value, Unit: "Pa", ObservedAt: now, MeasuredAt: &measured, Quality: "valid", Source: "simulator"}
+		m := contract.Measurement{Sequence: sequence, Channel: "dd1", Quantity: "pressure", Value: &value, Unit: "Pa", ObservedAt: now, MeasuredAt: &measured, Quality: "valid", Source: "simulator", GapBefore: sequence == 3}
 		samples = append(samples, TimedMeasurement{Measurement: m, Elapsed: time.Duration(sequence) * time.Second})
 	}
 	if err := store.RecordMeasurements(ctx, id, samples); err != nil {
@@ -285,6 +285,9 @@ func TestMeasurementAndAuditPagesDistinguishEndAndMissing(t *testing.T) {
 	last, err := store.MeasurementsPage(ctx, id, *first.NextAfter, 2)
 	if err != nil || len(last.Items) != 1 || last.NextAfter != nil || last.Items[0].Sequence != 3 {
 		t.Fatalf("last: %+v %v", last, err)
+	}
+	if first.Items[0].GapBefore || !last.Items[0].GapBefore {
+		t.Fatal("a measurement gap was changed or lost across page boundaries")
 	}
 	full, err := store.MeasurementsPage(ctx, id, 0, 3)
 	if err != nil || len(full.Items) != 3 || full.NextAfter != nil {

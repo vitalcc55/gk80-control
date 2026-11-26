@@ -12,6 +12,7 @@ import (
 	"math/big"
 	"net/url"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -134,59 +135,54 @@ func (s *Store) Settings() SQLiteSettings { return s.settings }
 func (s *Store) DatabaseID() uuid.UUID { return s.databaseID }
 
 func (s *Store) initialize() error {
-	if _, err := s.db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+	var objects int
+	if err := s.db.QueryRow(`SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'`).Scan(&objects); err != nil {
 		return err
 	}
-	var version int
-	if err := s.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
-		return err
-	}
-	if version == 3 {
+	if objects != 0 {
+		for _, query := range []string{
+			`SELECT id, revision, database_id FROM meta LIMIT 0`,
+			`SELECT id, record, stage, measurement_elapsed_ns FROM tests LIMIT 0`,
+			`SELECT id, operation, request, status, test_id, reason, operator_id, occurred_at FROM commands LIMIT 0`,
+			`SELECT sequence, test_id, occurred_at, operator_id, action, outcome, revision, command_id, action_id, reason FROM audit LIMIT 0`,
+			`SELECT action_id, test_id, instruction, kind, state FROM test_actions LIMIT 0`,
+			`SELECT test_id, sequence, elapsed_ns, channel, quality, payload FROM measurements LIMIT 0`,
+		} {
+			rows, err := s.db.Query(query)
+			if err != nil {
+				return fmt.Errorf("incompatible demo database; choose a clean profile directory: %w", err)
+			}
+			if err := rows.Close(); err != nil {
+				return err
+			}
+		}
+		var pendingIndex string
+		if err := s.db.QueryRow(`SELECT sql FROM sqlite_schema WHERE type = 'index' AND name = 'one_pending_action'`).Scan(&pendingIndex); err != nil ||
+			strings.Join(strings.Fields(strings.ToLower(pendingIndex)), " ") != "create unique index one_pending_action on test_actions(test_id) where state = 'pending'" {
+			return errors.New("incompatible demo database; choose a clean profile directory: pending action constraint unavailable")
+		}
 		id, err := readDatabaseID(s.db)
 		if err != nil {
-			return err
+			return fmt.Errorf("incompatible demo database; choose a clean profile directory: %w", err)
 		}
 		s.databaseID = id
 		return nil
-	}
-	if version != 0 && version != 1 && version != 2 {
-		return errors.New("unsupported database schema")
-	}
-	if version == 0 {
-		var objects int
-		if err := s.db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'`).Scan(&objects); err != nil {
-			return err
-		}
-		if objects != 0 {
-			return errors.New("unrecognized database")
-		}
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	var statements []string
-	if version == 0 {
-		statements = []string{
-			`CREATE TABLE meta (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL CHECK (revision >= 0))`,
-			`INSERT INTO meta (id, revision) VALUES (1, 0)`,
-			`CREATE TABLE tests (id TEXT PRIMARY KEY, record BLOB NOT NULL, stage TEXT NOT NULL)`,
-			`CREATE TABLE commands (id TEXT PRIMARY KEY, operation TEXT NOT NULL, request BLOB NOT NULL, status TEXT NOT NULL, test_id TEXT REFERENCES tests(id), reason TEXT, operator_id TEXT NOT NULL, occurred_at TEXT NOT NULL)`,
-			`CREATE TABLE audit (sequence INTEGER PRIMARY KEY AUTOINCREMENT, test_id TEXT NOT NULL REFERENCES tests(id), occurred_at TEXT NOT NULL, operator_id TEXT NOT NULL, action TEXT NOT NULL, outcome TEXT NOT NULL, revision INTEGER NOT NULL, command_id TEXT, action_id TEXT, reason TEXT)`,
-			`CREATE INDEX audit_by_test ON audit(test_id, sequence)`,
-		}
-	}
-	if version < 2 {
-		statements = append(statements,
-			`CREATE TABLE test_actions (action_id TEXT PRIMARY KEY, test_id TEXT NOT NULL REFERENCES tests(id), instruction TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('pending', 'confirmed', 'canceled', 'unknown')))`,
-			`CREATE UNIQUE INDEX one_pending_action ON test_actions(test_id) WHERE state = 'pending'`,
-			`CREATE TABLE measurements (test_id TEXT NOT NULL REFERENCES tests(id), sequence INTEGER NOT NULL CHECK(sequence > 0), elapsed_ns INTEGER NOT NULL CHECK(elapsed_ns >= 0), channel TEXT NOT NULL, quality TEXT NOT NULL, payload BLOB NOT NULL, PRIMARY KEY(test_id, sequence))`,
-			`ALTER TABLE tests ADD COLUMN measurement_elapsed_ns INTEGER`,
-		)
-	}
-	statements = append(statements, `ALTER TABLE meta ADD COLUMN database_id TEXT`)
-	for _, statement := range statements {
+	for _, statement := range []string{
+		`CREATE TABLE meta (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL CHECK (revision >= 0), database_id TEXT)`,
+		`CREATE TABLE tests (id TEXT PRIMARY KEY, record BLOB NOT NULL, stage TEXT NOT NULL, measurement_elapsed_ns INTEGER)`,
+		`CREATE TABLE commands (id TEXT PRIMARY KEY, operation TEXT NOT NULL, request BLOB NOT NULL, status TEXT NOT NULL, test_id TEXT REFERENCES tests(id), reason TEXT, operator_id TEXT NOT NULL, occurred_at TEXT NOT NULL)`,
+		`CREATE TABLE audit (sequence INTEGER PRIMARY KEY AUTOINCREMENT, test_id TEXT NOT NULL REFERENCES tests(id), occurred_at TEXT NOT NULL, operator_id TEXT NOT NULL, action TEXT NOT NULL, outcome TEXT NOT NULL, revision INTEGER NOT NULL, command_id TEXT, action_id TEXT, reason TEXT)`,
+		`CREATE INDEX audit_by_test ON audit(test_id, sequence)`,
+		`CREATE TABLE test_actions (action_id TEXT PRIMARY KEY, test_id TEXT NOT NULL REFERENCES tests(id), instruction TEXT NOT NULL, kind TEXT, state TEXT NOT NULL CHECK(state IN ('pending', 'confirmed', 'canceled', 'unknown')))`,
+		`CREATE UNIQUE INDEX one_pending_action ON test_actions(test_id) WHERE state = 'pending'`,
+		`CREATE TABLE measurements (test_id TEXT NOT NULL REFERENCES tests(id), sequence INTEGER NOT NULL CHECK(sequence > 0), elapsed_ns INTEGER NOT NULL CHECK(elapsed_ns >= 0), channel TEXT NOT NULL, quality TEXT NOT NULL, payload BLOB NOT NULL, PRIMARY KEY(test_id, sequence))`,
+	} {
 		if _, err := tx.Exec(statement); err != nil {
 			return err
 		}
@@ -195,14 +191,7 @@ func (s *Store) initialize() error {
 	if err != nil {
 		return err
 	}
-	result, err := tx.Exec(`UPDATE meta SET database_id = ? WHERE id = 1`, id.String())
-	if err != nil {
-		return err
-	}
-	if count, err := result.RowsAffected(); err != nil || count != 1 {
-		return errors.New("invalid database metadata")
-	}
-	if _, err := tx.Exec(`PRAGMA user_version = 3`); err != nil {
+	if _, err := tx.Exec(`INSERT INTO meta (id, revision, database_id) VALUES (1, 0, ?)`, id.String()); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -229,7 +218,18 @@ func (s *Store) Close() error { return s.db.Close() }
 func valid(command contract.CreateTestCommand) bool {
 	p := command.Parameters
 	number := func(v float64) bool { return v > 0 && !math.IsInf(v, 0) && !math.IsNaN(v) }
-	return command.CommandId != uuid.Nil && command.ExpectedRevision >= 0 && strings.TrimSpace(p.Valve) != "" && utf8.RuneCountInString(p.Valve) <= 200 && p.Direction == "pressure" && !p.Actuator && number(p.AreaM2) && number(p.PmaxPa) && number(p.MeasurementSeconds) && p.MeasurementSeconds <= 3600
+	whole := func(v, min, max float64) bool { return v >= min && v <= max && math.Trunc(v) == v }
+	return command.CommandId != uuid.Nil && command.ExpectedRevision >= 0 && strings.TrimSpace(p.Valve) != "" && utf8.RuneCountInString(p.Valve) <= 200 && p.Direction == "pressure" && !p.Actuator && number(p.AreaM2) && number(p.PmaxPa) && whole(p.MeasurementSeconds, 60, 300) && whole(p.PreOpenStabilizationSeconds, 10, 100) && whole(p.PostCloseStabilizationSeconds, 10, 100) && p.PostCloseStabilizationRetries >= 0 && p.PostCloseStabilizationRetries <= 100 && ValidPressureLimits(p)
+}
+
+func ValidPressureLimits(p contract.TestParameters) bool {
+	if p.LowerPressureLimitPa == nil || p.UpperPressureLimitPa == nil || p.LowerPressureHoldSeconds == nil || p.UpperPressureHoldSeconds == nil {
+		return false
+	}
+	lower, upper := *p.LowerPressureLimitPa, *p.UpperPressureLimitPa
+	return lower >= 0 && lower < p.PmaxPa && upper > p.PmaxPa && !math.IsInf(upper, 0) && upper <= 1.1*p.PmaxPa &&
+		*p.LowerPressureHoldSeconds >= 0 && float64(*p.LowerPressureHoldSeconds) <= p.MeasurementSeconds &&
+		*p.UpperPressureHoldSeconds >= 0 && float64(*p.UpperPressureHoldSeconds) <= p.MeasurementSeconds
 }
 
 // LookupCreate resolves an uncertain response without re-executing the command.
@@ -264,7 +264,7 @@ func validateCreateIdentity(command contract.CreateTestCommand, identity []byte)
 	}
 	var parsed contract.CreateTestCommand
 	input, err := validator.InspectCanonical("CreateTestCommand", identity, &parsed)
-	if err != nil || parsed != command || !bytes.Equal(identity, input.Identity) {
+	if err != nil || !reflect.DeepEqual(parsed, command) || !bytes.Equal(identity, input.Identity) {
 		return false, ErrInvalidCommand
 	}
 	return input.Valid, nil
@@ -281,12 +281,9 @@ func (s *Store) Create(ctx context.Context, command contract.CreateTestCommand) 
 
 // CreateExact stores the canonical original request atomically with the command.
 func (s *Store) CreateExact(ctx context.Context, command contract.CreateTestCommand, identity []byte) (contract.CommandStatus, error) {
-	valid, err := validateCreateIdentity(command, identity)
+	_, err := validateCreateIdentity(command, identity)
 	if err != nil {
 		return contract.CommandStatus{}, err
-	}
-	if !valid {
-		return s.createRequest(ctx, command, identity, ErrInvalidCommand)
 	}
 	return s.createRequest(ctx, command, identity, nil)
 }
@@ -422,7 +419,7 @@ func reject(ctx context.Context, tx *sql.Tx, command contract.CreateTestCommand,
 }
 
 func (s *Store) create(ctx context.Context, tx *sql.Tx, command contract.CreateTestCommand, request []byte, writeAttempted *bool) (contract.CommandStatus, error) {
-	if !valid(command) || !validDuration(request) {
+	if !valid(command) || !validParameterNumbers(request) {
 		return reject(ctx, tx, command, request, "invalid_command", ErrInvalidCommand, writeAttempted)
 	}
 	var revision int64
@@ -477,17 +474,30 @@ func (s *Store) create(ctx context.Context, tx *sql.Tx, command contract.CreateT
 	return contract.CommandStatus{CommandId: command.CommandId, Status: "completed", TestId: &id}, nil
 }
 
-func validDuration(request []byte) bool {
+func validParameterNumbers(request []byte) bool {
 	var body struct {
 		Parameters struct {
-			MeasurementSeconds json.Number `json:"measurementSeconds"`
+			MeasurementSeconds            json.Number `json:"measurementSeconds"`
+			PreOpenStabilizationSeconds   json.Number `json:"preOpenStabilizationSeconds"`
+			PostCloseStabilizationSeconds json.Number `json:"postCloseStabilizationSeconds"`
+			PostCloseStabilizationRetries json.Number `json:"postCloseStabilizationRetries"`
+			LowerPressureHoldSeconds      json.Number `json:"lowerPressureHoldSeconds"`
+			UpperPressureHoldSeconds      json.Number `json:"upperPressureHoldSeconds"`
 		} `json:"parameters"`
 	}
 	if err := json.Unmarshal(request, &body); err != nil {
 		return false
 	}
-	value, ok := new(big.Rat).SetString(body.Parameters.MeasurementSeconds.String())
-	return ok && value.Sign() > 0 && value.Cmp(big.NewRat(3600, 1)) <= 0
+	whole := func(number json.Number, min, max int64) bool {
+		value, ok := new(big.Rat).SetString(number.String())
+		return ok && value.IsInt() && value.Cmp(big.NewRat(min, 1)) >= 0 && value.Cmp(big.NewRat(max, 1)) <= 0
+	}
+	return whole(body.Parameters.MeasurementSeconds, 60, 300) &&
+		whole(body.Parameters.PreOpenStabilizationSeconds, 10, 100) &&
+		whole(body.Parameters.PostCloseStabilizationSeconds, 10, 100) &&
+		whole(body.Parameters.PostCloseStabilizationRetries, 0, 100) &&
+		whole(body.Parameters.LowerPressureHoldSeconds, 0, 300) &&
+		whole(body.Parameters.UpperPressureHoldSeconds, 0, 300)
 }
 
 func (s *Store) Revision(ctx context.Context) (int64, error) {

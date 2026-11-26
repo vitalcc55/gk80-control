@@ -75,27 +75,18 @@ func (blockedExactCreate) LookupStopExact(context.Context, uuid.UUID, uuid.UUID)
 }
 
 func TestExactCreateLookupMatchesStoredIdentityWithoutExecuting(t *testing.T) {
-	store, err := storage.Open(t.TempDir())
+	dir := t.TempDir()
+	store, err := storage.Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = store.Close() }()
-	engine, err := demo.NewEngine(context.Background(), store, demo.NewSimulator(), uuid.New())
-	if err != nil {
-		t.Fatal(err)
-	}
+	t.Cleanup(func() { _ = store.Close() })
 	validator, err := contract.NewInputValidator()
 	if err != nil {
 		t.Fatal(err)
 	}
-	leases := newUILeases(engine, time.Minute)
-	defer leases.close()
-	lease, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)
-	if err != nil {
-		t.Fatal(err)
-	}
 	id := uuid.New()
-	body := `{"commandId":"` + id.String() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":10,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"` + id.String() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1.0000000000000001,"lowerPressureLimitPa":0,"upperPressureLimitPa":1080,"lowerPressureHoldSeconds":0,"upperPressureHoldSeconds":0,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	var command contract.CreateTestCommand
 	input, err := validator.Inspect("CreateTestCommand", []byte(body), &command)
 	if err != nil {
@@ -104,6 +95,24 @@ func TestExactCreateLookupMatchesStoredIdentityWithoutExecuting(t *testing.T) {
 	created, err := store.CreateExact(context.Background(), command, input.Identity)
 	if err != nil || created.TestId == nil {
 		t.Fatalf("setup create: %+v %v", created, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := storage.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store = reopened
+	engine, err := demo.NewEngine(context.Background(), store, demo.NewSimulator(), uuid.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	leases := newUILeases(engine, time.Minute)
+	defer leases.close()
+	lease, err := leases.acquire(context.Background(), uuid.New(), uuid.Nil)
+	if err != nil {
+		t.Fatal(err)
 	}
 	beforeAudit, err := store.AuditPage(context.Background(), *created.TestId, 0, 100)
 	if err != nil {
@@ -125,11 +134,11 @@ func TestExactCreateLookupMatchesStoredIdentityWithoutExecuting(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &matched); err != nil || response.Code != http.StatusOK || matched.CommandId != id || matched.TestId == nil || *matched.TestId != *created.TestId || matched.Status != contract.CommandStatusStatusCompleted {
 		t.Fatalf("match: %d %s %v", response.Code, response.Body.String(), err)
 	}
-	equivalent := strings.Replace(body, `"areaM2":1`, `"areaM2":1.0`, 1)
+	equivalent := strings.Replace(body, `"areaM2":1.0000000000000001`, `"areaM2":1.00000000000000010`, 1)
 	if response := request(equivalent, store.DatabaseID().String(), "secret"); response.Code != http.StatusOK {
 		t.Fatalf("equivalent number: %d %s", response.Code, response.Body.String())
 	}
-	changed := strings.Replace(body, `"areaM2":1`, `"areaM2":1.0000000000000001`, 1)
+	changed := strings.Replace(body, `"areaM2":1.0000000000000001`, `"areaM2":1`, 1)
 	if response := request(changed, store.DatabaseID().String(), "secret"); response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"command_conflict"`) {
 		t.Fatalf("exact numeric conflict: %d %s", response.Code, response.Body.String())
 	}
@@ -218,7 +227,7 @@ func TestExactCreateLookupStopsWhenLeaseIsReleased(t *testing.T) {
 	}
 	reader := blockedExactCreate{database: store.DatabaseID(), entered: make(chan struct{})}
 	handler := &coreHTTP{secret: "secret", validator: validator, leases: leases, exact: reader}
-	body := `{"commandId":"` + uuid.NewString() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":10,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"` + uuid.NewString() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"lowerPressureLimitPa":0,"upperPressureLimitPa":1080,"lowerPressureHoldSeconds":0,"upperPressureHoldSeconds":0,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/commands/lookup/create", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer secret")
 	req.Header.Set(leaseHeader, lease.id.String())
@@ -339,7 +348,7 @@ func TestExactCreateLookupKeepsWorkerThroughResponseFlush(t *testing.T) {
 	server := &http.Server{Handler: handler, WriteTimeout: 5 * time.Second}
 	defer func() { _ = server.Close() }()
 	go func() { _ = server.Serve(gate) }()
-	body := `{"commandId":"` + uuid.NewString() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":10,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"` + uuid.NewString() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"lowerPressureLimitPa":0,"upperPressureLimitPa":1080,"lowerPressureHoldSeconds":0,"upperPressureHoldSeconds":0,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	req, err := http.NewRequest(http.MethodPost, "http://"+listener.Addr().String()+"/v1/commands/lookup/create", strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
@@ -415,7 +424,7 @@ func TestExactCreateLookupRevocationInterruptsResponseFlush(t *testing.T) {
 	server := &http.Server{Handler: handler, WriteTimeout: 5 * time.Second}
 	defer func() { _ = server.Close() }()
 	go func() { _ = server.Serve(tracked) }()
-	body := `{"commandId":"` + uuid.NewString() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":10,"direction":"pressure","actuator":false}}`
+	body := `{"commandId":"` + uuid.NewString() + `","expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"lowerPressureLimitPa":0,"upperPressureLimitPa":1080,"lowerPressureHoldSeconds":0,"upperPressureHoldSeconds":0,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`
 	req, err := http.NewRequest(http.MethodPost, "http://"+listener.Addr().String()+"/v1/commands/lookup/create", strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)

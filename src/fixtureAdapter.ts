@@ -1,5 +1,5 @@
 import { defaultParameters, fixtureIds, fixtures, getFixture, stages } from './fixtures';
-import type { Fixture, FixtureId, StageId, TestParameters } from './model';
+import type { Fixture, FixtureId, LeakagePoint, StageId, TestParameters } from './model';
 
 /** Временная граница представления; при интеграции сопоставляется с контрактом core. */
 export interface PreviewSource {
@@ -18,6 +18,18 @@ export const fixtureSource: PreviewSource = {
   get: (id: FixtureId): Fixture => fixtures[id],
   find: getFixture,
 };
+
+const preparedLeakagePoint: LeakagePoint = {
+  specificLeakageLitresPerSecondPerSquareMetre: 20,
+  testPressurePa: 10_010,
+};
+
+export function prepareLeakagePoint(parameters: TestParameters): LeakagePoint | undefined {
+  if (parameters.direction === 'pressure' && !parameters.actuator && parameters.pmax === 10_000) {
+    return preparedLeakagePoint;
+  }
+  return undefined;
+}
 
 /** Переходы предназначены только для просмотра; это не алгоритм core. */
 export const demoSteps: readonly {
@@ -76,7 +88,7 @@ export const demoSteps: readonly {
   },
 ];
 
-/** Подгоняет синтетический ряд для обсуждения выбранной точки, не выполняя измерение. */
+/** Масштабирует подготовленные показания для обсуждения выбранной точки, не выполняя измерение. */
 export function prepareRunDisplay(fixture: Fixture, parameters: TestParameters, stage: StageId) {
   const scale = (value: number): number | null => {
     if (parameters.pmax === defaultParameters.pmax) return value;
@@ -91,22 +103,6 @@ export function prepareRunDisplay(fixture: Fixture, parameters: TestParameters, 
   const releasing =
     stage === 'release' && fixture.pressure.quality === 'valid' && fixture.pressure.value !== null;
   return {
-    graph: fixture.graph
-      .filter((point) => stage !== 'measurement' || point.seconds <= 30)
-      .map((point) => ({
-        ...point,
-        seconds:
-          stage === 'measurement'
-            ? (point.seconds / 60) * parameters.measurementSeconds
-            : point.seconds,
-        pressure:
-          noData || point.pressure === null
-            ? null
-            : releasing
-              ? released(1 - point.seconds / 75)
-              : scale(point.pressure),
-        differential: noData ? null : point.differential,
-      })),
     pressureValue:
       noData || fixture.pressure.quality !== 'valid'
         ? null

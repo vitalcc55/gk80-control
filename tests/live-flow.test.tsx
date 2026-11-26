@@ -1,6 +1,6 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { type ComponentProps, Profiler, StrictMode } from 'react';
+import { type ComponentProps, StrictMode } from 'react';
 import { beforeEach, expect, it, vi } from 'vitest';
 import type { DesktopBridge, SessionBridge } from '../src/desktop/bridge';
 import { createBrowserBridge } from '../src/desktop/browser-bridge';
@@ -8,7 +8,6 @@ import { DesktopApp as RealDesktopApp } from '../src/desktop/DesktopApp';
 import { CommandConflictError } from '../src/desktop/demo-service';
 import { History } from '../src/desktop/History';
 import { LiveApp as RealLiveApp } from '../src/desktop/LiveApp';
-import { MeasurementSeriesContext } from '../src/desktop/measurement-series';
 import { sessionObservation } from '../src/desktop/session-observation';
 import { desktopDemoService } from '../src/desktop/wails-bridge';
 import {
@@ -24,6 +23,7 @@ import {
   MeasurementQuantity,
   MeasurementSource,
   MeasurementUnit,
+  PendingActionKind,
   type Readiness,
   ReadinessCheckSource,
   type SessionView,
@@ -69,6 +69,13 @@ function LiveApp(
     />
   );
 }
+// The characteristic's real canvas is exercised in Playwright.
+vi.mock('../src/components/LeakageChart', () => ({
+  LeakageChart: ({ emptyMessage }: { emptyMessage: string }) => (
+    <section aria-label="Характеристика утечки">{emptyMessage}</section>
+  ),
+}));
+
 vi.mock('../src/components/MeasurementChart', () => ({
   MeasurementChart: ({ points }: { points: readonly GraphPoint[] }) => (
     <div role="img" aria-label="График показаний симулятора" data-points={JSON.stringify(points)} />
@@ -110,6 +117,16 @@ const testId = '33333333-3333-4333-8333-333333333333';
 const actionId = '44444444-4444-4444-8444-444444444444';
 const stopId = '55555555-5555-4555-8555-555555555555';
 
+async function fillPressureLimits(user: ReturnType<typeof userEvent.setup>) {
+  const pmax = Number(
+    (screen.getByLabelText(/производителя, Па/) as HTMLInputElement).value.replace(',', '.'),
+  );
+  await user.type(screen.getByLabelText('Нижний аварийный предел, Па'), '0');
+  await user.type(screen.getByLabelText('Выдержка ниже нижнего предела, с'), '0');
+  await user.type(screen.getByLabelText('Верхний аварийный предел, Па'), String(pmax + 1));
+  await user.type(screen.getByLabelText('Выдержка выше верхнего предела, с'), '0');
+}
+
 function pendingList(): HTMLElement {
   const list = screen
     .getByRole('region', { name: 'Сообщения команд' })
@@ -139,7 +156,10 @@ function savedAttempt(
             valve: 'V',
             areaM2: 1,
             pmaxPa: 1000,
-            measurementSeconds: 10,
+            measurementSeconds: 60,
+            preOpenStabilizationSeconds: 10,
+            postCloseStabilizationSeconds: 10,
+            postCloseStabilizationRetries: 1,
             direction: 'pressure',
             actuator: false,
           },
@@ -173,14 +193,16 @@ const record = {
     valve: 'К-1',
     areaM2: 1,
     pmaxPa: 1000,
-    measurementSeconds: 10,
+    measurementSeconds: 60,
+    preOpenStabilizationSeconds: 10,
+    postCloseStabilizationSeconds: 10,
+    postCloseStabilizationRetries: 1,
     direction: TestParametersDirection.TestParametersDirectionPressure,
     actuator: false,
   },
 };
 
-it('isolates a series-only update from hidden screens and keeps the completed result reachable', async () => {
-  const measurementContext = new MeasurementSeriesContext();
+it('keeps the current readings and completed result reachable without leaving the run', async () => {
   let snapshot: Snapshot = {
     apiVersion: 'v1',
     backendRunId: backend,
@@ -192,7 +214,7 @@ it('isolates a series-only update from hidden screens and keeps the completed re
     measurementTiming: null,
     measurements: [
       {
-        channel: MeasurementChannel.Dd1,
+        channel: MeasurementChannel.MeasurementChannelDd1,
         measuredAt: '2026-10-30T00:00:01Z',
         observedAt: '2026-10-30T00:00:01Z',
         quality: MeasurementQuality.MeasurementQualityValid,
@@ -222,36 +244,12 @@ it('isolates a series-only update from hidden screens and keeps the completed re
     }),
   };
   api.list.mockResolvedValue({ items: [], nextAfter: null });
-  const commits = vi.fn();
-  render(
-    <Profiler id="operator-view" onRender={commits}>
-      <LiveApp
-        session={session}
-        hostRunId={host}
-        backendRunId={backend}
-        measurementContext={measurementContext}
-      />
-    </Profiler>,
-  );
+  render(<LiveApp session={session} hostRunId={host} backendRunId={backend} />);
   await screen.findByRole('heading', { name: 'Проведение испытания' });
-  await userEvent.setup().click(screen.getByRole('button', { name: 'Испытания' }));
-  await screen.findByText('История пуста');
-  commits.mockClear();
-  const key = `${host}:${backend}:${database}:${testId}`;
-  const next = {
-    ...snapshot,
-    measurementBatch: 2,
-    measurements:
-      snapshot.measurements?.map((item) => ({
-        ...item,
-        sequence: 2,
-        measuredAt: '2026-10-30T00:00:02Z',
-        value: 1001,
-      })) ?? [],
-  };
-  act(() => measurementContext.accept(key, next, true, 0));
-  expect(measurementContext.read(key).points.at(-1)?.pressure).toBe(1001);
-  expect(commits).not.toHaveBeenCalled();
+  expect(screen.getByRole('button', { name: 'Испытания' })).toHaveProperty('disabled', true);
+  expect(screen.getByText(/≈ 1\s?000 Па/)).toBeTruthy();
+  expect(screen.getByRole('region', { name: 'Характеристика утечки' })).toBeTruthy();
+  expect(screen.queryByText('Подробности измерений')).toBeNull();
   snapshot = {
     ...snapshot,
     revision: 2,
@@ -261,163 +259,170 @@ it('isolates a series-only update from hidden screens and keeps the completed re
       stage: TestRecordStage.Finished,
       outcome: TestRecordOutcome.TestRecordOutcomeCompleted,
     },
+    pendingAction: {
+      testId,
+      actionId,
+      kind: PendingActionKind.ConfirmStopped,
+      instruction: 'Подтвердите, что вал остановился.',
+    },
   };
-  await userEvent
-    .setup()
-    .click(await screen.findByRole('button', { name: 'Результат прохода' }, { timeout: 8000 }));
+  const user = userEvent.setup();
+  await user.click(
+    await screen.findByRole('button', { name: 'Результат прохода' }, { timeout: 8000 }),
+  );
   expect(screen.getByRole('heading', { name: 'Результат испытания' })).toBeTruthy();
-  expect(screen.getByText('Завершено')).toBeTruthy();
+  const overview = screen.getByText('Завершено').closest('.result-overview');
+  const chart = screen.getByRole('region', { name: 'Характеристика утечки' });
+  for (const name of ['Параметры прохода', 'Результаты расчёта']) {
+    const detailsHeading = screen.getByRole('heading', { name });
+    expect(chart.compareDocumentPosition(detailsHeading)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  }
+  api.measurements.mockResolvedValue({ items: [], nextAfter: null });
+  const measurementTrace = screen.getByText('График измерений', { selector: 'summary' });
+  expect(overview?.compareDocumentPosition(measurementTrace)).toBe(
+    Node.DOCUMENT_POSITION_PRECEDING,
+  );
+  await user.click(measurementTrace);
+  expect(await screen.findByText('Сохранённых показаний для графика нет.')).toBeTruthy();
+  for (const title of ['Сведения о записи', 'Измерения', 'Журнал событий']) {
+    expect(screen.queryByText(title, { selector: 'summary' })).toBeNull();
+  }
+  expect(screen.queryByText('Подтвердите, что вал остановился.')).toBeNull();
+  const confirm = screen.getByRole('button', { name: 'Подтвердить остановку вала' });
+  const actions = screen.getByRole('button', { name: 'К списку' }).parentElement;
+  expect(confirm.parentElement).toBe(actions);
+  expect(screen.queryByRole('button', { name: 'Новое по этим параметрам' })).toBeNull();
+  api.confirm.mockImplementation(async (_testId, _actionId, { commandId }) => {
+    snapshot = { ...snapshot, revision: 3, lastEventSequence: 3, pendingAction: null };
+    return {
+      delivery: CommandDispatchDelivery.CommandDispatchDeliveryResponse,
+      command: { commandId, status: CommandStatusStatus.CommandStatusStatusCompleted, testId },
+    };
+  });
+  await user.click(confirm);
+  expect(api.confirm).toHaveBeenCalledWith(
+    testId,
+    actionId,
+    expect.objectContaining({
+      expectedRevision: 2,
+    }),
+  );
+  const newTest = await screen.findByRole(
+    'button',
+    { name: 'Новое по этим параметрам' },
+    { timeout: 8000 },
+  );
+  expect(newTest.parentElement).toBe(actions);
+  expect(newTest).toHaveProperty('disabled', false);
+  expect(screen.queryByRole('button', { name: 'Подтвердить остановку вала' })).toBeNull();
   expect(api.stop).not.toHaveBeenCalled();
 }, 12000);
 
-it.each(['history', 'bridge'] as const)(
-  'retains chart points and time origin through %s without sending commands',
-  async (route) => {
-    const sample = (index: number): Snapshot => ({
-      apiVersion: 'v1',
-      backendRunId: backend,
-      revision: index,
-      lastEventSequence: index,
-      measurementBatch: index,
-      activeTest: { ...record, stage: TestRecordStage.Running },
-      pendingAction: null,
-      measurementTiming: null,
-      measurements: [
-        {
-          channel: MeasurementChannel.Dd1,
-          measuredAt: `2026-10-30T00:00:0${index}Z`,
-          observedAt: `2026-10-30T00:00:0${index}Z`,
-          quality: MeasurementQuality.MeasurementQualityValid,
-          quantity: MeasurementQuantity.MeasurementQuantityPressure,
-          sequence: index,
-          source: MeasurementSource.MeasurementSourceSimulator,
-          unit: MeasurementUnit.Pa,
-          value: 999 + index,
-        },
-      ],
-    });
-    let snapshot = sample(1);
-    let revision = 0;
-    const session: SessionBridge = {
-      beginSessionCheck: async () => 'ticket',
-      keepAlive: async () => {},
-      sessionView: async () => ({
-        connection: {
-          hostRunId: host,
-          revision: ++revision,
-          status: ConnectionStateStatus.Live,
-          linkValid: true,
-          leaseAcquireUnknown: false,
-          streamGeneration: 0,
-        },
-        snapshot,
-        validForMs: 6000,
-        linkValidForMs: 6000,
-      }),
-    };
-    api.list.mockResolvedValue({ items: [], nextAfter: null });
-    const desktop: DesktopBridge = {
-      status: async () => ({
+it('blocks navigation during the run and restores current readings after bridge interruption', async () => {
+  const sample = (index: number): Snapshot => ({
+    apiVersion: 'v1',
+    backendRunId: backend,
+    revision: index,
+    lastEventSequence: index,
+    measurementBatch: index,
+    activeTest: { ...record, stage: TestRecordStage.Running },
+    pendingAction: null,
+    measurementTiming: null,
+    measurements: [
+      {
+        channel: MeasurementChannel.MeasurementChannelDd1,
+        measuredAt: `2026-10-30T00:00:0${index}Z`,
+        observedAt: `2026-10-30T00:00:0${index}Z`,
+        quality: MeasurementQuality.MeasurementQualityValid,
+        quantity: MeasurementQuantity.MeasurementQuantityPressure,
+        sequence: index,
+        source: MeasurementSource.MeasurementSourceSimulator,
+        unit: MeasurementUnit.Pa,
+        value: 999 + index,
+      },
+    ],
+  });
+  let snapshot = sample(1);
+  let revision = 0;
+  const session: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
         hostRunId: host,
-        revision: 1,
-        connectionRevision: 1,
-        status: DesktopStatusStatus.DesktopStatusStatusReady,
-        diagnosticsDegraded: false,
-        handshake: { apiVersion: 'v1', backendRunId: backend, databaseId: database, demo: true },
-      }),
-      verify: async () => desktop.status(),
-      subscribe: () => () => {},
-    };
-    const measurementContext = new MeasurementSeriesContext();
-    const view = render(
-      <DesktopApp bridge={desktop} session={session} measurementContext={measurementContext} />,
-    );
-    const points = () =>
-      screen.getByRole('img', { name: 'График показаний симулятора' }).getAttribute('data-points');
-    await waitFor(() => expect(points()).toContain('1000'));
-    const currentNavigation = screen.getByRole('button', { name: 'Текущее испытание' });
-    expect(currentNavigation.getAttribute('aria-current')).toBe('page');
-    currentNavigation.focus();
-    snapshot = sample(2);
-    await waitFor(() => expect(points()).toContain('1001'), { timeout: 8000 });
-    expect(document.activeElement).toBe(currentNavigation);
-    const user = userEvent.setup();
-    if (route === 'history') {
-      await user.click(screen.getByRole('button', { name: 'Испытания' }));
-      expect(document.activeElement).toBe(screen.getByRole('main', { name: 'Испытания' }));
-      expect(screen.getByRole('button', { name: 'Испытания' }).getAttribute('aria-current')).toBe(
-        'page',
-      );
-      expect(screen.getByRole('button', { name: 'Остановить испытание' })).toBeTruthy();
-    } else {
-      view.rerender(
-        <DesktopApp
-          bridge={{
-            ...desktop,
-            status: async () => {
-              throw new Error('unavailable');
-            },
-          }}
-          session={session}
-          measurementContext={measurementContext}
-        />,
-      );
-      await screen.findByRole('button', { name: 'Повторить связь' });
-    }
-    expect(screen.queryByRole('img', { name: 'График показаний симулятора' })).toBeNull();
-    snapshot = sample(route === 'history' ? 4 : 3);
-    if (route === 'history') {
-      await waitFor(
-        () =>
-          expect(
-            measurementContext
-              .read(`${host}:${backend}:${database}:${testId}`)
-              .points.map((point) => point.pressure),
-          ).toEqual([1000, 1001, null, 1003]),
-        { timeout: 8000 },
-      );
-      expect(screen.queryByRole('img', { name: 'График показаний симулятора' })).toBeNull();
-      snapshot = sample(5);
-      await waitFor(
-        () =>
-          expect(
-            measurementContext
-              .read(`${host}:${backend}:${database}:${testId}`)
-              .points.map((point) => point.pressure),
-          ).toEqual([1000, 1001, null, 1003, 1004]),
-        { timeout: 8000 },
-      );
-      expect(screen.queryByRole('img', { name: 'График показаний симулятора' })).toBeNull();
-      await user.click(screen.getByRole('button', { name: 'Текущее испытание' }));
-    } else
-      view.rerender(
-        <DesktopApp bridge={desktop} session={session} measurementContext={measurementContext} />,
-      );
-    await waitFor(
-      () =>
-        expect(points()).toBe(
-          JSON.stringify([
-            { seconds: 0, pressure: 1000, differential: null },
-            { seconds: 1, pressure: 1001, differential: null },
-            ...(route === 'bridge'
-              ? [
-                  { seconds: 1.5, pressure: null, differential: null },
-                  { seconds: 2, pressure: 1002, differential: null },
-                ]
-              : [
-                  { seconds: 2, pressure: null, differential: null },
-                  { seconds: 3, pressure: 1003, differential: null },
-                  { seconds: 4, pressure: 1004, differential: null },
-                ]),
-          ]),
-        ),
-      { timeout: 8000 },
-    );
-    for (const command of [api.create, api.start, api.confirm, api.stop])
-      expect(command).not.toHaveBeenCalled();
-  },
-  30000,
-);
+        revision: ++revision,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot,
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.list.mockResolvedValue({ items: [], nextAfter: null });
+  const desktop: DesktopBridge = {
+    status: async () => ({
+      hostRunId: host,
+      revision: 1,
+      connectionRevision: 1,
+      status: DesktopStatusStatus.DesktopStatusStatusReady,
+      diagnosticsDegraded: false,
+      handshake: { apiVersion: 'v1', backendRunId: backend, databaseId: database, demo: true },
+    }),
+    verify: async () => desktop.status(),
+    subscribe: () => () => {},
+  };
+  const view = render(<DesktopApp bridge={desktop} session={session} />);
+  await screen.findByText(/≈ 1\s?000 Па/);
+  const currentNavigation = screen.getByRole('button', { name: 'Текущее испытание' });
+  expect(currentNavigation.getAttribute('aria-current')).toBe('page');
+  currentNavigation.focus();
+  snapshot = sample(2);
+  await screen.findByText(/≈ 1\s?001 Па/, {}, { timeout: 8000 });
+  expect(document.activeElement).toBe(currentNavigation);
+  const user = userEvent.setup();
+  expect(screen.getByRole('button', { name: 'Испытания' })).toHaveProperty('disabled', true);
+  expect(screen.getByRole('button', { name: 'Параметры' })).toHaveProperty('disabled', true);
+  await user.click(screen.getByRole('button', { name: 'Испытания' }));
+  expect(screen.getByRole('heading', { name: 'Проведение испытания' })).toBeTruthy();
+  view.rerender(
+    <DesktopApp
+      bridge={{
+        ...desktop,
+        status: async () => {
+          throw new Error('unavailable');
+        },
+      }}
+      session={session}
+    />,
+  );
+  await screen.findByRole('button', { name: 'Повторить связь' });
+  expect(screen.queryByRole('region', { name: 'Характеристика утечки' })).toBeNull();
+  snapshot = sample(3);
+  view.rerender(<DesktopApp bridge={desktop} session={session} />);
+  await screen.findByText(/≈ 1\s?002 Па/, {}, { timeout: 8000 });
+  expect(screen.getByRole('button', { name: 'Испытания' })).toHaveProperty('disabled', true);
+  snapshot = { ...sample(4), activeTest: { ...record, stage: TestRecordStage.Stopping } };
+  await screen.findAllByText(/этап остановки/i, {}, { timeout: 8000 });
+  expect(screen.getByRole('button', { name: 'Испытания' })).toHaveProperty('disabled', true);
+  snapshot = {
+    ...sample(5),
+    activeTest: {
+      ...record,
+      stage: TestRecordStage.Finished,
+      outcome: TestRecordOutcome.TestRecordOutcomeInterrupted,
+    },
+  };
+  await waitFor(
+    () =>
+      expect(screen.getByRole('button', { name: 'Испытания' })).toHaveProperty('disabled', false),
+    { timeout: 8000 },
+  );
+  for (const command of [api.create, api.start, api.confirm, api.stop])
+    expect(command).not.toHaveBeenCalled();
+}, 30000);
 
 beforeEach(() => {
   sessionStorage.clear();
@@ -432,6 +437,53 @@ beforeEach(() => {
             command: { ...command, testId: command.testId ?? (target || testId) },
           };
     },
+  );
+});
+
+it('copies the saved stabilization retry count into a new draft', async () => {
+  const saved = {
+    ...record,
+    stage: TestRecordStage.Finished,
+    outcome: TestRecordOutcome.TestRecordOutcomeCompleted,
+    parameters: { ...record.parameters, postCloseStabilizationRetries: 0 },
+  };
+  const snapshot: Snapshot = {
+    apiVersion: 'v1',
+    backendRunId: backend,
+    revision: 0,
+    lastEventSequence: 0,
+    measurementBatch: null,
+    activeTest: null,
+    pendingAction: null,
+    measurementTiming: null,
+    measurements: [],
+  };
+  const session: SessionBridge = {
+    beginSessionCheck: async () => 'ticket',
+    keepAlive: async () => {},
+    sessionView: async () => ({
+      connection: {
+        hostRunId: host,
+        revision: 1,
+        status: ConnectionStateStatus.Live,
+        linkValid: true,
+        leaseAcquireUnknown: false,
+        streamGeneration: 0,
+      },
+      snapshot,
+      validForMs: 6000,
+      linkValidForMs: 6000,
+    }),
+  };
+  api.list.mockResolvedValue({ items: [saved], nextAfter: null });
+  api.test.mockResolvedValue(saved);
+  render(<LiveApp session={session} hostRunId={host} backendRunId={backend} />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('button', { name: /Открыть.*К-1/ }));
+  await user.click(await screen.findByRole('button', { name: 'Новое по этим параметрам' }));
+  expect(await screen.findByLabelText('Число повторов для каждой стабилизации')).toHaveProperty(
+    'value',
+    '0',
   );
 });
 
@@ -813,7 +865,7 @@ it('tracks Stop separately from a restored ordinary command with the same identi
   const mounted = render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   const stop = await screen.findByRole('button', { name: 'Остановить испытание' });
   await userEvent.setup().click(stop);
-  await screen.findByText('Остановка подтверждена ядром.');
+  await screen.findByRole('button', { name: 'Повторить запрос остановки' });
   expect(api.stop).toHaveBeenCalledOnce();
   expect(api.stop).toHaveBeenCalledWith(testId, { commandId: stopId });
   const rows = screen.getAllByText(/Команда:/);
@@ -1304,7 +1356,7 @@ it('keeps a requested history page when the same session replaces its service wr
     await response;
   });
   expect(await screen.findByRole('button', { name: /К-2/ })).toBeTruthy();
-  expect(listTests).toHaveBeenCalledWith({ limit: 20, after: testId });
+  expect(listTests).toHaveBeenCalledWith({ limit: 20, after: testId, outcome: 'completed' });
   expect(nextListTests).not.toHaveBeenCalled();
 });
 
@@ -1342,6 +1394,7 @@ it('finishes opening history when the same session replaces its service wrapper'
   expect(await screen.findByRole('heading', { name: 'Результат испытания' })).toBeTruthy();
   expect(measurements).not.toHaveBeenCalled();
   expect(audit).not.toHaveBeenCalled();
+  expect(screen.getByText('Сведения о записи', { selector: 'summary' })).toBeTruthy();
   const user = userEvent.setup();
   await user.click(screen.getByText('Измерения', { selector: 'summary' }));
   await user.click(screen.getByText('Журнал событий', { selector: 'summary' }));
@@ -1678,7 +1731,7 @@ it.each([
           measurementTiming: null,
           measurements: [
             {
-              channel: MeasurementChannel.Dd1,
+              channel: MeasurementChannel.MeasurementChannelDd1,
               measuredAt: '2026-10-30T00:00:01Z',
               observedAt: '2026-10-30T00:00:01Z',
               quality: MeasurementQuality.MeasurementQualityValid,
@@ -1709,6 +1762,9 @@ it.each([
     await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
     await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
     await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+    await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+    await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
+    await fillPressureLimits(user);
     await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
     expect(api.create).toHaveBeenCalledTimes(1);
     expect(api.create).toHaveBeenCalledWith(
@@ -1717,10 +1773,14 @@ it.each([
           areaM2: 0.012,
           pmaxPa: 10000,
           measurementSeconds: 60,
+          preOpenStabilizationSeconds: 10,
+          postCloseStabilizationSeconds: 10,
+          postCloseStabilizationRetries: 1,
         }),
       }),
     );
     await screen.findByRole('heading', { name: 'Автоматические проверки' }, { timeout: 8000 });
+    expect(screen.queryByRole('complementary', { name: 'Активное испытание' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Вернуться к испытанию' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Остановить испытание' })).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'К параметрам' }));
@@ -2072,7 +2132,7 @@ it('keeps a storage conflict visible after the direct Stop succeeds', async () =
     finish({ commandId: stopId, testId, status: 'completed' });
     await response;
   });
-  expect(await screen.findByText('Остановка подтверждена ядром.')).toBeTruthy();
+  expect(screen.queryByText('Остановка подтверждена ядром.')).toBeNull();
   expect(screen.getByText(/Сохранённая запись принадлежит другой команде/)).toBeTruthy();
 });
 
@@ -2122,7 +2182,7 @@ it('retains a confirmed Stop in volatile memory after remount', async () => {
     await userEvent
       .setup()
       .click(await screen.findByRole('button', { name: 'Остановить испытание' }));
-    await screen.findByText('Остановка подтверждена ядром.');
+    await screen.findByRole('button', { name: 'Повторить запрос остановки' });
     mounted.unmount();
     const restored = render(
       <LiveApp
@@ -2135,7 +2195,7 @@ it('retains a confirmed Stop in volatile memory after remount', async () => {
     expect(await screen.findByText(/Команда: выполнена/)).toBeTruthy();
     api.stop.mockRejectedValue(new Error('response lost'));
     await userEvent.setup().click(screen.getByRole('button', { name: 'Остановить испытание' }));
-    expect(await screen.findByText('Остановка подтверждена ядром.')).toBeTruthy();
+    expect(screen.queryByText('Остановка подтверждена ядром.')).toBeNull();
     expect(api.stop).toHaveBeenCalledTimes(2);
     setItem.mockRestore();
     await userEvent.setup().click(screen.getByRole('button', { name: 'Повторить чтение команд' }));
@@ -2171,7 +2231,7 @@ it('retains a confirmed Stop in volatile memory after remount', async () => {
       await userEvent
         .setup()
         .click(await screen.findByRole('button', { name: 'Остановить испытание' }));
-      expect(await screen.findByText('Остановка подтверждена ядром.')).toBeTruthy();
+      expect(screen.queryByText('Остановка подтверждена ядром.')).toBeNull();
       expect(screen.getByText(/Команда: выполнена/)).toBeTruthy();
       expect(api.stop).toHaveBeenCalledTimes(3);
     } finally {
@@ -2286,7 +2346,7 @@ it('does not give an old Stop without contents the result of a new attempt', asy
   const old = screen.getByText(/Исходное содержимое команды не сохранилось/);
   expect(old.textContent).toContain('исход неизвестен');
   expect(old.textContent).not.toContain('Команда: выполнена');
-  expect(screen.getByText('Остановка подтверждена ядром.')).toBeTruthy();
+  expect(screen.queryByText('Остановка подтверждена ядром.')).toBeNull();
 });
 
 it('does not attribute another Stop with the same ID but different JSON to the current request', async () => {
@@ -2458,6 +2518,9 @@ it.each([
     await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
     await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
     await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+    await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+    await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
+    await fillPressureLimits(user);
     await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
     if (retainBefore) {
       await screen.findByText(/Исход команды пока неизвестен/);
@@ -2568,6 +2631,9 @@ it('does not send another creation after an unknown response and remount', async
   await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
   await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
   await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+  await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+  await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
+  await fillPressureLimits(user);
   await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
   await screen.findByText(/Исход команды пока неизвестен/);
   mounted.unmount();
@@ -2639,6 +2705,9 @@ it.each(['wails', 'browser'])(
     await user.type(valve, 'К-1');
     await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
     await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+    await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+    await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
+    await fillPressureLimits(user);
     await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
     await screen.findByText(/Команда: исход неизвестен/);
     await user.click(screen.getByRole('button', { name: 'Проверить состояние' }));
@@ -2724,6 +2793,9 @@ it.each(['lost', 'malformed'] as const)(
     await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
     await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
     await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+    await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+    await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
+    await fillPressureLimits(user);
     await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
     await screen.findByText(/Исход команды пока неизвестен/);
     mounted.unmount();
@@ -2876,6 +2948,9 @@ it('does not replace a confirmed command with a late unknown exact lookup', asyn
   await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
   await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
   await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+  await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+  await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
+  await fillPressureLimits(user);
   await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
   await waitFor(() => expect(api.exact).toHaveBeenCalled());
   const sent = api.create.mock.calls[0]?.[0];
@@ -2953,6 +3028,9 @@ it.each(['failure', 'invalid'])(
     await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
     await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
     await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+    await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+    await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
+    await fillPressureLimits(user);
     await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
     await screen.findByText(/Команда: принята; завершение команды не подтверждено/);
     await act(async () => {
@@ -3008,6 +3086,9 @@ it('accepts a valid direct receipt without testId', async () => {
   await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
   await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
   await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+  await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+  await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
+  await fillPressureLimits(user);
   await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
   await screen.findByText(/Команда: принята; завершение команды не подтверждено/);
   expect(screen.queryByText(/Исход команды пока неизвестен/)).toBeNull();
@@ -3068,6 +3149,9 @@ it('links a completed Create without testId to its exact result and snapshot', a
   await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
   await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
   await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+  await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+  await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
+  await fillPressureLimits(user);
   await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
   await waitFor(() => expect(api.exact).toHaveBeenCalled());
   await screen.findByText(/Команда: выполнена/);
@@ -3134,7 +3218,7 @@ it('checks an exact ordinary attempt even when its ID is reserved for Stop', asy
     attempt.originalJSON,
   );
   await userEvent.setup().click(screen.getByRole('button', { name: 'Остановить испытание' }));
-  await screen.findByText('Остановка подтверждена ядром.');
+  await screen.findByRole('button', { name: 'Повторить запрос остановки' });
   expect(api.stop).toHaveBeenCalledOnce();
 });
 
@@ -3181,7 +3265,7 @@ it('can confirm Stop while an exact lookup with the same ID is waiting', async (
   const view = render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   await waitFor(() => expect(api.exact).toHaveBeenCalled());
   await userEvent.setup().click(screen.getByRole('button', { name: 'Остановить испытание' }));
-  await screen.findByText('Остановка подтверждена ядром.');
+  await screen.findByRole('button', { name: 'Повторить запрос остановки' });
   expect(api.exact).toHaveBeenCalledWith(
     database,
     'stop',
@@ -3360,7 +3444,7 @@ it('shows the restored terminal Stop status when the operator requests it again'
   await userEvent
     .setup()
     .click(await screen.findByRole('button', { name: 'Остановить испытание' }));
-  expect(screen.getByText('Остановка подтверждена ядром.')).toBeTruthy();
+  expect(screen.queryByText('Остановка подтверждена ядром.')).toBeNull();
   view.unmount();
   await act(async () => {
     finish({ commandId: stopId, testId, status: 'completed' });
@@ -3462,7 +3546,7 @@ it('does not let a late rejected Stop replace a confirmed finished outcome', asy
   render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
   const user = userEvent.setup();
   await user.click(await screen.findByRole('button', { name: 'Остановить испытание' }));
-  await screen.findByText('Остановка подтверждена ядром.');
+  await screen.findByRole('button', { name: 'Повторить запрос остановки' });
   await user.click(screen.getByRole('button', { name: 'Повторить запрос остановки' }));
   snapshot = {
     ...snapshot,
@@ -3483,7 +3567,7 @@ it('does not let a late rejected Stop replace a confirmed finished outcome', asy
     await second.catch(() => {});
   });
   expect(screen.queryByText(/Запрос остановки отклонён/)).toBeNull();
-  expect(screen.getByText('Остановка подтверждена ядром.')).toBeTruthy();
+  expect(screen.queryByText('Остановка подтверждена ядром.')).toBeNull();
 }, 12000);
 
 it('does not discard a Stop observation while an earlier request is still in flight', async () => {
@@ -3790,6 +3874,9 @@ it('does not report an unpersisted Stop when an ordinary browser receipt cannot 
   await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
   await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
   await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+  await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+  await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
+  await fillPressureLimits(user);
   await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
   await screen.findByText(/Не удалось обновить список команд/);
   expect(screen.queryByText(/Исход остановки отслеживается только в памяти/)).toBeNull();
@@ -3860,6 +3947,9 @@ it.each(['rejected response', 'not sent response'] as const)(
     await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
     await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
     await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+    await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+    await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
+    await fillPressureLimits(user);
     await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
     await screen.findByText(/Исход команды пока неизвестен/);
     allowRead = true;
@@ -4228,6 +4318,9 @@ it.each(['notSent', 'rejected', 'failed', 'lookupRejected', 'storageUnavailable'
             throw new Error('storage unavailable');
           })
         : null;
+    await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+    await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
+    await fillPressureLimits(user);
     await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
     const oldNotice =
       firstOutcome === 'storageUnavailable'
@@ -4319,6 +4412,9 @@ it('keeps an earlier test command failure when creating an unrelated test', asyn
   await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
   await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
   await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+  await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+  await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
+  await fillPressureLimits(user);
   await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
   const newNotice = await screen.findByText(
     'Не удалось подтвердить готовность.',
@@ -4470,6 +4566,9 @@ it('keeps a confirmed not-sent result when the service wrapper changes', async (
   await user.type(screen.getByLabelText('Обозначение или наименование клапана'), 'К-1');
   await user.type(screen.getByLabelText('Площадь клапана, квадратные метры'), '0,012');
   await user.type(screen.getByLabelText(/производителя, Па/), '10000');
+  await user.clear(screen.getByLabelText('Число повторов для каждой стабилизации'));
+  await user.type(screen.getByLabelText('Число повторов для каждой стабилизации'), '1');
+  await fillPressureLimits(user);
   await user.click(screen.getByRole('button', { name: /Проверить готовность/ }));
   await screen.findByText(/Команда: исход неизвестен/);
   await waitFor(() => expect(api.command).toHaveBeenCalled());
@@ -4606,13 +4705,13 @@ it('does not report an unknown stop after its confirmed response', async () => {
     });
     await stop;
   });
-  await screen.findByText('Остановка подтверждена ядром.');
+  await screen.findByRole('button', { name: 'Повторить запрос остановки' });
   await act(async () => {
     rejectLookup(new Error('late failure'));
     await lookup.catch(() => {});
   });
   expect(screen.queryByText(/Исход команды пока неизвестен/)).toBeNull();
-  expect(screen.getByText('Остановка подтверждена ядром.')).toBeTruthy();
+  expect(screen.queryByText('Остановка подтверждена ядром.')).toBeNull();
   expect(screen.getByText(/Команда: выполнена/)).toBeTruthy();
   expect(api.stop).toHaveBeenCalledOnce();
 });
@@ -4770,7 +4869,7 @@ it('clears an unknown stop when the separate stop check confirms it', async () =
     });
     await stopCheck;
   });
-  expect(await screen.findByText('Остановка подтверждена ядром.')).toBeTruthy();
+  expect(screen.queryByText('Остановка подтверждена ядром.')).toBeNull();
   expect(screen.queryByText(/Исход команды пока неизвестен/)).toBeNull();
   expect(pendingRow(stopId).textContent).toContain('Команда: выполнена');
   view.unmount();
@@ -4820,9 +4919,8 @@ it('explains when a pending start was canceled by stop', async () => {
     reason: 'canceled_by_stop',
   });
   render(<LiveApp session={bridge} hostRunId={host} backendRunId={backend} />);
-  expect(
-    await screen.findByText('Запуск отменён при остановке испытания до подтверждения оператора.'),
-  ).toBeTruthy();
+  await waitFor(() => expect(api.command).toHaveBeenCalledWith(startId));
+  expect(screen.queryByText(/Запуск отменён при остановке испытания/)).toBeNull();
   expect(api.start).not.toHaveBeenCalled();
 });
 
@@ -5023,7 +5121,7 @@ it('retains the running display and reserved Stop while replacing the session wr
     sessionView: async () => current,
   };
   const mounted = render(<LiveApp session={first} hostRunId={host} backendRunId={backend} />);
-  const chart = await screen.findByRole('img', { name: 'График показаний симулятора' });
+  const chart = await screen.findByRole('region', { name: 'Характеристика утечки' });
   const never = new Promise<SessionView>(() => {});
   mounted.rerender(
     <LiveApp
@@ -5032,7 +5130,7 @@ it('retains the running display and reserved Stop while replacing the session wr
       backendRunId={backend}
     />,
   );
-  expect(screen.getByRole('img', { name: 'График показаний симулятора' })).toBe(chart);
+  expect(screen.getByRole('region', { name: 'Характеристика утечки' })).toBe(chart);
   expect(screen.getByRole('button', { name: 'Остановить испытание' })).toBeTruthy();
 });
 
@@ -5097,7 +5195,7 @@ it('continues checking Stop after the interrupted result and keeps saving separa
       saveStatus: TestRecordSaveStatus.TestRecordSaveStatusFailed,
     },
   };
-  await screen.findByText('Остановка подтверждена ядром.', {}, { timeout: 8000 });
+  await screen.findByRole('heading', { name: 'Результат испытания' }, { timeout: 8000 });
   expect(screen.getByRole('heading', { name: 'Результат испытания' })).toBeTruthy();
   expect(screen.getByText(/ошибка сохранения/i)).toBeTruthy();
 }, 12000);

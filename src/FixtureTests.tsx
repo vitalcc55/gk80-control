@@ -2,6 +2,7 @@ import { useState } from 'react';
 import {
   emptyHistoryFilters,
   type HistoryFilters,
+  initialHistoryFilters,
   normalizeHistoryQuery,
   TestsScreen,
 } from './components/TestsScreen';
@@ -35,8 +36,8 @@ export function FixtureTests({
   pageSize,
   onPageSize,
 }: TestsScreenProps) {
-  const [filters, setFilters] = useState<HistoryFilters>(emptyHistoryFilters);
-  const [applied, setApplied] = useState<HistoryFilters>(emptyHistoryFilters);
+  const [filters, setFilters] = useState<HistoryFilters>(initialHistoryFilters);
+  const [applied, setApplied] = useState<HistoryFilters>(initialHistoryFilters);
   const [rangeError, setRangeError] = useState(false);
   const [page, setPage] = useState(0);
   const query = normalizeHistoryQuery(applied.query);
@@ -96,6 +97,15 @@ export function FixtureTests({
         })),
       ].slice(page * pageSize, (page + 1) * pageSize)}
       filters={filters}
+      appliedOutcome={applied.outcome}
+      onOutcomeTab={(outcome) => {
+        const next = { ...filters, outcome };
+        setFilters(next);
+        const invalid = !!next.from && !!next.through && next.from > next.through;
+        setApplied(invalid ? emptyHistoryFilters : next);
+        setRangeError(invalid);
+        setPage(0);
+      }}
       pageSize={pageSize}
       pageNumber={page + 1}
       total={rangeError ? undefined : (activeMatches ? 1 : 0) + matches.length}
@@ -114,8 +124,8 @@ export function FixtureTests({
       }}
       onReset={() => {
         setPage(0);
-        setFilters(emptyHistoryFilters);
-        setApplied(emptyHistoryFilters);
+        setFilters(initialHistoryFilters);
+        setApplied(initialHistoryFilters);
         setRangeError(false);
       }}
       onOpen={(id) => {

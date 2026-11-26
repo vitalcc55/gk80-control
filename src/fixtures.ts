@@ -1,4 +1,4 @@
-import type { Fixture, FixtureId, GraphPoint, Measurement, StageId, TestParameters } from './model';
+import type { Fixture, FixtureId, Measurement, StageId, TestParameters } from './model';
 
 /** Сценарии только отображают подготовленные состояния и не выполняют испытание. */
 export const stages: readonly { id: StageId; label: string }[] = [
@@ -22,6 +22,9 @@ export const defaultParameters: TestParameters = {
   openSeconds: 3,
   closeSeconds: 3,
   measurementSeconds: 60,
+  preOpenStabilizationSeconds: 10,
+  postCloseStabilizationSeconds: 10,
+  postCloseStabilizationRetries: null,
 };
 
 const pressure: Measurement = {
@@ -44,22 +47,6 @@ const differential: Measurement = {
   source: 'подготовленные данные',
 };
 
-const graph: readonly GraphPoint[] = [
-  { seconds: 0, pressure: 9720, differential: 70 },
-  { seconds: 5, pressure: 9820, differential: 75 },
-  { seconds: 10, pressure: 9890, differential: 78 },
-  { seconds: 15, pressure: 9950, differential: 81 },
-  { seconds: 20, pressure: 10010, differential: 82 },
-  { seconds: 25, pressure: 10040, differential: 84 },
-  { seconds: 30, pressure: 10010, differential: 83 },
-  { seconds: 35, pressure: 9980, differential: 82 },
-  { seconds: 40, pressure: 9960, differential: 84 },
-  { seconds: 45, pressure: 9940, differential: 85 },
-  { seconds: 50, pressure: 9930, differential: 84 },
-  { seconds: 55, pressure: 9940, differential: 85 },
-  { seconds: 60, pressure: 10010, differential: 83 },
-];
-
 const base: Fixture = {
   id: 'waiting',
   label: 'Ожидание оператора',
@@ -68,7 +55,6 @@ const base: Fixture = {
   stage: 'valve',
   pressure,
   differential,
-  graph,
   instruction: 'Откройте клапан, затем подтвердите выполненное действие.',
   actionLabel: 'Подтверждаю открытие',
   status: 'Ожидается действие оператора',
@@ -110,7 +96,6 @@ export const fixtures: Record<FixtureId, Fixture> = {
     label: 'Потеря ДД1',
     stage: 'measurement',
     pressure: { ...pressure, value: null, lastValue: 10040, quality: 'stale' },
-    graph: graph.map((point) => (point.seconds >= 30 ? { ...point, pressure: null } : point)),
     instruction: 'Данные ДД1 недоступны. Текущее давление неизвестно.',
     actionLabel: 'Показать остановку',
     status: 'Потеря данных ДД1',

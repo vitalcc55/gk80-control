@@ -261,7 +261,7 @@ func processRequest(t *testing.T, p *processBrowser, method, path string, body, 
 
 func waitProcessView(t *testing.T, p *processBrowser, name string, condition func(contract.SessionView) bool) contract.SessionView {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	for {
 		var view contract.SessionView
 		processRequest(t, p, http.MethodGet, "/api/session/observe", nil, &view, http.StatusOK)
@@ -300,7 +300,7 @@ func TestBrowserRoutesRunAndReopenCore(t *testing.T) {
 	}
 	handshake := *status.Handshake
 	view := waitProcessView(t, p, "initial live", func(v contract.SessionView) bool { return v.Connection.Status == contract.Live && v.Snapshot != nil })
-	create := contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: view.Snapshot.Revision, Parameters: contract.TestParameters{Valve: "V", AreaM2: 1, PmaxPa: 1000, MeasurementSeconds: 10, Direction: "pressure"}}
+	create := contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: view.Snapshot.Revision, Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "V", AreaM2: 1, PmaxPa: 1000, LowerPressureLimitPa: new(900.0), UpperPressureLimitPa: new(1080.0), LowerPressureHoldSeconds: new(2), UpperPressureHoldSeconds: new(2), MeasurementSeconds: 60, Direction: "pressure"}}
 	createBody, err := json.Marshal(create)
 	if err != nil {
 		t.Fatal(err)
@@ -392,6 +392,18 @@ func TestBrowserRoutesRunAndReopenCore(t *testing.T) {
 	if err != nil || lookup.Outcome != contract.ExactLookupResultOutcomeConflict || lookup.Command != nil {
 		t.Fatalf("confirm wrong action: %+v %v", lookup, err)
 	}
+	for _, kind := range []contract.PendingActionKind{"confirmValveOpen", "confirmValveClosed"} {
+		view := waitProcessView(t, p, string(kind), func(v contract.SessionView) bool {
+			return v.Connection.Status == contract.Live && v.Snapshot != nil && v.Snapshot.PendingAction != nil &&
+				v.Snapshot.PendingAction.Kind != nil && *v.Snapshot.PendingAction.Kind == kind
+		})
+		confirm := contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: view.Snapshot.Revision}
+		var dispatch contract.CommandDispatch
+		processRequest(t, p, http.MethodPost, "/api/tests/"+id+"/actions/"+view.Snapshot.PendingAction.ActionId.String()+"/confirm", confirm, &dispatch, http.StatusOK)
+		if dispatch.Command == nil || dispatch.Command.Status != "completed" {
+			t.Fatalf("confirm %s: %+v", kind, dispatch)
+		}
+	}
 	view = waitProcessView(t, p, "measurements", func(v contract.SessionView) bool {
 		return v.Snapshot != nil && v.Snapshot.ActiveTest != nil && len(v.Snapshot.Measurements) > 0
 	})
@@ -425,7 +437,7 @@ func TestBrowserRoutesRunAndReopenCore(t *testing.T) {
 		}
 		time.Sleep(30 * time.Millisecond)
 	}
-	if record.Outcome != "interrupted" || record.DataQuality != "incomplete" || record.Parameters != create.Parameters || !record.Demo || record.OperatorId != "demo-operator" {
+	if record.Outcome != "interrupted" || record.DataQuality != "incomplete" || !reflect.DeepEqual(record.Parameters, create.Parameters) || !record.Demo || record.OperatorId != "demo-operator" {
 		t.Fatalf("saved record: %+v", record)
 	}
 	lookup, err = p.exact(handshake.DatabaseId.String(), "stop", id, "", stopID.String(), stopJSON)
@@ -484,7 +496,7 @@ func TestBrowserRoutesRunAndReopenCore(t *testing.T) {
 		t.Fatalf("history: %+v", history)
 	}
 	processRequest(t, p, http.MethodGet, "/api/tests/"+id, nil, &record, http.StatusOK)
-	if record.Outcome != "interrupted" || record.DataQuality != "incomplete" || record.SaveStatus != "saved" || record.Parameters != create.Parameters || record.OperatorId != "demo-operator" {
+	if record.Outcome != "interrupted" || record.DataQuality != "incomplete" || record.SaveStatus != "saved" || !reflect.DeepEqual(record.Parameters, create.Parameters) || record.OperatorId != "demo-operator" {
 		t.Fatalf("reopened record: %+v", record)
 	}
 	var measurements contract.MeasurementPage

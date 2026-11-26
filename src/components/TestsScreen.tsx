@@ -16,6 +16,10 @@ export const emptyHistoryFilters: HistoryFilters = {
   through: '',
   outcome: '',
 };
+export const initialHistoryFilters: HistoryFilters = {
+  ...emptyHistoryFilters,
+  outcome: 'completed',
+};
 export function normalizeHistoryQuery(value: string): string {
   return value.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, '');
 }
@@ -55,6 +59,8 @@ export function TestsScreen({
   pageChanged = false,
   onRefreshCount,
   onPageSize,
+  appliedOutcome,
+  onOutcomeTab,
   active,
   children,
 }: {
@@ -80,6 +86,8 @@ export function TestsScreen({
   pageChanged?: boolean;
   onRefreshCount?: (() => void) | undefined;
   onPageSize: (value: number) => void;
+  appliedOutcome: string;
+  onOutcomeTab: (outcome: 'completed' | 'interrupted') => void;
   active?: ReactNode;
   children?: ReactNode;
 }) {
@@ -108,6 +116,22 @@ export function TestsScreen({
             Сбросить поиск
           </button>
         </div>
+        <fieldset className="history-outcome-tabs" aria-label="Раздел истории">
+          <button
+            type="button"
+            aria-pressed={appliedOutcome === 'completed'}
+            onClick={() => onOutcomeTab('completed')}
+          >
+            Завершённые
+          </button>
+          <button
+            type="button"
+            aria-pressed={appliedOutcome === 'interrupted'}
+            onClick={() => onOutcomeTab('interrupted')}
+          >
+            Прерванные
+          </button>
+        </fieldset>
         <form
           className="history-filters"
           onSubmit={(event) => {

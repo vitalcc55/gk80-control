@@ -473,7 +473,7 @@ func TestCoreRecoversUnfinishedRecordWithoutResuming(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	command := contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{Valve: "Демо", AreaM2: 0.01, PmaxPa: 1000, MeasurementSeconds: 1, Direction: "pressure"}}
+	command := contract.CreateTestCommand{CommandId: uuid.New(), Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 10, PostCloseStabilizationSeconds: 10, Valve: "Демо", AreaM2: 0.01, PmaxPa: 1000, LowerPressureLimitPa: new(900.0), UpperPressureLimitPa: new(1080.0), LowerPressureHoldSeconds: new(2), UpperPressureHoldSeconds: new(2), MeasurementSeconds: 60, Direction: "pressure"}}
 	created, err := store.Create(ctx, command)
 	if err != nil || created.TestId == nil {
 		_ = store.Close()
@@ -668,7 +668,7 @@ func TestCoreProcessCreatesExactCommandAndRecoversLostResponse(t *testing.T) {
 	executable := buildCore(t)
 	profileDir := t.TempDir()
 	rejectedID := uuid.New()
-	rejectedBody := fmt.Sprintf(`{"commandId":%q,"expectedRevision":0,"parameters":{"valve":"V","areaM2":0,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`, rejectedID.String())
+	rejectedBody := fmt.Sprintf(`{"commandId":%q,"expectedRevision":0,"parameters":{"valve":"V","areaM2":0,"lowerPressureLimitPa":0,"upperPressureLimitPa":1080,"lowerPressureHoldSeconds":0,"upperPressureHoldSeconds":0,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`, rejectedID.String())
 	validator, err := contract.NewInputValidator()
 	if err != nil {
 		t.Fatal(err)
@@ -757,7 +757,7 @@ func TestCoreProcessCreatesExactCommandAndRecoversLostResponse(t *testing.T) {
 		t.Fatalf("invalid conflicting replay: %d", response.StatusCode)
 	}
 	commandID := uuid.New()
-	body := fmt.Sprintf(`{"commandId":%q,"expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`, commandID.String())
+	body := fmt.Sprintf(`{"commandId":%q,"expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"lowerPressureLimitPa":0,"upperPressureLimitPa":1080,"lowerPressureHoldSeconds":0,"upperPressureHoldSeconds":0,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`, commandID.String())
 	for _, invalid := range []string{
 		strings.Replace(body, `,"actuator":false`, "", 1),
 		strings.Replace(body, `"actuator":false`, `"actuator":null`, 1),
@@ -905,7 +905,7 @@ func TestCoreProcessRunsSimulatorAndPersistsStop(t *testing.T) {
 	}
 	read(response, &lease)
 	token := lease.LeaseId.String()
-	body := fmt.Sprintf(`{"commandId":%q,"expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":10,"direction":"pressure","actuator":false}}`, uuid.NewString())
+	body := fmt.Sprintf(`{"commandId":%q,"expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"lowerPressureLimitPa":0,"upperPressureLimitPa":1080,"lowerPressureHoldSeconds":0,"upperPressureHoldSeconds":0,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`, uuid.NewString())
 	response = request("POST", "/v1/tests", body, token)
 	var created contract.CommandStatus
 	if response.StatusCode != http.StatusOK {
@@ -989,7 +989,27 @@ func TestCoreProcessRunsSimulatorAndPersistsStop(t *testing.T) {
 	if response.StatusCode != http.StatusConflict {
 		t.Fatalf("start content conflict: %d", response.StatusCode)
 	}
-	deadline := time.Now().Add(8 * time.Second)
+	for _, kind := range []contract.PendingActionKind{"confirmValveOpen", "confirmValveClosed"} {
+		waitForCoreAction(t, func() (contract.Snapshot, error) {
+			var value contract.Snapshot
+			response := request("GET", "/v1/snapshot", "", token)
+			if response.StatusCode != http.StatusOK {
+				_ = response.Body.Close()
+				return value, fmt.Errorf("snapshot: %d", response.StatusCode)
+			}
+			read(response, &value)
+			return value, nil
+		}, kind, func(snapshot contract.Snapshot) {
+			body := fmt.Sprintf(`{"commandId":%q,"expectedRevision":%d}`, uuid.NewString(), snapshot.Revision)
+			path := "/v1/tests/" + id.String() + "/actions/" + snapshot.PendingAction.ActionId.String() + "/confirm"
+			response := request("POST", path, body, token)
+			_ = response.Body.Close()
+			if response.StatusCode != http.StatusOK {
+				t.Fatalf("confirm %s: %d", kind, response.StatusCode)
+			}
+		})
+	}
+	deadline := time.Now().Add(15 * time.Second)
 	for {
 		response = request("GET", "/v1/snapshot", "", token)
 		if response.StatusCode != http.StatusOK {
@@ -1210,7 +1230,7 @@ func TestCoreProcessRunsSimulatorAndPersistsStop(t *testing.T) {
 	if status := processAPI(t, reopened, "GET", "/v1/snapshot", "", newToken, &reopenedSnapshot); status != http.StatusOK {
 		t.Fatalf("reopened snapshot: %d", status)
 	}
-	secondBody := fmt.Sprintf(`{"commandId":%q,"expectedRevision":%d,"parameters":{"valve":"V2","areaM2":1,"pmaxPa":1000,"measurementSeconds":10,"direction":"pressure","actuator":false}}`, uuid.NewString(), reopenedSnapshot.Revision)
+	secondBody := fmt.Sprintf(`{"commandId":%q,"expectedRevision":%d,"parameters":{"valve":"V2","areaM2":1,"lowerPressureLimitPa":0,"upperPressureLimitPa":1080,"lowerPressureHoldSeconds":0,"upperPressureHoldSeconds":0,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`, uuid.NewString(), reopenedSnapshot.Revision)
 	if status := processAPI(t, reopened, "POST", "/v1/tests", secondBody, newToken, &second); status != http.StatusOK || second.TestId == nil {
 		t.Fatalf("second record: %d %+v", status, second)
 	}
@@ -1340,7 +1360,7 @@ func TestCoreProcessEventsAndLease(t *testing.T) {
 	if code := processAPI(t, process, "GET", "/v1/snapshot", "", lease.LeaseId.String(), &snapshot); code != http.StatusOK {
 		t.Fatalf("snapshot: %d", code)
 	}
-	body := fmt.Sprintf(`{"commandId":%q,"expectedRevision":%d,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":1,"direction":"pressure","actuator":false}}`, uuid.NewString(), snapshot.Revision)
+	body := fmt.Sprintf(`{"commandId":%q,"expectedRevision":%d,"parameters":{"valve":"V","areaM2":1,"lowerPressureLimitPa":0,"upperPressureLimitPa":1080,"lowerPressureHoldSeconds":0,"upperPressureHoldSeconds":0,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`, uuid.NewString(), snapshot.Revision)
 	var result contract.CommandStatus
 	if code := processAPI(t, process, "POST", "/v1/tests", body, lease.LeaseId.String(), &result); code != http.StatusOK || result.TestId == nil {
 		t.Fatalf("create: %d %+v", code, result)
@@ -1467,7 +1487,7 @@ func startActiveDemo(t *testing.T, process *Process) (uuid.UUID, string) {
 	}
 	token := lease.LeaseId.String()
 	var created contract.CommandStatus
-	body := fmt.Sprintf(`{"commandId":%q,"expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"pmaxPa":1000,"measurementSeconds":10,"direction":"pressure","actuator":false}}`, uuid.NewString())
+	body := fmt.Sprintf(`{"commandId":%q,"expectedRevision":0,"parameters":{"valve":"V","areaM2":1,"lowerPressureLimitPa":0,"upperPressureLimitPa":1080,"lowerPressureHoldSeconds":0,"upperPressureHoldSeconds":0,"pmaxPa":1000,"measurementSeconds":60,"preOpenStabilizationSeconds":10,"postCloseStabilizationSeconds":10,"postCloseStabilizationRetries":0,"direction":"pressure","actuator":false}}`, uuid.NewString())
 	if status := processAPI(t, process, "POST", "/v1/tests", body, token, &created); status != http.StatusOK || created.TestId == nil {
 		t.Fatalf("create: %d %+v", status, created)
 	}
@@ -1487,7 +1507,22 @@ func startActiveDemo(t *testing.T, process *Process) (uuid.UUID, string) {
 	if status := processAPI(t, process, "POST", path, confirm, token, &confirmed); status != http.StatusOK {
 		t.Fatalf("confirm: %d", status)
 	}
-	deadline := time.Now().Add(8 * time.Second)
+	for _, kind := range []contract.PendingActionKind{"confirmValveOpen", "confirmValveClosed"} {
+		waitForCoreAction(t, func() (contract.Snapshot, error) {
+			var value contract.Snapshot
+			if code := processAPI(t, process, "GET", "/v1/snapshot", "", token, &value); code != http.StatusOK {
+				return value, fmt.Errorf("snapshot: %d", code)
+			}
+			return value, nil
+		}, kind, func(snapshot contract.Snapshot) {
+			body := fmt.Sprintf(`{"commandId":%q,"expectedRevision":%d}`, uuid.NewString(), snapshot.Revision)
+			path := "/v1/tests/" + id.String() + "/actions/" + snapshot.PendingAction.ActionId.String() + "/confirm"
+			if code := processAPI(t, process, "POST", path, body, token, nil); code != http.StatusOK {
+				t.Fatalf("confirm %s: %d", kind, code)
+			}
+		})
+	}
+	deadline := time.Now().Add(15 * time.Second)
 	for {
 		if status := processAPI(t, process, "GET", "/v1/snapshot", "", token, &snapshot); status != http.StatusOK {
 			t.Fatalf("snapshot: %d", status)

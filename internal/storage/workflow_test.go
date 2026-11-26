@@ -188,17 +188,18 @@ func TestDemoRecordTransitionsAndMeasurementsSurviveReopen(t *testing.T) {
 	second.Sequence = 2
 	second.ObservedAt = secondTime
 	second.MeasuredAt = &secondMeasured
-	if err := store.RecordMeasurements(ctx, testID, []TimedMeasurement{{Measurement: sample, Elapsed: 5 * time.Millisecond}, {Measurement: second, Elapsed: time.Second + 5*time.Millisecond}}); err != nil {
+	if err := store.RecordMeasurements(ctx, testID, []TimedMeasurement{{Measurement: sample, Elapsed: 5 * time.Millisecond}, {Measurement: second, Elapsed: 60*time.Second + 5*time.Millisecond}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Complete(ctx, testID, time.Millisecond); !errors.Is(err, ErrInvalidState) {
+	if _, err := store.Complete(ctx, testID, MeasurementCompletion{Elapsed: time.Millisecond}, nil); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("premature completion: %v", err)
 	}
-	completed, err := store.Complete(ctx, testID, time.Second+5*time.Millisecond)
+	completion := MeasurementCompletion{Elapsed: 60*time.Second + 5*time.Millisecond}
+	completed, err := store.Complete(ctx, testID, completion, nil)
 	if err != nil || !completed.Applied || completed.Replayed || completed.Command != nil || completed.Saved == nil {
 		t.Fatalf("completion result: %+v %v", completed, err)
 	}
-	if repeated, err := store.Complete(ctx, testID, time.Second+5*time.Millisecond); !errors.Is(err, ErrInvalidState) || repeated.Saved != nil || repeated.Applied {
+	if repeated, err := store.Complete(ctx, testID, completion, nil); !errors.Is(err, ErrInvalidState) || repeated.Saved != nil || repeated.Applied {
 		t.Fatalf("completion repeat: %+v %v", repeated, err)
 	}
 	if result, err := store.Start(ctx, testID, start, action); err != nil || result.Command.Status != "completed" {
@@ -221,7 +222,7 @@ func TestDemoRecordTransitionsAndMeasurementsSurviveReopen(t *testing.T) {
 	defer func() { _ = store.Close() }()
 	assertSavedOperation(t, store, completed)
 	record, err := store.Test(ctx, testID)
-	if err != nil || record.Stage != "finished" || record.Outcome != "completed" || record.DataQuality != "complete" {
+	if err != nil || record.Stage != "finished" || record.Outcome != "completed" || record.DataQuality != "incomplete" {
 		t.Fatalf("reopened record: %+v %v", record, err)
 	}
 	samples, err := store.Measurements(ctx, testID, 0, 100)
@@ -686,12 +687,82 @@ func TestIncompletePressureSamplesCannotProduceCompleteResult(t *testing.T) {
 	if err := store.RecordMeasurements(ctx, id, []TimedMeasurement{{Measurement: sample}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Complete(ctx, id, time.Second); !errors.Is(err, ErrInvalidState) {
+	if _, err := store.Complete(ctx, id, MeasurementCompletion{Elapsed: time.Second}, nil); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("unavailable pressure accepted as complete: %v", err)
 	}
 	record, err := store.Test(ctx, id)
 	if err != nil || record.Stage != "running" || record.DataQuality != "pending" {
 		t.Fatalf("incorrect result: %+v %v", record, err)
+	}
+}
+
+func TestCompletedMeasurementDataQuality(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		gap        bool
+		missingEnd bool
+		want       contract.TestRecordDataQuality
+	}{
+		{name: "boundary poll outside window", want: "complete"},
+		{name: "missed poll inside window", gap: true, want: "incomplete"},
+		{name: "missed required poll at end", missingEnd: true, want: "incomplete"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store, err := Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = store.Close() }()
+			created, err := store.Create(ctx, createCommand())
+			if err != nil || created.TestId == nil {
+				t.Fatalf("create: %v %v", created, err)
+			}
+			id := *created.TestId
+			action := contract.PendingAction{ActionId: uuid.New(), TestId: id, Instruction: "Подтвердите измерение"}
+			start := contract.StartTestCommand{CommandId: uuid.New(), ExpectedRevision: 1, ValveClosed: true, ConnectionConfirmed: true}
+			if _, err := store.Start(ctx, id, start, action); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Confirm(ctx, id, action.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: 2}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.CompleteStart(ctx, id, start.CommandId); err != nil {
+				t.Fatal(err)
+			}
+			origin := time.Now().UTC()
+			value := 100.0
+			var seq int64
+			for poll := 1; poll < 600; poll++ {
+				if (tc.gap && poll == 10) || (tc.missingEnd && poll == 599) {
+					continue
+				}
+				elapsed := time.Duration(poll)*100*time.Millisecond + time.Millisecond
+				observed := origin.Add(elapsed)
+				measured := observed.Format(time.RFC3339Nano)
+				var packet []TimedMeasurement
+				for _, ch := range []contract.MeasurementChannel{"dd1", "dd2", "dd3"} {
+					seq++
+					quantity := contract.MeasurementQuantity("differentialPressure")
+					if ch == "dd1" {
+						quantity = "pressure"
+					}
+					packet = append(packet, TimedMeasurement{Elapsed: elapsed, Measurement: contract.Measurement{
+						Sequence: seq, Channel: ch, Quantity: quantity, Quality: "valid", Unit: "Pa", Source: "simulator",
+						ObservedAt: observed, MeasuredAt: &measured, Value: &value, GapBefore: tc.gap && poll == 11 && ch == "dd1",
+					}})
+				}
+				if err := store.RecordMeasurements(ctx, id, packet); err != nil {
+					t.Fatal(err)
+				}
+			}
+			result, err := store.Complete(ctx, id, MeasurementCompletion{
+				Elapsed: 60 * time.Second, ReachedLastRequiredPoll: !tc.missingEnd,
+			}, nil)
+			if err != nil || result.Saved == nil || result.Saved.Record.DataQuality != tc.want {
+				t.Fatalf("completed data quality: %+v, %v, want %s", result.Saved, err, tc.want)
+			}
+		})
 	}
 }
 

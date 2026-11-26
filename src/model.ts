@@ -12,6 +12,13 @@ export interface TestParameters {
   openSeconds: number;
   closeSeconds: number;
   measurementSeconds: number;
+  preOpenStabilizationSeconds: number;
+  postCloseStabilizationSeconds: number;
+  postCloseStabilizationRetries: number | null;
+  lowerPressureLimitPa?: number;
+  lowerPressureHoldSeconds?: number;
+  upperPressureLimitPa?: number;
+  upperPressureHoldSeconds?: number;
 }
 
 export type FixtureId =
@@ -51,6 +58,11 @@ export interface GraphPoint {
   differential: number | null;
 }
 
+export interface LeakagePoint {
+  specificLeakageLitresPerSecondPerSquareMetre: number;
+  testPressurePa: number;
+}
+
 export interface Fixture {
   id: FixtureId;
   label: string;
@@ -59,7 +71,6 @@ export interface Fixture {
   stage: StageId;
   pressure: Measurement;
   differential: Measurement;
-  graph: readonly GraphPoint[];
   instruction: string;
   actionLabel: string;
   status: string;
