@@ -183,6 +183,48 @@ func (e ExactLookupResultOutcome) Valid() bool {
 	}
 }
 
+// Defines values for LeakageCalculationChannels.
+const (
+	LeakageCalculationChannelsDd2 LeakageCalculationChannels = "dd2"
+	LeakageCalculationChannelsDd3 LeakageCalculationChannels = "dd3"
+)
+
+// Valid indicates whether the value is a known member of the LeakageCalculationChannels enum.
+func (e LeakageCalculationChannels) Valid() bool {
+	switch e {
+	case LeakageCalculationChannelsDd2:
+		return true
+	case LeakageCalculationChannelsDd3:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for LeakageCalculationUnavailableReason.
+const (
+	InvalidCalculationInputs LeakageCalculationUnavailableReason = "invalidCalculationInputs"
+	MissingAirConditions     LeakageCalculationUnavailableReason = "missingAirConditions"
+	MissingTestPressure      LeakageCalculationUnavailableReason = "missingTestPressure"
+	NoUsableDifferential     LeakageCalculationUnavailableReason = "noUsableDifferential"
+)
+
+// Valid indicates whether the value is a known member of the LeakageCalculationUnavailableReason enum.
+func (e LeakageCalculationUnavailableReason) Valid() bool {
+	switch e {
+	case InvalidCalculationInputs:
+		return true
+	case MissingAirConditions:
+		return true
+	case MissingTestPressure:
+		return true
+	case NoUsableDifferential:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for MeasurementChannel.
 const (
 	MeasurementChannelDd1 MeasurementChannel = "dd1"
@@ -680,6 +722,59 @@ type Handshake struct {
 	Demo         bool               `json:"demo"`
 }
 
+// LeakageCalculation defines model for LeakageCalculation.
+type LeakageCalculation struct {
+	Channels        []LeakageCalculationChannels `json:"channels"`
+	Conditions      LeakageConditions            `json:"conditions"`
+	DurationSeconds int                          `json:"durationSeconds"`
+
+	// FirstSequence Ноль при отсутствии отсчётов.
+	FirstSequence int64 `json:"firstSequence"`
+
+	// LastSequence Ноль при отсутствии отсчётов.
+	LastSequence      int64                                `json:"lastSequence"`
+	Method            string                               `json:"method"`
+	PointId           openapi_types.UUID                   `json:"pointId"`
+	UnavailableReason *LeakageCalculationUnavailableReason `json:"unavailableReason,omitempty"`
+	Values            *LeakageValues                       `json:"values,omitempty"`
+	WindowEndedAt     time.Time                            `json:"windowEndedAt"`
+	WindowStartedAt   time.Time                            `json:"windowStartedAt"`
+}
+
+// LeakageCalculationChannels defines model for LeakageCalculation.Channels.
+type LeakageCalculationChannels string
+
+// LeakageCalculationUnavailableReason defines model for LeakageCalculation.UnavailableReason.
+type LeakageCalculationUnavailableReason string
+
+// LeakageConditions defines model for LeakageConditions.
+type LeakageConditions struct {
+	ApproachCoefficient   float64 `json:"approachCoefficient"`
+	AtmosphericPressurePa float64 `json:"atmosphericPressurePa"`
+	DischargeCoefficient  float64 `json:"dischargeCoefficient"`
+	Expansibility         float64 `json:"expansibility"`
+	OrificeDiameterM      float64 `json:"orificeDiameterM"`
+	OrificeExpansionPerC  float64 `json:"orificeExpansionPerC"`
+	PipeDiameterM         float64 `json:"pipeDiameterM"`
+	PipeExpansionPerC     float64 `json:"pipeExpansionPerC"`
+	RelativeHumidity      float64 `json:"relativeHumidity"`
+	RoughnessCorrection   float64 `json:"roughnessCorrection"`
+	Source                string  `json:"source"`
+	TemperatureC          float64 `json:"temperatureC"`
+}
+
+// LeakageValues defines model for LeakageValues.
+type LeakageValues struct {
+	ContributingSeconds int     `json:"contributingSeconds"`
+	MassFlowKgPerSecond float64 `json:"massFlowKgPerSecond"`
+
+	// NormalizedFlowM3PerHour Объёмный расход, приведённый к 20 °C и 101325 Па.
+	NormalizedFlowM3PerHour                      float64 `json:"normalizedFlowM3PerHour"`
+	SpecificLeakageLitresPerSecondPerSquareMetre float64 `json:"specificLeakageLitresPerSecondPerSquareMetre"`
+	TestPressurePa                               float64 `json:"testPressurePa"`
+	WorkingFlowM3PerSecond                       float64 `json:"workingFlowM3PerSecond"`
+}
+
 // LeaseRequest defines model for LeaseRequest.
 type LeaseRequest struct {
 	ClientId openapi_types.UUID `json:"clientId"`
@@ -692,10 +787,13 @@ type Measurement struct {
 	ObservedAt time.Time           `json:"observedAt"`
 	Quality    MeasurementQuality  `json:"quality"`
 	Quantity   MeasurementQuantity `json:"quantity"`
-	Sequence   int64               `json:"sequence"`
-	Source     MeasurementSource   `json:"source"`
-	Unit       MeasurementUnit     `json:"unit"`
-	Value      *float64            `json:"value"`
+
+	// SelectedDifferential Выбор этого ДД2 или ДД3 в данном опросе. Поле отсутствует у ДД1 и у неразмеченных отсчётов.
+	SelectedDifferential *bool             `json:"selectedDifferential,omitempty"`
+	Sequence             int64             `json:"sequence"`
+	Source               MeasurementSource `json:"source"`
+	Unit                 MeasurementUnit   `json:"unit"`
+	Value                *float64          `json:"value"`
 }
 
 // MeasurementChannel defines model for Measurement.Channel.
@@ -867,15 +965,16 @@ type TestParametersDirection string
 
 // TestRecord defines model for TestRecord.
 type TestRecord struct {
-	CreatedAt   time.Time             `json:"createdAt"`
-	DataQuality TestRecordDataQuality `json:"dataQuality"`
-	Demo        bool                  `json:"demo"`
-	FinishedAt  *time.Time            `json:"finishedAt,omitempty"`
-	OperatorId  string                `json:"operatorId"`
-	Outcome     TestRecordOutcome     `json:"outcome"`
-	Parameters  TestParameters        `json:"parameters"`
-	SaveStatus  TestRecordSaveStatus  `json:"saveStatus"`
-	Stage       TestRecordStage       `json:"stage"`
+	CreatedAt          time.Time             `json:"createdAt"`
+	DataQuality        TestRecordDataQuality `json:"dataQuality"`
+	Demo               bool                  `json:"demo"`
+	FinishedAt         *time.Time            `json:"finishedAt,omitempty"`
+	LeakageCalculation *LeakageCalculation   `json:"leakageCalculation,omitempty"`
+	OperatorId         string                `json:"operatorId"`
+	Outcome            TestRecordOutcome     `json:"outcome"`
+	Parameters         TestParameters        `json:"parameters"`
+	SaveStatus         TestRecordSaveStatus  `json:"saveStatus"`
+	Stage              TestRecordStage       `json:"stage"`
 
 	// StopCommandId Заранее сохранённый идентификатор единственной команды остановки этого испытания.
 	StopCommandId openapi_types.UUID `json:"stopCommandId"`

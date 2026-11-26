@@ -2,6 +2,11 @@ import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { expect, it, vi } from 'vitest';
 
+// The characteristic's real canvas is exercised in Playwright.
+vi.mock('../src/components/LeakageChart', () => ({
+  LeakageChart: ({ emptyMessage }: { emptyMessage: string }) => <p>{emptyMessage}</p>,
+}));
+
 vi.mock('../src/components/MeasurementChart', () => ({
   MeasurementChart: ({ points }: { points: unknown }) => (
     <div data-testid="saved-chart" data-points={JSON.stringify(points)} />

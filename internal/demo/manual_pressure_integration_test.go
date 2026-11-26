@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -131,6 +132,15 @@ func TestManualPressureSQLitePass(t *testing.T) {
 			record, err := reopened.Test(ctx, id)
 			if err != nil || record.Outcome != wantOutcome {
 				t.Fatalf("reopen: %+v %v", record, err)
+			}
+			if tc.interrupt {
+				if record.LeakageCalculation != nil {
+					t.Fatal("interrupted measurement has a final point")
+				}
+			} else if calculation := record.LeakageCalculation; calculation == nil || calculation.Values == nil ||
+				calculation.Values.SpecificLeakageLitresPerSecondPerSquareMetre <= 0 ||
+				!reflect.DeepEqual(calculation, finished.Record.LeakageCalculation) {
+				t.Fatalf("missing or changed calculation: %+v", calculation)
 			}
 			var count int64
 			for {

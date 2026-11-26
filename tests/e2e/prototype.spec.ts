@@ -40,8 +40,8 @@ async function leakageMarker(canvas: Locator) {
     if (!plot || !context) throw new Error('Chart is unavailable');
     const bounds = element.getBoundingClientRect();
     const scale = element.width / bounds.width;
-    const x = (plot.left - bounds.left + (plot.width * Math.log10(20)) / 2) * scale;
-    const y = (plot.bottom - bounds.top - (plot.height * (Math.log10(10_010) - 2)) / 3) * scale;
+    const x = (plot.left - bounds.left + (plot.width * (Math.log10(20) + 1)) / 5) * scale;
+    const y = (plot.bottom - bounds.top - (plot.height * (Math.log10(10_010) - 1)) / 4) * scale;
     const accent = getComputedStyle(element).getPropertyValue('--accent').trim();
     const red = Number.parseInt(accent.slice(1, 3), 16);
     const green = Number.parseInt(accent.slice(3, 5), 16);
@@ -64,6 +64,72 @@ async function leakageMarker(canvas: Locator) {
     return { near, elsewhere };
   });
 }
+
+test('четыре справочные линии доходят до 10 000 Па на графике высотой 550 px', async ({ page }) => {
+  await page.addInitScript(() => {
+    type Vertex = [number, number];
+    const active = new WeakMap<CanvasRenderingContext2D, Vertex[]>();
+    const painted = new WeakMap<HTMLCanvasElement, Vertex[][]>();
+    const context = CanvasRenderingContext2D.prototype;
+    const { beginPath, moveTo, lineTo, stroke } = context;
+    context.beginPath = function () {
+      active.set(this, []);
+      beginPath.call(this);
+    };
+    context.moveTo = function (x, y) {
+      active.get(this)?.push([x, y]);
+      moveTo.call(this, x, y);
+    };
+    context.lineTo = function (x, y) {
+      active.get(this)?.push([x, y]);
+      lineTo.call(this, x, y);
+    };
+    context.stroke = function (path?: Path2D) {
+      const vertices = active.get(this);
+      if (!path && vertices?.length === 2 && this.lineWidth === 1.5 * devicePixelRatio) {
+        const lines = [...(painted.get(this.canvas) ?? []), vertices].slice(-4);
+        painted.set(this.canvas, lines);
+        this.canvas.dataset['boundaryPaths'] = JSON.stringify(lines);
+      }
+      Reflect.apply(stroke, this, path ? [path] : []);
+    };
+  });
+  await page.goto('/?fixture=waiting&step=7');
+  const canvas = page.getByRole('region', { name: 'Характеристика утечки' }).locator('canvas');
+  await expect(canvas).toHaveAttribute('data-boundary-paths', /./);
+  const paths = await canvas.evaluate((element) => {
+    const plot = element.closest('.u-wrap')?.querySelector('.u-over')?.getBoundingClientRect();
+    if (!(element instanceof HTMLCanvasElement) || !plot) throw new Error('Chart is unavailable');
+    const bounds = element.getBoundingClientRect();
+    const ratio = element.width / bounds.width;
+    const x = (position: number) => (position / ratio + bounds.left - plot.left) / plot.width;
+    const y = (position: number) => (position / ratio + bounds.top - plot.top) / plot.height;
+    const lines: [[number, number], [number, number]][] = JSON.parse(
+      element.dataset['boundaryPaths'] ?? '[]',
+    );
+    return {
+      height: bounds.height,
+      lines: lines.map(([[x0, y0], [x1, y1]]) => [
+        [x(x0), y(y0)],
+        [x(x1), y(y1)],
+      ]),
+    };
+  });
+  expect(paths.height).toBeGreaterThanOrEqual(550);
+  expect(paths.lines).toHaveLength(4);
+  for (const [index, coefficient] of [15, 3, 0.6, 0.12].entries()) {
+    const points = paths.lines[index];
+    if (!points) throw new Error('Boundary missing');
+    const expected = [
+      [(Math.log10(coefficient) + 0.56 + 1) / 5, 1],
+      [(Math.log10(coefficient) + 0.56 * 4 + 1) / 5, 0],
+    ];
+    for (const [endpoint, point] of points.entries()) {
+      expect(point[0]).toBeCloseTo(expected[endpoint]?.[0] ?? -1, 2);
+      expect(point[1]).toBeCloseTo(expected[endpoint]?.[1] ?? -1, 2);
+    }
+  }
+});
 
 for (const viewport of [
   { width: 1366, height: 768 },
@@ -144,7 +210,6 @@ for (const viewport of [
         '.main-reading strong',
         '.target-reading strong',
         '.differential-reading strong',
-        '.leakage-chart-plot',
         '.action-panel h2',
         '.action-instruction',
         '.stop-button',
@@ -173,6 +238,11 @@ for (const viewport of [
         });
         expect(visibleAtCenter, `Element obscured at center: ${selector}`).toBe(true);
       }
+      await canvas.scrollIntoViewIfNeeded();
+      await expect(canvas).toBeInViewport({ ratio: 0.98 });
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+        true,
+      );
       for (const action of [
         'Подтверждаю завершение серии',
         'Показать стабилизацию',
@@ -184,6 +254,8 @@ for (const viewport of [
         await page.getByRole('button', { name: action }).click();
       }
       await expect(characteristic).toContainText('Рабочая точка ещё не получена');
+      await expect(characteristic).toContainText('EN 1751:2024, таблица C.1');
+      await expect(characteristic.getByRole('listitem')).toHaveCount(4);
       expect(await leakageMarker(canvas)).toEqual({ near: 0, elsewhere: 0 });
       await expect(page.getByRole('button', { name: 'Остановить испытание' })).toBeEnabled();
       await expect(page.getByText('Таблица показаний')).toBeHidden();
@@ -201,9 +273,7 @@ for (const viewport of [
       await expect(canvas).toHaveAttribute('data-axis-text', /Удельная утечка, л\/\(с·м²\)/);
       await expect(canvas).toHaveAttribute('data-axis-text', /Испытательное давление, Па/);
       const axisText = (await canvas.getAttribute('data-axis-text'))?.split('\u001f') ?? [];
-      expect(axisText).toEqual(
-        expect.arrayContaining(['1', '10', '100', '1 000', '10 000', '100 000']),
-      );
+      expect(axisText).toEqual(expect.arrayContaining(['1', '10', '100', '1 000']));
       expect(axisText).not.toContain('0');
       const marker = await leakageMarker(canvas);
       expect(marker.near).toBeGreaterThan(0);
@@ -224,7 +294,7 @@ for (const viewport of [
       await page.getByRole('button', { name: 'К списку' }).click();
       await page.getByRole('button', { name: /Открыть Клапан для показа/ }).click();
       await expect(page.getByRole('heading', { name: 'Результат испытания' })).toBeVisible();
-      await expect(characteristic).toHaveCount(0);
+      await expect(characteristic).toContainText('Рабочая точка недоступна');
 
       await page.goto('/?fixture=save-error');
       await expect(page.getByText('Сохранение не подтверждено')).toBeVisible();

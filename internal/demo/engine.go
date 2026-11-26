@@ -32,7 +32,8 @@ type Repository interface {
 	RejectConfirmUnavailable(context.Context, uuid.UUID, uuid.UUID, contract.ConfirmActionCommand) (contract.CommandStatus, error)
 	CompleteStart(context.Context, uuid.UUID, uuid.UUID) (storage.OperationResult, error)
 	RecordMeasurements(context.Context, uuid.UUID, []storage.TimedMeasurement) error
-	Complete(context.Context, uuid.UUID, time.Duration, ...contract.PendingAction) (storage.OperationResult, error)
+	MeasurementWindowSamples(context.Context, uuid.UUID) ([]storage.TimedMeasurement, error)
+	Complete(context.Context, uuid.UUID, time.Duration, *contract.LeakageCalculation, ...contract.PendingAction) (storage.OperationResult, error)
 	FinishStop(context.Context, uuid.UUID, uuid.UUID, storage.StopDetails) (storage.OperationResult, error)
 	LookupStop(context.Context, uuid.UUID, uuid.UUID) (contract.CommandStatus, error)
 }
@@ -900,7 +901,7 @@ func (e *Engine) refreshFinished(ctx context.Context) error {
 		if stopConfirmation != nil {
 			actions = append(actions, *stopConfirmation)
 		}
-		result, err := e.store.Complete(ctx, testID, elapsed, actions...)
+		result, err := e.completeManualMeasurement(ctx, testID, current.manual.window, elapsed, record.Parameters.AreaM2, actions...)
 		if err != nil {
 			return err
 		}

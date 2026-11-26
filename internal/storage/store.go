@@ -135,76 +135,54 @@ func (s *Store) Settings() SQLiteSettings { return s.settings }
 func (s *Store) DatabaseID() uuid.UUID { return s.databaseID }
 
 func (s *Store) initialize() error {
-	if _, err := s.db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+	var objects int
+	if err := s.db.QueryRow(`SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'`).Scan(&objects); err != nil {
 		return err
 	}
-	var version int
-	if err := s.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
-		return err
-	}
-	if version == 4 {
-		tx, err := s.db.Begin()
-		if err != nil {
-			return err
+	if objects != 0 {
+		for _, query := range []string{
+			`SELECT id, revision, database_id FROM meta LIMIT 0`,
+			`SELECT id, record, stage, measurement_elapsed_ns FROM tests LIMIT 0`,
+			`SELECT id, operation, request, status, test_id, reason, operator_id, occurred_at FROM commands LIMIT 0`,
+			`SELECT sequence, test_id, occurred_at, operator_id, action, outcome, revision, command_id, action_id, reason FROM audit LIMIT 0`,
+			`SELECT action_id, test_id, instruction, kind, state FROM test_actions LIMIT 0`,
+			`SELECT test_id, sequence, elapsed_ns, channel, quality, payload FROM measurements LIMIT 0`,
+		} {
+			rows, err := s.db.Query(query)
+			if err != nil {
+				return fmt.Errorf("incompatible demo database; choose a clean profile directory: %w", err)
+			}
+			if err := rows.Close(); err != nil {
+				return err
+			}
 		}
-		defer func() { _ = tx.Rollback() }()
-		if _, err := tx.Exec(`ALTER TABLE test_actions ADD COLUMN kind TEXT`); err != nil {
-			return err
+		var pendingIndex string
+		if err := s.db.QueryRow(`SELECT sql FROM sqlite_schema WHERE type = 'index' AND name = 'one_pending_action'`).Scan(&pendingIndex); err != nil ||
+			strings.Join(strings.Fields(strings.ToLower(pendingIndex)), " ") != "create unique index one_pending_action on test_actions(test_id) where state = 'pending'" {
+			return errors.New("incompatible demo database; choose a clean profile directory: pending action constraint unavailable")
 		}
-		if _, err := tx.Exec(`PRAGMA user_version = 5`); err != nil {
-			return err
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-		version = 5
-	}
-	if version == 5 {
 		id, err := readDatabaseID(s.db)
 		if err != nil {
-			return err
+			return fmt.Errorf("incompatible demo database; choose a clean profile directory: %w", err)
 		}
 		s.databaseID = id
 		return nil
-	}
-	if version != 0 {
-		return errors.New("unsupported demo profile; choose a new profile directory")
-	}
-	if version == 0 {
-		var objects int
-		if err := s.db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'`).Scan(&objects); err != nil {
-			return err
-		}
-		if objects != 0 {
-			return errors.New("unrecognized database")
-		}
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	var statements []string
-	if version == 0 {
-		statements = []string{
-			`CREATE TABLE meta (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL CHECK (revision >= 0))`,
-			`INSERT INTO meta (id, revision) VALUES (1, 0)`,
-			`CREATE TABLE tests (id TEXT PRIMARY KEY, record BLOB NOT NULL, stage TEXT NOT NULL)`,
-			`CREATE TABLE commands (id TEXT PRIMARY KEY, operation TEXT NOT NULL, request BLOB NOT NULL, status TEXT NOT NULL, test_id TEXT REFERENCES tests(id), reason TEXT, operator_id TEXT NOT NULL, occurred_at TEXT NOT NULL)`,
-			`CREATE TABLE audit (sequence INTEGER PRIMARY KEY AUTOINCREMENT, test_id TEXT NOT NULL REFERENCES tests(id), occurred_at TEXT NOT NULL, operator_id TEXT NOT NULL, action TEXT NOT NULL, outcome TEXT NOT NULL, revision INTEGER NOT NULL, command_id TEXT, action_id TEXT, reason TEXT)`,
-			`CREATE INDEX audit_by_test ON audit(test_id, sequence)`,
-		}
-	}
-	if version < 2 {
-		statements = append(statements,
-			`CREATE TABLE test_actions (action_id TEXT PRIMARY KEY, test_id TEXT NOT NULL REFERENCES tests(id), instruction TEXT NOT NULL, kind TEXT, state TEXT NOT NULL CHECK(state IN ('pending', 'confirmed', 'canceled', 'unknown')))`,
-			`CREATE UNIQUE INDEX one_pending_action ON test_actions(test_id) WHERE state = 'pending'`,
-			`CREATE TABLE measurements (test_id TEXT NOT NULL REFERENCES tests(id), sequence INTEGER NOT NULL CHECK(sequence > 0), elapsed_ns INTEGER NOT NULL CHECK(elapsed_ns >= 0), channel TEXT NOT NULL, quality TEXT NOT NULL, payload BLOB NOT NULL, PRIMARY KEY(test_id, sequence))`,
-			`ALTER TABLE tests ADD COLUMN measurement_elapsed_ns INTEGER`,
-		)
-	}
-	statements = append(statements, `ALTER TABLE meta ADD COLUMN database_id TEXT`)
-	for _, statement := range statements {
+	for _, statement := range []string{
+		`CREATE TABLE meta (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL CHECK (revision >= 0), database_id TEXT)`,
+		`CREATE TABLE tests (id TEXT PRIMARY KEY, record BLOB NOT NULL, stage TEXT NOT NULL, measurement_elapsed_ns INTEGER)`,
+		`CREATE TABLE commands (id TEXT PRIMARY KEY, operation TEXT NOT NULL, request BLOB NOT NULL, status TEXT NOT NULL, test_id TEXT REFERENCES tests(id), reason TEXT, operator_id TEXT NOT NULL, occurred_at TEXT NOT NULL)`,
+		`CREATE TABLE audit (sequence INTEGER PRIMARY KEY AUTOINCREMENT, test_id TEXT NOT NULL REFERENCES tests(id), occurred_at TEXT NOT NULL, operator_id TEXT NOT NULL, action TEXT NOT NULL, outcome TEXT NOT NULL, revision INTEGER NOT NULL, command_id TEXT, action_id TEXT, reason TEXT)`,
+		`CREATE INDEX audit_by_test ON audit(test_id, sequence)`,
+		`CREATE TABLE test_actions (action_id TEXT PRIMARY KEY, test_id TEXT NOT NULL REFERENCES tests(id), instruction TEXT NOT NULL, kind TEXT, state TEXT NOT NULL CHECK(state IN ('pending', 'confirmed', 'canceled', 'unknown')))`,
+		`CREATE UNIQUE INDEX one_pending_action ON test_actions(test_id) WHERE state = 'pending'`,
+		`CREATE TABLE measurements (test_id TEXT NOT NULL REFERENCES tests(id), sequence INTEGER NOT NULL CHECK(sequence > 0), elapsed_ns INTEGER NOT NULL CHECK(elapsed_ns >= 0), channel TEXT NOT NULL, quality TEXT NOT NULL, payload BLOB NOT NULL, PRIMARY KEY(test_id, sequence))`,
+	} {
 		if _, err := tx.Exec(statement); err != nil {
 			return err
 		}
@@ -213,14 +191,7 @@ func (s *Store) initialize() error {
 	if err != nil {
 		return err
 	}
-	result, err := tx.Exec(`UPDATE meta SET database_id = ? WHERE id = 1`, id.String())
-	if err != nil {
-		return err
-	}
-	if count, err := result.RowsAffected(); err != nil || count != 1 {
-		return errors.New("invalid database metadata")
-	}
-	if _, err := tx.Exec(`PRAGMA user_version = 5`); err != nil {
+	if _, err := tx.Exec(`INSERT INTO meta (id, revision, database_id) VALUES (1, 0, ?)`, id.String()); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

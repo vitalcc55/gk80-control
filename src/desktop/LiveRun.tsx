@@ -1,4 +1,5 @@
 import { type ReactNode, useState } from 'react';
+import { LeakageChart } from '../components/LeakageChart';
 import { RunMeasurementChart, RunScreen } from '../components/RunScreen';
 import type {
   Measurement,
@@ -106,16 +107,22 @@ export function LiveRun({
         </details>
       }
       chart={
-        <RunMeasurementChart
-          live
-          points={series.points}
-          target={record.parameters.pmaxPa}
-          note={
-            series.clockChanged
-              ? 'Время измерения изменилось: график начат заново с нового отсчёта.'
-              : 'Время от первого полученного отсчёта; пропуски не соединяются.'
-          }
-        />
+        <>
+          <LeakageChart emptyMessage="Рабочая точка ещё не получена" />
+          <details className="reading-details">
+            <summary>Подробности измерений</summary>
+            <RunMeasurementChart
+              live
+              points={series.points}
+              target={record.parameters.pmaxPa}
+              note={
+                series.clockChanged
+                  ? 'Время измерения изменилось: график начат заново с нового отсчёта.'
+                  : 'Время от первого полученного отсчёта; пропуски не соединяются.'
+              }
+            />
+          </details>
+        </>
       }
       actionTitle={phases[phase]?.[1] ?? measurementLabel(timing)}
       actionLabel={

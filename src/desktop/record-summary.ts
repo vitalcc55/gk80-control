@@ -34,7 +34,7 @@ export function measurementSegments(items: readonly Measurement[]): MeasurementS
         pressure: number | null;
         differential: number | null;
         dd1: boolean;
-        dd2: boolean;
+        hasDifferential: boolean;
       }
     | undefined;
   const flush = () => {
@@ -46,11 +46,11 @@ export function measurementSegments(items: readonly Measurement[]): MeasurementS
     });
   };
   for (const item of items) {
-    if (item.channel !== 'dd1' && item.channel !== 'dd2') continue;
+    if (item.channel !== 'dd1' && item.selectedDifferential !== true) continue;
     const when = item.quality === 'valid' && item.measuredAt ? item.measuredAt : item.observedAt;
     const time = timestamp(when);
     const repeatedChannel =
-      current?.time === time && (item.channel === 'dd1' ? current.dd1 : current.dd2);
+      current?.time === time && (item.channel === 'dd1' ? current.dd1 : current.hasDifferential);
     if ((previous !== undefined && time < previous) || repeatedChannel) {
       flush();
       if (points.length) segments.push({ startedAt, points });
@@ -68,14 +68,14 @@ export function measurementSegments(items: readonly Measurement[]): MeasurementS
         origin = time;
         startedAt = when;
       }
-      current = { time, pressure: null, differential: null, dd1: false, dd2: false };
+      current = { time, pressure: null, differential: null, dd1: false, hasDifferential: false };
     }
     const value = item.quality === 'valid' ? item.value : null;
     if (item.channel === 'dd1') {
       current.dd1 = true;
       current.pressure = value;
     } else {
-      current.dd2 = true;
+      current.hasDifferential = true;
       current.differential = value;
     }
     previous = time;

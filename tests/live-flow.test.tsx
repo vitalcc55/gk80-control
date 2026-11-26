@@ -69,6 +69,11 @@ function LiveApp(
     />
   );
 }
+// The characteristic's real canvas is exercised in Playwright.
+vi.mock('../src/components/LeakageChart', () => ({
+  LeakageChart: ({ emptyMessage }: { emptyMessage: string }) => <p>{emptyMessage}</p>,
+}));
+
 vi.mock('../src/components/MeasurementChart', () => ({
   MeasurementChart: ({ points }: { points: readonly GraphPoint[] }) => (
     <div role="img" aria-label="График показаний симулятора" data-points={JSON.stringify(points)} />

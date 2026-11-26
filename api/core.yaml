@@ -734,6 +734,7 @@ components:
             properties: { channel: { const: dd1 } }
           then:
             properties: { quantity: { const: pressure } }
+            not: { required: [selectedDifferential] }
           else:
             properties: { quantity: { const: differentialPressure } }
         - if:
@@ -756,6 +757,9 @@ components:
         measuredAt: { type: [string, "null"], format: date-time, x-go-type: string }
         quality: { type: string, enum: [valid, stale, unavailable] }
         source: { type: string, enum: [simulator] }
+        selectedDifferential:
+          type: boolean
+          description: Выбор этого ДД2 или ДД3 в данном опросе. Поле отсутствует у ДД1 и у неразмеченных отсчётов.
     MeasurementPage:
       type: object
       additionalProperties: false
@@ -849,6 +853,63 @@ components:
     TestRecordOutcome:
       type: string
       enum: [pending, completed, interrupted, unknown]
+    LeakageConditions:
+      type: object
+      additionalProperties: false
+      required: [source, temperatureC, relativeHumidity, atmosphericPressurePa, orificeDiameterM, pipeDiameterM, orificeExpansionPerC, pipeExpansionPerC, dischargeCoefficient, approachCoefficient, expansibility, roughnessCorrection]
+      properties:
+        source: { type: string, const: simulatorProfile, x-go-type: string }
+        temperatureC: { type: number, format: double }
+        relativeHumidity: { type: number, format: double, minimum: 0, maximum: 1 }
+        atmosphericPressurePa: { type: number, format: double, exclusiveMinimum: 0 }
+        orificeDiameterM: { type: number, format: double, exclusiveMinimum: 0 }
+        pipeDiameterM: { type: number, format: double, exclusiveMinimum: 0 }
+        orificeExpansionPerC: { type: number, format: double }
+        pipeExpansionPerC: { type: number, format: double }
+        dischargeCoefficient: { type: number, format: double, exclusiveMinimum: 0 }
+        approachCoefficient: { type: number, format: double, exclusiveMinimum: 0 }
+        expansibility: { type: number, format: double, exclusiveMinimum: 0 }
+        roughnessCorrection: { type: number, format: double, exclusiveMinimum: 0 }
+    LeakageValues:
+      type: object
+      additionalProperties: false
+      required: [testPressurePa, massFlowKgPerSecond, workingFlowM3PerSecond, normalizedFlowM3PerHour, specificLeakageLitresPerSecondPerSquareMetre, contributingSeconds]
+      properties:
+        testPressurePa: { type: number, format: double }
+        massFlowKgPerSecond: { type: number, format: double, minimum: 0 }
+        workingFlowM3PerSecond: { type: number, format: double, minimum: 0 }
+        normalizedFlowM3PerHour:
+          type: number
+          format: double
+          minimum: 0
+          description: Объёмный расход, приведённый к 20 °C и 101325 Па.
+        specificLeakageLitresPerSecondPerSquareMetre: { type: number, format: double, minimum: 0 }
+        contributingSeconds: { type: integer, minimum: 1, maximum: 300 }
+    LeakageCalculation:
+      type: object
+      additionalProperties: false
+      required: [pointId, method, windowStartedAt, windowEndedAt, durationSeconds, firstSequence, lastSequence, channels, conditions]
+      properties:
+        pointId: { type: string, format: uuid }
+        method: { type: string, const: singlePointLeakageV1, x-go-type: string }
+        windowStartedAt: { type: string, format: date-time }
+        windowEndedAt: { type: string, format: date-time }
+        durationSeconds: { type: integer, minimum: 60, maximum: 300 }
+        firstSequence: { type: integer, format: int64, minimum: 0, description: Ноль при отсутствии отсчётов. }
+        lastSequence: { type: integer, format: int64, minimum: 0, description: Ноль при отсутствии отсчётов. }
+        channels:
+          type: array
+          maxItems: 2
+          uniqueItems: true
+          items: { type: string, enum: [dd2, dd3] }
+        conditions: { $ref: "#/components/schemas/LeakageConditions" }
+        values: { $ref: "#/components/schemas/LeakageValues" }
+        unavailableReason: { type: string, enum: [missingTestPressure, missingAirConditions, noUsableDifferential, invalidCalculationInputs] }
+      if: { required: [values] }
+      then:
+        not: { required: [unavailableReason] }
+      else:
+        required: [unavailableReason]
     TestRecord:
       type: object
       additionalProperties: false
@@ -880,6 +941,7 @@ components:
         saveStatus: { type: string, enum: [saved, pending, failed, unknown] }
         createdAt: { type: string, format: date-time }
         finishedAt: { type: [string, "null"], format: date-time }
+        leakageCalculation: { $ref: "#/components/schemas/LeakageCalculation" }
     TestList:
       type: object
       additionalProperties: false

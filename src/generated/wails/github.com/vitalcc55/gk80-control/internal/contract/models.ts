@@ -233,6 +233,99 @@ export interface Handshake {
 }
 
 /**
+ * LeakageCalculation defines model for LeakageCalculation.
+ */
+export interface LeakageCalculation {
+    "channels": LeakageCalculationChannels[] | null;
+    "conditions": LeakageConditions;
+    "durationSeconds": number;
+
+    /**
+     * FirstSequence Ноль при отсутствии отсчётов.
+     */
+    "firstSequence": number;
+
+    /**
+     * LastSequence Ноль при отсутствии отсчётов.
+     */
+    "lastSequence": number;
+    "method": string;
+    "pointId": types$0.UUID;
+    "unavailableReason"?: LeakageCalculationUnavailableReason | null;
+    "values"?: LeakageValues | null;
+    "windowEndedAt": string;
+    "windowStartedAt": string;
+}
+
+/**
+ * LeakageCalculationChannels defines model for LeakageCalculation.Channels.
+ */
+export enum LeakageCalculationChannels {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    /**
+     * Defines values for LeakageCalculationChannels.
+     */
+    LeakageCalculationChannelsDd2 = "dd2",
+    LeakageCalculationChannelsDd3 = "dd3",
+};
+
+/**
+ * LeakageCalculationUnavailableReason defines model for LeakageCalculation.UnavailableReason.
+ */
+export enum LeakageCalculationUnavailableReason {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    /**
+     * Defines values for LeakageCalculationUnavailableReason.
+     */
+    InvalidCalculationInputs = "invalidCalculationInputs",
+    MissingAirConditions = "missingAirConditions",
+    MissingTestPressure = "missingTestPressure",
+    NoUsableDifferential = "noUsableDifferential",
+};
+
+/**
+ * LeakageConditions defines model for LeakageConditions.
+ */
+export interface LeakageConditions {
+    "approachCoefficient": number;
+    "atmosphericPressurePa": number;
+    "dischargeCoefficient": number;
+    "expansibility": number;
+    "orificeDiameterM": number;
+    "orificeExpansionPerC": number;
+    "pipeDiameterM": number;
+    "pipeExpansionPerC": number;
+    "relativeHumidity": number;
+    "roughnessCorrection": number;
+    "source": string;
+    "temperatureC": number;
+}
+
+/**
+ * LeakageValues defines model for LeakageValues.
+ */
+export interface LeakageValues {
+    "contributingSeconds": number;
+    "massFlowKgPerSecond": number;
+
+    /**
+     * NormalizedFlowM3PerHour Объёмный расход, приведённый к 20 °C и 101325 Па.
+     */
+    "normalizedFlowM3PerHour": number;
+    "specificLeakageLitresPerSecondPerSquareMetre": number;
+    "testPressurePa": number;
+    "workingFlowM3PerSecond": number;
+}
+
+/**
  * ListTestsParams defines parameters for ListTests.
  */
 export interface ListTestsParams {
@@ -268,6 +361,11 @@ export interface Measurement {
     "observedAt": string;
     "quality": MeasurementQuality;
     "quantity": MeasurementQuantity;
+
+    /**
+     * SelectedDifferential Выбор этого ДД2 или ДД3 в данном опросе. Поле отсутствует у ДД1 и у неразмеченных отсчётов.
+     */
+    "selectedDifferential"?: boolean | null;
     "sequence": number;
     "source": MeasurementSource;
     "unit": MeasurementUnit;
@@ -595,6 +693,7 @@ export interface TestRecord {
     "dataQuality": TestRecordDataQuality;
     "demo": boolean;
     "finishedAt"?: string | null;
+    "leakageCalculation"?: LeakageCalculation | null;
     "operatorId": string;
     "outcome": TestRecordOutcome;
     "parameters": TestParameters;

@@ -43,6 +43,11 @@ import {
 } from '../src/generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
 import type { GraphPoint } from '../src/model';
 
+// The characteristic's real canvas is exercised in Playwright.
+vi.mock('../src/components/LeakageChart', () => ({
+  LeakageChart: ({ emptyMessage }: { emptyMessage: string }) => <p>{emptyMessage}</p>,
+}));
+
 vi.mock('../src/components/MeasurementChart', () => ({
   MeasurementChart: ({ points }: { points: readonly GraphPoint[] }) => (
     <div data-testid="chart" data-points={JSON.stringify(points)}>

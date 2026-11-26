@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -82,7 +83,7 @@ func TestPreviousDemoProfileIsNotModified(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`CREATE TABLE retained_data (value TEXT); INSERT INTO retained_data VALUES ('preserved'); PRAGMA user_version = 3`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE retained_data (value TEXT); INSERT INTO retained_data VALUES ('preserved')`); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
@@ -98,86 +99,11 @@ func TestPreviousDemoProfileIsNotModified(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 	var value string
-	var version int
 	if err := db.QueryRow(`SELECT value FROM retained_data`).Scan(&value); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	if value != "preserved" || version != 3 {
-		t.Fatalf("old profile changed: %q %d", value, version)
-	}
-}
-
-func TestVersionFourProfilePreservesRecordAndExactCreate(t *testing.T) {
-	ctx := context.Background()
-	dir := t.TempDir()
-	store, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	command := createCommand()
-	created, err := store.Create(ctx, command)
-	if err != nil || created.TestId == nil {
-		t.Fatalf("create: %+v %v", created, err)
-	}
-	record, err := store.Test(ctx, *created.TestId)
-	if err != nil {
-		t.Fatal(err)
-	}
-	legacy := command
-	legacy.Parameters.LowerPressureLimitPa = nil
-	legacy.Parameters.UpperPressureLimitPa = nil
-	legacy.Parameters.LowerPressureHoldSeconds = nil
-	legacy.Parameters.UpperPressureHoldSeconds = nil
-	record.Parameters = legacy.Parameters
-	legacyJSON, err := json.Marshal(legacy)
-	if err != nil {
-		t.Fatal(err)
-	}
-	validator, err := contract.NewInputValidator()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var decoded contract.CreateTestCommand
-	input, err := validator.Inspect("CreateTestCommand", legacyJSON, &decoded)
-	if err != nil || input.Valid || !reflect.DeepEqual(decoded, legacy) {
-		t.Fatalf("legacy input: %+v %v", input, err)
-	}
-	identity := input.Identity
-	recordBody, err := json.Marshal(record)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.db.Exec(`UPDATE tests SET record = ? WHERE id = ?`, recordBody, created.TestId.String()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.db.Exec(`UPDATE commands SET request = ? WHERE id = ?`, identity, command.CommandId.String()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.db.Exec(`ALTER TABLE test_actions DROP COLUMN kind; PRAGMA user_version = 4`); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store, err = Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = store.Close() }()
-	got, err := store.Test(ctx, *created.TestId)
-	if err != nil || !reflect.DeepEqual(got.Parameters, legacy.Parameters) {
-		t.Fatalf("legacy parameters: %+v %v", got.Parameters, err)
-	}
-	status, err := store.LookupCreateExact(ctx, legacy, identity)
-	if err != nil || status.TestId == nil || *status.TestId != *created.TestId {
-		t.Fatalf("legacy exact lookup: %+v %v", status, err)
-	}
-	legacy.CommandId = uuid.New()
-	if _, err := store.Create(ctx, legacy); !errors.Is(err, ErrInvalidCommand) {
-		t.Fatalf("new request without pressure limits: %v", err)
+	if value != "preserved" {
+		t.Fatalf("unrecognized profile changed: %q", value)
 	}
 }
 
@@ -657,20 +583,38 @@ func TestConcurrentCreateDoesNotDuplicateCommand(t *testing.T) {
 	}
 }
 
-func TestOpenRejectsUnknownDatabaseVersion(t *testing.T) {
-	dir := t.TempDir()
-	store, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.db.Exec("PRAGMA user_version = 42"); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Open(dir); err == nil {
-		t.Fatalf("unknown schema in %s accepted", filepath.Join(dir, "demo.sqlite"))
+func TestOpenRejectsIncompleteSchemaWithoutChangingIt(t *testing.T) {
+	for name, fault := range map[string]string{
+		"missing column": "ALTER TABLE test_actions DROP COLUMN kind",
+		"missing index":  "DROP INDEX one_pending_action",
+		"wrong index":    "DROP INDEX one_pending_action; CREATE INDEX one_pending_action ON test_actions(test_id)",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			store, err := Open(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.db.Exec(fault); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, "demo.sqlite")
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reopened, err := Open(dir); err == nil {
+				_ = reopened.Close()
+				t.Fatal("incomplete schema accepted")
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("incomplete profile was changed: %v", err)
+			}
+		})
 	}
 }
 
@@ -756,36 +700,6 @@ func TestOpenRejectsInvalidDatabaseIdentity(t *testing.T) {
 				t.Fatal("invalid database identity accepted")
 			}
 		})
-	}
-}
-
-func TestPreviousVersionOneProfileRemainsUntouched(t *testing.T) {
-	dir := t.TempDir()
-	db, err := sql.Open("sqlite", filepath.Join(dir, "demo.sqlite"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`CREATE TABLE measurements (unrelated TEXT); PRAGMA user_version = 1`); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if store, err := Open(dir); err == nil {
-		_ = store.Close()
-		t.Fatal("conflicting migration succeeded")
-	}
-	db, err = sql.Open("sqlite", filepath.Join(dir, "demo.sqlite"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
-	var version, pending int
-	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 1 {
-		t.Fatalf("version %d: %v", version, err)
-	}
-	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE name = 'test_actions'`).Scan(&pending); err != nil || pending != 0 {
-		t.Fatalf("partial migration %d: %v", pending, err)
 	}
 }
 

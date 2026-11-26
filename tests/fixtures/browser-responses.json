@@ -1918,5 +1918,53 @@
     "valid": false,
     "browserValid": false,
     "kind": "schema"
+  },
+  {
+    "name": "saved leakage calculation with valid zero",
+    "schema": "TestRecord",
+    "json": "{\"testId\":\"10000000-0000-4000-8000-000000000001\",\"demo\":true,\"operatorId\":\"demo\",\"parameters\":{\"valve\":\"V\",\"areaM2\":0.1,\"pmaxPa\":1000,\"measurementSeconds\":60,\"preOpenStabilizationSeconds\":10,\"postCloseStabilizationSeconds\":10,\"postCloseStabilizationRetries\":1,\"direction\":\"pressure\",\"actuator\":false},\"stopCommandId\":\"10000000-0000-4000-8000-000000000002\",\"stage\":\"finished\",\"outcome\":\"completed\",\"dataQuality\":\"complete\",\"saveStatus\":\"saved\",\"createdAt\":\"2026-11-05T10:00:00.123456789Z\",\"leakageCalculation\":{\"pointId\":\"10000000-0000-4000-8000-000000000009\",\"method\":\"singlePointLeakageV1\",\"windowStartedAt\":\"2026-11-26T09:00:00Z\",\"windowEndedAt\":\"2026-11-26T09:01:00Z\",\"durationSeconds\":60,\"firstSequence\":1,\"lastSequence\":1800,\"channels\":[\"dd2\"],\"conditions\":{\"source\":\"simulatorProfile\",\"temperatureC\":22,\"relativeHumidity\":0.45,\"atmosphericPressurePa\":101325,\"orificeDiameterM\":0.03,\"pipeDiameterM\":0.1,\"orificeExpansionPerC\":1.7e-05,\"pipeExpansionPerC\":1.7e-05,\"dischargeCoefficient\":0.61,\"approachCoefficient\":1.00407477,\"expansibility\":0.998,\"roughnessCorrection\":1},\"values\":{\"testPressurePa\":1000,\"massFlowKgPerSecond\":0,\"workingFlowM3PerSecond\":0,\"normalizedFlowM3PerHour\":0,\"specificLeakageLitresPerSecondPerSquareMetre\":0,\"contributingSeconds\":60}}}",
+    "valid": true,
+    "browserValid": true,
+    "kind": "schema"
+  },
+  {
+    "name": "calculation cannot contain values and a failure reason",
+    "schema": "TestRecord",
+    "json": "{\"testId\":\"10000000-0000-4000-8000-000000000001\",\"demo\":true,\"operatorId\":\"demo\",\"parameters\":{\"valve\":\"V\",\"areaM2\":0.1,\"pmaxPa\":1000,\"measurementSeconds\":60,\"preOpenStabilizationSeconds\":10,\"postCloseStabilizationSeconds\":10,\"postCloseStabilizationRetries\":1,\"direction\":\"pressure\",\"actuator\":false},\"stopCommandId\":\"10000000-0000-4000-8000-000000000002\",\"stage\":\"finished\",\"outcome\":\"completed\",\"dataQuality\":\"complete\",\"saveStatus\":\"saved\",\"createdAt\":\"2026-11-05T10:00:00.123456789Z\",\"leakageCalculation\":{\"pointId\":\"10000000-0000-4000-8000-000000000009\",\"method\":\"singlePointLeakageV1\",\"windowStartedAt\":\"2026-11-26T09:00:00Z\",\"windowEndedAt\":\"2026-11-26T09:01:00Z\",\"durationSeconds\":60,\"firstSequence\":1,\"lastSequence\":1800,\"channels\":[\"dd2\"],\"conditions\":{\"source\":\"simulatorProfile\",\"temperatureC\":22,\"relativeHumidity\":0.45,\"atmosphericPressurePa\":101325,\"orificeDiameterM\":0.03,\"pipeDiameterM\":0.1,\"orificeExpansionPerC\":1.7e-05,\"pipeExpansionPerC\":1.7e-05,\"dischargeCoefficient\":0.61,\"approachCoefficient\":1.00407477,\"expansibility\":0.998,\"roughnessCorrection\":1},\"values\":{\"testPressurePa\":1000,\"massFlowKgPerSecond\":0,\"workingFlowM3PerSecond\":0,\"normalizedFlowM3PerHour\":0,\"specificLeakageLitresPerSecondPerSquareMetre\":0,\"contributingSeconds\":60},\"unavailableReason\":\"missingTestPressure\"}}",
+    "valid": false,
+    "browserValid": false,
+    "kind": "schema"
+  },
+  {
+    "name": "unfinished calculation has no saved result or reason",
+    "schema": "TestRecord",
+    "json": "{\"testId\":\"10000000-0000-4000-8000-000000000001\",\"demo\":true,\"operatorId\":\"demo\",\"parameters\":{\"valve\":\"V\",\"areaM2\":0.1,\"pmaxPa\":1000,\"measurementSeconds\":60,\"preOpenStabilizationSeconds\":10,\"postCloseStabilizationSeconds\":10,\"postCloseStabilizationRetries\":1,\"direction\":\"pressure\",\"actuator\":false},\"stopCommandId\":\"10000000-0000-4000-8000-000000000002\",\"stage\":\"finished\",\"outcome\":\"completed\",\"dataQuality\":\"complete\",\"saveStatus\":\"saved\",\"createdAt\":\"2026-11-05T10:00:00.123456789Z\",\"leakageCalculation\":{\"pointId\":\"10000000-0000-4000-8000-000000000009\",\"method\":\"singlePointLeakageV1\",\"windowStartedAt\":\"2026-11-26T09:00:00Z\",\"windowEndedAt\":\"2026-11-26T09:01:00Z\",\"durationSeconds\":60,\"firstSequence\":1,\"lastSequence\":1800,\"channels\":[\"dd2\"],\"conditions\":{\"source\":\"simulatorProfile\",\"temperatureC\":22,\"relativeHumidity\":0.45,\"atmosphericPressurePa\":101325,\"orificeDiameterM\":0.03,\"pipeDiameterM\":0.1,\"orificeExpansionPerC\":1.7e-05,\"pipeExpansionPerC\":1.7e-05,\"dischargeCoefficient\":0.61,\"approachCoefficient\":1.00407477,\"expansibility\":0.998,\"roughnessCorrection\":1}}}",
+    "valid": false,
+    "browserValid": false,
+    "kind": "schema"
+  },
+  {
+    "name": "saved calculation without usable differential",
+    "schema": "TestRecord",
+    "json": "{\"testId\":\"10000000-0000-4000-8000-000000000001\",\"demo\":true,\"operatorId\":\"demo\",\"parameters\":{\"valve\":\"V\",\"areaM2\":0.1,\"pmaxPa\":1000,\"measurementSeconds\":60,\"preOpenStabilizationSeconds\":10,\"postCloseStabilizationSeconds\":10,\"postCloseStabilizationRetries\":1,\"direction\":\"pressure\",\"actuator\":false},\"stopCommandId\":\"10000000-0000-4000-8000-000000000002\",\"stage\":\"finished\",\"outcome\":\"completed\",\"dataQuality\":\"complete\",\"saveStatus\":\"saved\",\"createdAt\":\"2026-11-05T10:00:00.123456789Z\",\"leakageCalculation\":{\"pointId\":\"10000000-0000-4000-8000-000000000009\",\"method\":\"singlePointLeakageV1\",\"windowStartedAt\":\"2026-11-26T09:00:00Z\",\"windowEndedAt\":\"2026-11-26T09:01:00Z\",\"durationSeconds\":60,\"firstSequence\":1,\"lastSequence\":1800,\"channels\":[\"dd2\"],\"conditions\":{\"source\":\"simulatorProfile\",\"temperatureC\":22,\"relativeHumidity\":0.45,\"atmosphericPressurePa\":101325,\"orificeDiameterM\":0.03,\"pipeDiameterM\":0.1,\"orificeExpansionPerC\":1.7e-05,\"pipeExpansionPerC\":1.7e-05,\"dischargeCoefficient\":0.61,\"approachCoefficient\":1.00407477,\"expansibility\":0.998,\"roughnessCorrection\":1},\"unavailableReason\":\"noUsableDifferential\"}}",
+    "valid": true,
+    "browserValid": true,
+    "kind": "schema"
+  },
+  {
+    "name": "selected differential of the poll",
+    "schema": "Measurement",
+    "json": "{\"sequence\":1,\"channel\":\"dd2\",\"quantity\":\"differentialPressure\",\"value\":0,\"unit\":\"Pa\",\"observedAt\":\"2026-11-05T10:00:00.123456789Z\",\"measuredAt\":\"2026-11-05T10:00:00.123456789Z\",\"quality\":\"valid\",\"source\":\"simulator\",\"selectedDifferential\":true}",
+    "valid": true,
+    "browserValid": true,
+    "kind": "schema"
+  },
+  {
+    "name": "selected differential annotation is invalid for DD1",
+    "schema": "Measurement",
+    "json": "{\"sequence\":1,\"channel\":\"dd1\",\"quantity\":\"pressure\",\"value\":0,\"unit\":\"Pa\",\"observedAt\":\"2026-11-05T10:00:00.123456789Z\",\"measuredAt\":\"2026-11-05T10:00:00.123456789Z\",\"quality\":\"valid\",\"source\":\"simulator\",\"selectedDifferential\":true}",
+    "valid": false,
+    "browserValid": false,
+    "kind": "schema"
   }
 ]

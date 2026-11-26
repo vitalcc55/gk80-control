@@ -3,6 +3,7 @@ package demo
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -124,11 +125,11 @@ func TestLateFinalResultDoesNotReplaceNewRun(t *testing.T) {
 	}
 }
 
-func (s *finalResultRepository) Complete(ctx context.Context, id uuid.UUID, elapsed time.Duration, stopped ...contract.PendingAction) (storage.OperationResult, error) {
+func (s *finalResultRepository) Complete(ctx context.Context, id uuid.UUID, elapsed time.Duration, calculation *contract.LeakageCalculation, stopped ...contract.PendingAction) (storage.OperationResult, error) {
 	if s.failBefore && !s.failedBefore.Swap(true) {
 		return storage.OperationResult{}, context.DeadlineExceeded
 	}
-	return s.report(s.Store.Complete(ctx, id, elapsed, stopped...))
+	return s.report(s.Store.Complete(ctx, id, elapsed, calculation, stopped...))
 }
 
 func (s *finalResultRepository) FinishStop(ctx context.Context, id, cmd uuid.UUID, details storage.StopDetails) (storage.OperationResult, error) {
@@ -236,6 +237,10 @@ func TestEngineFinalizationUsesCommittedResult(t *testing.T) {
 					revision, err := store.Revision(ctx)
 					if err != nil || state.Record.SaveStatus != "saved" || state.Revision != revision || wrapped.reads.Load() != 2 {
 						t.Fatalf("read-only recovery: %+v reads=%d %v", state, wrapped.reads.Load(), err)
+					}
+					if operation == "complete" && (record.LeakageCalculation == nil ||
+						!reflect.DeepEqual(record.LeakageCalculation, state.Record.LeakageCalculation)) {
+						t.Fatal("lost reply did not recover the original calculation")
 					}
 				} else if state.Revision != 101 || wrapped.reads.Load() != 0 {
 					t.Fatalf("confirmed result: %+v reads=%d", state, wrapped.reads.Load())

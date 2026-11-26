@@ -197,6 +197,92 @@ function parameters(value: unknown): value is Contract.TestParameters {
   );
 }
 
+function leakageCalculation(value: unknown): value is Contract.LeakageCalculation {
+  const conditionNumbers = [
+    'temperatureC',
+    'relativeHumidity',
+    'atmosphericPressurePa',
+    'orificeDiameterM',
+    'pipeDiameterM',
+    'orificeExpansionPerC',
+    'pipeExpansionPerC',
+    'dischargeCoefficient',
+    'approachCoefficient',
+    'expansibility',
+    'roughnessCorrection',
+  ];
+  const positiveConditions = [
+    'atmosphericPressurePa',
+    'orificeDiameterM',
+    'pipeDiameterM',
+    'dischargeCoefficient',
+    'approachCoefficient',
+    'expansibility',
+    'roughnessCorrection',
+  ];
+  const flows = [
+    'massFlowKgPerSecond',
+    'workingFlowM3PerSecond',
+    'normalizedFlowM3PerHour',
+    'specificLeakageLitresPerSecondPerSquareMetre',
+  ];
+  if (
+    !fields(
+      value,
+      [
+        'pointId',
+        'method',
+        'windowStartedAt',
+        'windowEndedAt',
+        'durationSeconds',
+        'firstSequence',
+        'lastSequence',
+        'channels',
+        'conditions',
+      ],
+      ['values', 'unavailableReason'],
+    )
+  )
+    return false;
+  const conditions = value['conditions'];
+  const channels = value['channels'];
+  const values = value['values'];
+  return (
+    uuid(value['pointId']) &&
+    value['method'] === 'singlePointLeakageV1' &&
+    dateTime(value['windowStartedAt']) &&
+    dateTime(value['windowEndedAt']) &&
+    counter(value['durationSeconds'], 60) &&
+    value['durationSeconds'] <= 300 &&
+    counter(value['firstSequence']) &&
+    counter(value['lastSequence']) &&
+    Array.isArray(channels) &&
+    channels.length <= 2 &&
+    new Set(channels).size === channels.length &&
+    channels.every((item) => oneOf(item, ['dd2', 'dd3'])) &&
+    fields(conditions, ['source', ...conditionNumbers]) &&
+    conditions['source'] === 'simulatorProfile' &&
+    conditionNumbers.every((key) => finite(conditions[key])) &&
+    positiveConditions.every((key) => finite(conditions[key]) && conditions[key] > 0) &&
+    finite(conditions['relativeHumidity']) &&
+    conditions['relativeHumidity'] >= 0 &&
+    conditions['relativeHumidity'] <= 1 &&
+    (Object.hasOwn(value, 'values')
+      ? !Object.hasOwn(value, 'unavailableReason') &&
+        fields(values, ['testPressurePa', 'contributingSeconds', ...flows]) &&
+        finite(values['testPressurePa']) &&
+        counter(values['contributingSeconds'], 1) &&
+        values['contributingSeconds'] <= 300 &&
+        flows.every((key) => finite(values[key]) && values[key] >= 0)
+      : oneOf(value['unavailableReason'], [
+          'missingTestPressure',
+          'missingAirConditions',
+          'noUsableDifferential',
+          'invalidCalculationInputs',
+        ]))
+  );
+}
+
 function testRecord(value: unknown): value is Contract.TestRecord {
   return (
     fields(
@@ -213,7 +299,7 @@ function testRecord(value: unknown): value is Contract.TestRecord {
         'saveStatus',
         'createdAt',
       ],
-      ['finishedAt'],
+      ['finishedAt', 'leakageCalculation'],
     ) &&
     uuid(value['testId']) &&
     uuid(value['stopCommandId']) &&
@@ -225,27 +311,34 @@ function testRecord(value: unknown): value is Contract.TestRecord {
     oneOf(value['dataQuality'], ['pending', 'complete', 'incomplete', 'unknown']) &&
     oneOf(value['saveStatus'], ['saved', 'pending', 'failed', 'unknown']) &&
     dateTime(value['createdAt']) &&
-    optionalNullable(value, 'finishedAt', dateTime)
+    optionalNullable(value, 'finishedAt', dateTime) &&
+    (!Object.hasOwn(value, 'leakageCalculation') || leakageCalculation(value['leakageCalculation']))
   );
 }
 
 function measurement(value: unknown): value is Contract.Measurement {
   return (
-    fields(value, [
-      'sequence',
-      'channel',
-      'quantity',
-      'value',
-      'unit',
-      'observedAt',
-      'measuredAt',
-      'quality',
-      'source',
-    ]) &&
+    fields(
+      value,
+      [
+        'sequence',
+        'channel',
+        'quantity',
+        'value',
+        'unit',
+        'observedAt',
+        'measuredAt',
+        'quality',
+        'source',
+      ],
+      ['selectedDifferential'],
+    ) &&
     counter(value['sequence'], 1) &&
     oneOf(value['channel'], ['dd1', 'dd2', 'dd3']) &&
     value['quantity'] === (value['channel'] === 'dd1' ? 'pressure' : 'differentialPressure') &&
     value['unit'] === 'Pa' &&
+    (!Object.hasOwn(value, 'selectedDifferential') ||
+      (value['channel'] !== 'dd1' && typeof value['selectedDifferential'] === 'boolean')) &&
     value['source'] === 'simulator' &&
     dateTime(value['observedAt']) &&
     oneOf(value['quality'], ['valid', 'stale', 'unavailable']) &&

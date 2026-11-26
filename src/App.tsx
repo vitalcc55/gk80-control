@@ -455,9 +455,10 @@ export function App() {
               active={active}
               draftAvailable={draftAvailable}
               calculation={
-                historyResult ? undefined : (
-                  <LeakageChart point={leakagePoint} emptyMessage="Рабочая точка недоступна" />
-                )
+                <LeakageChart
+                  point={historyResult ? undefined : leakagePoint}
+                  emptyMessage="Рабочая точка недоступна"
+                />
               }
               onList={() => setScreen('tests')}
               onNew={() => {

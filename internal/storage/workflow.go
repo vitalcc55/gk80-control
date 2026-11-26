@@ -461,6 +461,9 @@ func (s *Store) RequestRunAction(ctx context.Context, action contract.PendingAct
 	return OperationResult{Applied: true, Saved: &SavedState{Record: record, Revision: revision + 1, PendingAction: &action}}, nil
 }
 
+const insertDifferentialSwitch = `INSERT INTO audit(test_id, occurred_at, operator_id, action, outcome, revision, reason)
+	SELECT tests.id, ?, 'system', 'differential_switch', 'completed', meta.revision, ? FROM tests CROSS JOIN meta WHERE tests.id = ? AND tests.stage = 'running' AND meta.id = 1`
+
 func (s *Store) RecordDifferentialSwitch(ctx context.Context, testID uuid.UUID, channel string) error {
 	if channel != "dd2" && channel != "dd3" {
 		return ErrInvalidCommand
@@ -472,8 +475,7 @@ func (s *Store) RecordDifferentialSwitch(ctx context.Context, testID uuid.UUID, 
 	if s.failed {
 		return ErrStorageUnavailable
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO audit(test_id, occurred_at, operator_id, action, outcome, revision, reason)
-		SELECT tests.id, ?, 'system', 'differential_switch', 'completed', meta.revision, ? FROM tests CROSS JOIN meta WHERE tests.id = ? AND tests.stage = 'running' AND meta.id = 1`, time.Now().UTC().Format(time.RFC3339Nano), channel, testID.String())
+	_, err := s.db.ExecContext(ctx, insertDifferentialSwitch, time.Now().UTC().Format(time.RFC3339Nano), channel, testID.String())
 	return err
 }
 
@@ -481,7 +483,7 @@ func validMeasurement(m contract.Measurement) bool {
 	if m.Sequence < 1 || !m.Channel.Valid() || !m.Quantity.Valid() || !m.Quality.Valid() || m.Unit != "Pa" || m.Source != "simulator" || m.ObservedAt.IsZero() {
 		return false
 	}
-	if (m.Channel == "dd1") != (m.Quantity == "pressure") {
+	if (m.Channel == "dd1") != (m.Quantity == "pressure") || (m.Channel == "dd1" && m.SelectedDifferential != nil) {
 		return false
 	}
 	if m.Quality == "unavailable" {
@@ -496,8 +498,9 @@ func validMeasurement(m contract.Measurement) bool {
 
 // TimedMeasurement carries the engine's monotonic offset alongside absolute history times.
 type TimedMeasurement struct {
-	Measurement contract.Measurement
-	Elapsed     time.Duration
+	Measurement          contract.Measurement
+	Elapsed              time.Duration
+	DifferentialSwitched bool
 }
 
 // RecordMeasurements commits a bounded, contiguous batch of original simulator samples.
@@ -507,7 +510,8 @@ func (s *Store) RecordMeasurements(ctx context.Context, testID uuid.UUID, measur
 	}
 	bodies := make([][]byte, len(measurements))
 	for i, sample := range measurements {
-		if !validMeasurement(sample.Measurement) || sample.Elapsed < 0 || sample.Elapsed > 24*time.Hour {
+		if !validMeasurement(sample.Measurement) || sample.Elapsed < 0 || sample.Elapsed > 24*time.Hour ||
+			(sample.DifferentialSwitched && (sample.Measurement.SelectedDifferential == nil || !*sample.Measurement.SelectedDifferential)) {
 			return ErrInvalidCommand
 		}
 		body, err := json.Marshal(sample.Measurement)
@@ -574,6 +578,12 @@ func (s *Store) RecordMeasurements(ctx context.Context, testID uuid.UUID, measur
 			s.noteWriteError(ctx, err, true)
 			return err
 		}
+		if sample.DifferentialSwitched {
+			if _, err := tx.ExecContext(ctx, insertDifferentialSwitch, sample.Measurement.ObservedAt.Format(time.RFC3339Nano), sample.Measurement.Channel, testID.String()); err != nil {
+				s.noteWriteError(ctx, err, false)
+				return err
+			}
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		s.noteWriteError(ctx, err, true)
@@ -585,6 +595,30 @@ func (s *Store) RecordMeasurements(ctx context.Context, testID uuid.UUID, measur
 func (s *Store) Measurements(ctx context.Context, testID uuid.UUID, after int64, limit int) ([]contract.Measurement, error) {
 	page, err := s.MeasurementsPage(ctx, testID, after, limit)
 	return page.Items, err
+}
+
+// MeasurementWindowSamples reads the immutable source of the demo calculation.
+// There are at most 300 seconds of 10 polls with three readings each.
+func (s *Store) MeasurementWindowSamples(ctx context.Context, testID uuid.UUID) ([]TimedMeasurement, error) {
+	const maxSamples = 300 * 10 * 3
+	rows, err := s.db.QueryContext(ctx, `SELECT payload, elapsed_ns FROM measurements WHERE test_id = ? ORDER BY sequence LIMIT ?`, testID.String(), maxSamples+1)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var samples []TimedMeasurement
+	for rows.Next() {
+		var body []byte
+		var sample TimedMeasurement
+		if err := rows.Scan(&body, &sample.Elapsed); err != nil {
+			return nil, err
+		}
+		if len(samples) == maxSamples || json.Unmarshal(body, &sample.Measurement) != nil || !validMeasurement(sample.Measurement) {
+			return nil, errors.New("invalid calculation measurement window")
+		}
+		samples = append(samples, sample)
+	}
+	return samples, rows.Err()
 }
 
 func (s *Store) MeasurementsPage(ctx context.Context, testID uuid.UUID, after int64, limit int) (contract.MeasurementPage, error) {
@@ -633,7 +667,7 @@ func (s *Store) MeasurementsPage(ctx context.Context, testID uuid.UUID, after in
 }
 
 // Complete receives the elapsed interval measured by the engine's monotonic clock.
-func (s *Store) Complete(ctx context.Context, testID uuid.UUID, elapsed time.Duration, stopped ...contract.PendingAction) (OperationResult, error) {
+func (s *Store) Complete(ctx context.Context, testID uuid.UUID, elapsed time.Duration, calculation *contract.LeakageCalculation, stopped ...contract.PendingAction) (OperationResult, error) {
 	if elapsed < 0 || elapsed > 24*time.Hour {
 		return OperationResult{}, ErrInvalidCommand
 	}
@@ -677,6 +711,7 @@ func (s *Store) Complete(ctx context.Context, testID uuid.UUID, elapsed time.Dur
 		return OperationResult{}, err
 	}
 	count := [3]int{}
+	var firstSequence, lastSequence int64
 	complete := true
 	for rows.Next() {
 		var body []byte
@@ -696,6 +731,10 @@ func (s *Store) Complete(ctx context.Context, testID uuid.UUID, elapsed time.Dur
 			_ = rows.Close()
 			return OperationResult{}, ErrInvalidState
 		}
+		if firstSequence == 0 {
+			firstSequence = sample.Sequence
+		}
+		lastSequence = sample.Sequence
 		if sample.Quality != "valid" || sample.MeasuredAt == nil {
 			complete = false
 		}
@@ -717,7 +756,9 @@ func (s *Store) Complete(ctx context.Context, testID uuid.UUID, elapsed time.Dur
 		s.noteWriteError(ctx, err, false)
 		return OperationResult{}, err
 	}
-	if elapsed.Seconds() < record.Parameters.MeasurementSeconds {
+	if elapsed.Seconds() < record.Parameters.MeasurementSeconds ||
+		(calculation != nil && (calculation.FirstSequence != firstSequence || calculation.LastSequence != lastSequence ||
+			calculation.DurationSeconds != int(elapsed/time.Second))) {
 		return OperationResult{}, ErrInvalidState
 	}
 	if err := ctx.Err(); err != nil {
@@ -732,6 +773,7 @@ func (s *Store) Complete(ctx context.Context, testID uuid.UUID, elapsed time.Dur
 		record.DataQuality = "complete"
 	}
 	record.FinishedAt = &now
+	record.LeakageCalculation = calculation
 	if err := saveTransition(ctx, tx, record, revision+1, "system", "complete", "completed", nil, nil); err != nil {
 		s.noteWriteError(ctx, err, false)
 		return OperationResult{}, err

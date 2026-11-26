@@ -173,7 +173,14 @@ func (e *Engine) runManualPressure(current *run, testID uuid.UUID) {
 			latest := manualReadings(readings, &sequence)
 			packet := make(samplePacket, 0, len(latest))
 			for _, measurement := range latest {
-				packet = append(packet, storage.TimedMeasurement{Measurement: measurement, Elapsed: elapsed})
+				selected := string(measurement.Channel) == channel
+				if measurement.Channel != "dd1" {
+					measurement.SelectedDifferential = &selected
+				}
+				packet = append(packet, storage.TimedMeasurement{
+					Measurement: measurement, Elapsed: elapsed,
+					DifferentialSwitched: selected && previousDifferential != "" && previousDifferential != channel,
+				})
 			}
 			select {
 			case queue <- packet:
@@ -211,7 +218,7 @@ func (e *Engine) runManualPressure(current *run, testID uuid.UUID) {
 		if requestOpening && !e.requestValveOpening(current, testID) {
 			return
 		}
-		if previousDifferential != "" && previousDifferential != channel {
+		if phase != measuringManualPressure && previousDifferential != "" && previousDifferential != channel {
 			ctx, cancel := context.WithTimeout(current.ctx, measurementWriteTimeout)
 			err := e.store.RecordDifferentialSwitch(ctx, testID, channel)
 			cancel()
@@ -280,6 +287,7 @@ func (e *Engine) finishManualMeasurementLocked(current *run, queue chan samplePa
 	}
 	testID := current.record.TestId
 	elapsed := current.manual.parameters.measurementDuration
+	window, area := current.manual.window, current.record.Parameters.AreaM2
 	action := newRunAction(testID, "confirmStopped")
 	current.naturalDone = true
 	current.finishDone = make(chan struct{})
@@ -303,7 +311,7 @@ func (e *Engine) finishManualMeasurementLocked(current *run, queue chan samplePa
 	e.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), measurementWriteTimeout)
 	defer cancel()
-	result, err := e.store.Complete(ctx, testID, elapsed, action)
+	result, err := e.completeManualMeasurement(ctx, testID, window, elapsed, area, action)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.active != current {

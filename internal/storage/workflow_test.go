@@ -191,14 +191,14 @@ func TestDemoRecordTransitionsAndMeasurementsSurviveReopen(t *testing.T) {
 	if err := store.RecordMeasurements(ctx, testID, []TimedMeasurement{{Measurement: sample, Elapsed: 5 * time.Millisecond}, {Measurement: second, Elapsed: 60*time.Second + 5*time.Millisecond}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Complete(ctx, testID, time.Millisecond); !errors.Is(err, ErrInvalidState) {
+	if _, err := store.Complete(ctx, testID, time.Millisecond, nil); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("premature completion: %v", err)
 	}
-	completed, err := store.Complete(ctx, testID, 60*time.Second+5*time.Millisecond)
+	completed, err := store.Complete(ctx, testID, 60*time.Second+5*time.Millisecond, nil)
 	if err != nil || !completed.Applied || completed.Replayed || completed.Command != nil || completed.Saved == nil {
 		t.Fatalf("completion result: %+v %v", completed, err)
 	}
-	if repeated, err := store.Complete(ctx, testID, 60*time.Second+5*time.Millisecond); !errors.Is(err, ErrInvalidState) || repeated.Saved != nil || repeated.Applied {
+	if repeated, err := store.Complete(ctx, testID, 60*time.Second+5*time.Millisecond, nil); !errors.Is(err, ErrInvalidState) || repeated.Saved != nil || repeated.Applied {
 		t.Fatalf("completion repeat: %+v %v", repeated, err)
 	}
 	if result, err := store.Start(ctx, testID, start, action); err != nil || result.Command.Status != "completed" {
@@ -686,7 +686,7 @@ func TestIncompletePressureSamplesCannotProduceCompleteResult(t *testing.T) {
 	if err := store.RecordMeasurements(ctx, id, []TimedMeasurement{{Measurement: sample}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Complete(ctx, id, time.Second); !errors.Is(err, ErrInvalidState) {
+	if _, err := store.Complete(ctx, id, time.Second, nil); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("unavailable pressure accepted as complete: %v", err)
 	}
 	record, err := store.Test(ctx, id)

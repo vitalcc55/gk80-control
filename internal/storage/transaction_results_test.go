@@ -97,7 +97,12 @@ func TestWorkflowFailureDoesNotConfirmPreparedResult(t *testing.T) {
 					case "completeStart":
 						result, err = store.CompleteStart(ctx, id, start.CommandId)
 					case "complete":
-						result, err = store.Complete(ctx, id, 60*time.Second)
+						reason := contract.NoUsableDifferential
+						calculation := &contract.LeakageCalculation{
+							PointId: uuid.New(), DurationSeconds: 60, FirstSequence: 1, LastSequence: 2,
+							UnavailableReason: &reason,
+						}
+						result, err = store.Complete(ctx, id, 60*time.Second, calculation)
 					case "finishStop":
 						result, err = store.FinishStop(ctx, id, before.StopCommandId, StopDetails{Actor: "demo-operator", Reason: "operator", AcceptedAt: time.Now()})
 					}
@@ -261,7 +266,7 @@ func TestOperatorResultsDistinguishRejectionReplayAndCancellation(t *testing.T) 
 			return store.Confirm(ctx, id, action.ActionId, contract.ConfirmActionCommand{CommandId: uuid.New(), ExpectedRevision: 1})
 		},
 		func() (OperationResult, error) { return store.CompleteStart(ctx, id, start.CommandId) },
-		func() (OperationResult, error) { return store.Complete(ctx, id, time.Second) },
+		func() (OperationResult, error) { return store.Complete(ctx, id, time.Second, nil) },
 		func() (OperationResult, error) {
 			return store.FinishStop(ctx, id, record.StopCommandId, StopDetails{Actor: "demo-operator", Reason: "operator", AcceptedAt: time.Now()})
 		},

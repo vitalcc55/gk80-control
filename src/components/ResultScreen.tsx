@@ -4,6 +4,7 @@ import { outcomeLabel, qualityLabel, saveLabel } from '../desktop/display';
 import type { TestRecord } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
 import { formatNumber } from '../lib/format';
 import type { TestParameters } from '../model';
+import { LeakageChart } from './LeakageChart';
 import { PressureNotation } from './PressureNotation';
 import './screens.css';
 
@@ -21,6 +22,13 @@ interface ResultScreenProps {
   hidden?: boolean;
 }
 
+const unavailableLeakage = {
+  missingTestPressure: 'Нет пригодных показаний ДД1.',
+  missingAirConditions: 'Недостаточно данных о параметрах воздуха.',
+  noUsableDifferential: 'Нет пригодных показаний перепада на диафрагме.',
+  invalidCalculationInputs: 'Непригодные исходные данные расчёта.',
+} as const;
+
 export function ResultScreen({
   parameters,
   saveError,
@@ -34,6 +42,18 @@ export function ResultScreen({
   children,
   hidden = false,
 }: ResultScreenProps) {
+  const savedCalculation = record?.saveStatus === 'saved' ? record.leakageCalculation : undefined;
+  const values = savedCalculation?.values;
+  const unavailableReason = savedCalculation?.unavailableReason;
+  const emptyMessage = unavailableReason
+    ? unavailableLeakage[unavailableReason]
+    : values
+      ? 'Координаты маркера должны быть положительными для логарифмической шкалы.'
+      : record?.saveStatus === 'pending'
+        ? 'Ожидается сохранение расчёта.'
+        : record?.saveStatus === 'failed' || record?.saveStatus === 'unknown'
+          ? 'Сохранение расчёта не подтверждено.'
+          : 'Расчёт отсутствует.';
   return (
     <section className="workpage" aria-labelledby="result-title" hidden={hidden}>
       {!hidden && (
@@ -141,19 +161,39 @@ export function ResultScreen({
                     <h2>Результаты расчёта</h2>
                   </div>
                   <dl className="result-details">
-                    <div>
-                      <dt>Расход</dt>
-                      <dd>Не рассчитан</dd>
-                    </div>
-                    <div>
-                      <dt>Класс герметичности</dt>
-                      <dd>Не определён</dd>
-                    </div>
+                    {values ? (
+                      <>
+                        <div>
+                          <dt>Рабочий объёмный расход</dt>
+                          <dd>{formatNumber(values.workingFlowM3PerSecond)} м³/с</dd>
+                        </div>
+                        <div>
+                          <dt>Приведённый расход при 20 °C и 101 325 Па</dt>
+                          <dd>{formatNumber(values.normalizedFlowM3PerHour)} м³/ч</dd>
+                        </div>
+                        <div>
+                          <dt>Условия расчёта</dt>
+                          <dd>Параметры симулятора</dd>
+                        </div>
+                      </>
+                    ) : (
+                      <div>
+                        <dt>Расход</dt>
+                        <dd>
+                          {record && record.saveStatus !== 'saved' ? 'Недоступен' : 'Не рассчитан'}
+                        </dd>
+                      </div>
+                    )}
                   </dl>
                 </>
               )}
             </div>
           </div>
+          {record && !calculation && (
+            <div className="work-surface result-section">
+              <LeakageChart point={values ?? undefined} emptyMessage={emptyMessage} />
+            </div>
+          )}
         </>
       )}
       {children}
