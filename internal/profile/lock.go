@@ -11,6 +11,8 @@ import (
 
 var ErrInUse = errors.New("demo profile is already in use")
 
+const lockFileName = ".core.lock"
+
 type Lock struct {
 	file *os.File
 	once sync.Once
@@ -22,7 +24,7 @@ func Acquire(dir string) (*Lock, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	file, err := os.OpenFile(filepath.Join(dir, ".core.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	file, err := os.OpenFile(filepath.Join(dir, lockFileName), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
 	}

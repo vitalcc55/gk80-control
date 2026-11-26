@@ -11,6 +11,19 @@ afterEach(() => vi.useRealTimers());
 
 const channel = { generation: 'channel-generation', signal: new AbortController().signal };
 
+it('uses the shared demo routes for reads and STOP', async () => {
+  const fetcher = vi
+    .fn<typeof fetch>()
+    .mockImplementation(async () => new Response(null, { status: 503 }));
+  const service = createBrowserBridge({ ...channel, apiPrefix: '/demo' }, fetcher).service;
+  await expect(service.listTests({ limit: 20 })).rejects.toThrow();
+  await expect(service.stopTest(responseId, { commandId: responseId })).rejects.toThrow();
+  expect(fetcher.mock.calls.map(([url, options]) => [url, options?.method])).toEqual([
+    ['/demo/api/tests?limit=20', 'GET'],
+    [`/demo/api/tests/${responseId}/stop`, 'POST'],
+  ]);
+});
+
 it('rejects readiness with matching identity but missing readiness facts', async () => {
   const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
     Response.json({

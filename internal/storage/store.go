@@ -20,6 +20,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/vitalcc55/gk80-control/internal/contract"
+	"github.com/vitalcc55/gk80-control/internal/profile"
 	_ "modernc.org/sqlite"
 )
 
@@ -74,7 +75,7 @@ func Open(profileDir string) (*Store, error) {
 	if !filepath.IsAbs(profileDir) {
 		return nil, errors.New("profile directory must be absolute")
 	}
-	path := filepath.ToSlash(filepath.Join(profileDir, "demo.sqlite"))
+	path := filepath.ToSlash(filepath.Join(profileDir, profile.DatabaseFile))
 	var address url.URL
 	if strings.HasPrefix(path, "//") {
 		parts := strings.SplitN(strings.TrimPrefix(path, "//"), "/", 2)

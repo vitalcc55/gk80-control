@@ -8,14 +8,14 @@ import { type DemoService, normalizeCommandDispatch } from './demo-service';
 
 // The generation associates requests with the current connection; it is not an access credential.
 export function createBrowserBridge(
-  channel: Readonly<{ generation: string; signal: AbortSignal }>,
+  channel: Readonly<{ generation: string; signal: AbortSignal; apiPrefix?: '' | '/demo' }>,
   fetcher: typeof fetch = fetch,
 ): {
   bridge: DesktopBridge;
   session: SessionBridge;
   service: DemoService;
 } {
-  const { generation, signal: channelSignal } = channel;
+  const { generation, signal: channelSignal, apiPrefix = '' } = channel;
   if (!generation) throw new Error('browser connection unavailable');
   type RequestOptions = {
     method?: 'GET' | 'POST';
@@ -54,7 +54,7 @@ export function createBrowserBridge(
       const headers = new Headers(options.headers);
       headers.set('X-GK80-Channel', generation);
       if (options.body !== undefined) headers.set('Content-Type', 'application/json');
-      const response = await fetcher(path, {
+      const response = await fetcher(apiPrefix + path, {
         method: options.method ?? 'GET',
         headers,
         credentials: 'same-origin',

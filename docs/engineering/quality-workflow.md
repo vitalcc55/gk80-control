@@ -58,7 +58,7 @@ Go-тесты обычных профилей идут с `-count=1 -shuffle=on`
 
 ## Codex App и отчёт
 
-Локальное окружение `ГК80` хранится в [environment.toml](../../.codex/environments/environment.toml). Setup worktree устанавливает зависимости из lock-файла и подготавливает Go-кэш, затем завершается. Chromium подготавливается отдельно. В PowerShell действия «Проверить frontend» и «Проверить Go» вызывают те же `check:quick` и `check:go`. «Запустить демо интерфейса» отдельно запускает `ui:fixtures` на `127.0.0.1:5173`. Настройка доступна в Local Environments. [Документация OpenAI](https://learn.chatgpt.com/docs/environments/local-environment)
+Локальное окружение `ГК80` хранится в [environment.toml](../../.codex/environments/environment.toml). Setup worktree устанавливает зависимости из lock-файла и подготавливает Go-кэш, затем завершается. Chromium подготавливается отдельно. В PowerShell действия «Проверить frontend» и «Проверить Go» вызывают `check:quick` и `check:go`. «Запустить интерфейс ГК80» вызывает `npm run iab:preview` и выводит адрес готового хоста. Настройка доступна в Local Environments. [Документация OpenAI](https://learn.chatgpt.com/docs/environments/local-environment)
 
 Для каждого прогона укажите `git rev-parse HEAD`, чистоту дерева, ОС, точную команду и результат. Например:
 
@@ -69,4 +69,8 @@ npm run check:full — код 1, нативная проверка требуе�
 Артефакты: лог прогона и test-results
 ```
 
-`npm run iab:demo` запускает настоящий demo-core с симулятором и SQLite для отдельного локального IAB-прохода. Укажите отдельный абсолютный каталог в `GK80_DEMO_PROFILE_DIR`, если нужен изолированный demo-профиль. Полный журнал ранней приёмки хранится в [first-core-demo-verification.md](first-core-demo-verification.md).
+## Ручная приёмка
+
+- Общие функции проверяйте в настоящем IAB через `iab:preview`. Проверьте изменённые сценарии с живыми показаниями, остановку, сохранение и повторное чтение по границе изменения. При работе с общей историей используйте отдельный проверочный профиль и последовательные запуски EXE и `iab:demo`.
+- Для передачи Windows-сборки зафиксируйте SHA-256 точных `gk80-desktop.exe` и `gk80-core.exe`. В Windows откройте окно, подтвердите подключение дочернего Core и штатное завершение обоих процессов. Добавьте адресную проверку затронутых нативных функций.
+- В отчёте укажите исходную ревизию, среду и что наблюдалось в IAB, Windows и автоматических тестах. [Режимы запуска](launch-modes.md) · [Журнал ранней приёмки](first-core-demo-verification.md)

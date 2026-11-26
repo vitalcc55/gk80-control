@@ -43,7 +43,7 @@ func TestHostConnectsAutomaticallyToSeparateCoreAndClosesIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	assets := fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("demo")}}
-	host, err := NewHost(listener, owner, assets)
+	host, err := NewHost(listener, owner, assets, SharedDemo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,17 @@ func TestHostConnectsAutomaticallyToSeparateCoreAndClosesIt(t *testing.T) {
 	}
 	base := "http://" + listener.Addr().String()
 	headers := http.Header{"Origin": []string{base}}
-	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(base, "http")+"/api/session/stream", &websocket.DialOptions{HTTPHeader: headers, Subprotocols: []string{"gk80-v1"}})
+	wsBase := "ws" + strings.TrimPrefix(base, "http")
+	wsOptions := &websocket.DialOptions{HTTPHeader: headers, Subprotocols: []string{"gk80-v1"}}
+	wrong, refusal, err := websocket.Dial(ctx, wsBase+"/api/session/stream", wsOptions)
+	if wrong != nil {
+		_ = wrong.CloseNow()
+	}
+	if err == nil || refusal == nil || refusal.StatusCode != http.StatusNotFound {
+		t.Fatalf("preview channel was not rejected by the shared host: %v", err)
+	}
+	_ = refusal.Body.Close()
+	conn, _, err := websocket.Dial(ctx, wsBase+"/demo/api/session/stream", wsOptions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +103,7 @@ func TestHostConnectsAutomaticallyToSeparateCoreAndClosesIt(t *testing.T) {
 	if json.Unmarshal(message, &welcome) != nil || welcome.Channel == "" {
 		t.Fatal("channel not admitted")
 	}
-	statusReq, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/status", nil)
+	statusReq, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/demo/api/status", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
