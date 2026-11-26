@@ -125,11 +125,11 @@ func TestLateFinalResultDoesNotReplaceNewRun(t *testing.T) {
 	}
 }
 
-func (s *finalResultRepository) Complete(ctx context.Context, id uuid.UUID, elapsed time.Duration, calculation *contract.LeakageCalculation, stopped ...contract.PendingAction) (storage.OperationResult, error) {
+func (s *finalResultRepository) Complete(ctx context.Context, id uuid.UUID, completion storage.MeasurementCompletion, calculation *contract.LeakageCalculation, stopped ...contract.PendingAction) (storage.OperationResult, error) {
 	if s.failBefore && !s.failedBefore.Swap(true) {
 		return storage.OperationResult{}, context.DeadlineExceeded
 	}
-	return s.report(s.Store.Complete(ctx, id, elapsed, calculation, stopped...))
+	return s.report(s.Store.Complete(ctx, id, completion, calculation, stopped...))
 }
 
 func (s *finalResultRepository) FinishStop(ctx context.Context, id, cmd uuid.UUID, details storage.StopDetails) (storage.OperationResult, error) {

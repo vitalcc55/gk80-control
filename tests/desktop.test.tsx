@@ -10,6 +10,7 @@ import {
 } from '../src/generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
 
 vi.mock('../src/components/MeasurementChart', () => ({ MeasurementChart: () => null }));
+vi.mock('../src/components/LeakageChart', () => ({ LeakageChart: () => null }));
 
 function status(revision: number, state: DesktopStatusStatus): DesktopStatus {
   return {

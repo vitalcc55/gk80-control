@@ -650,7 +650,13 @@ components:
       allOf:
         - properties:
             parameters:
-              required: [lowerPressureLimitPa, upperPressureLimitPa, lowerPressureHoldSeconds, upperPressureHoldSeconds]
+              required:
+                [
+                  lowerPressureLimitPa,
+                  upperPressureLimitPa,
+                  lowerPressureHoldSeconds,
+                  upperPressureHoldSeconds,
+                ]
       properties:
         commandId: { type: string, format: uuid }
         expectedRevision: { type: integer, format: int64, minimum: 0 }
@@ -851,17 +857,44 @@ components:
         actionId: { type: string, format: uuid }
         testId: { type: string, format: uuid }
         instruction: { type: string }
-        kind: { type: string, enum: [confirmPreparation, confirmValveOpen, confirmValveClosed, confirmStopped] }
+        kind:
+          {
+            type: string,
+            enum: [confirmPreparation, confirmValveOpen, confirmValveClosed, confirmStopped],
+          }
     RunPhase:
       type: string
-      enum: [awaitingPreparation, searchingPressure, stabilizingBeforeOpening, awaitingValveOpening, awaitingValveClosing, stabilizingAfterClosing, measuring]
+      enum:
+        [
+          awaitingPreparation,
+          searchingPressure,
+          stabilizingBeforeOpening,
+          awaitingValveOpening,
+          awaitingValveClosing,
+          stabilizingAfterClosing,
+          measuring,
+        ]
     TestRecordOutcome:
       type: string
       enum: [pending, completed, interrupted, unknown]
     LeakageConditions:
       type: object
       additionalProperties: false
-      required: [source, temperatureC, relativeHumidity, atmosphericPressurePa, orificeDiameterM, pipeDiameterM, orificeExpansionPerC, pipeExpansionPerC, dischargeCoefficient, approachCoefficient, expansibility, roughnessCorrection]
+      required:
+        [
+          source,
+          temperatureC,
+          relativeHumidity,
+          atmosphericPressurePa,
+          orificeDiameterM,
+          pipeDiameterM,
+          orificeExpansionPerC,
+          pipeExpansionPerC,
+          dischargeCoefficient,
+          approachCoefficient,
+          expansibility,
+          roughnessCorrection,
+        ]
       properties:
         source: { type: string, const: simulatorProfile, x-go-type: string }
         temperatureC: { type: number, format: double }
@@ -878,7 +911,15 @@ components:
     LeakageValues:
       type: object
       additionalProperties: false
-      required: [testPressurePa, massFlowKgPerSecond, workingFlowM3PerSecond, normalizedFlowM3PerHour, specificLeakageLitresPerSecondPerSquareMetre, contributingSeconds]
+      required:
+        [
+          testPressurePa,
+          massFlowKgPerSecond,
+          workingFlowM3PerSecond,
+          normalizedFlowM3PerHour,
+          specificLeakageLitresPerSecondPerSquareMetre,
+          contributingSeconds,
+        ]
       properties:
         testPressurePa: { type: number, format: double }
         massFlowKgPerSecond: { type: number, format: double, minimum: 0 }
@@ -893,15 +934,28 @@ components:
     LeakageCalculation:
       type: object
       additionalProperties: false
-      required: [pointId, method, windowStartedAt, windowEndedAt, durationSeconds, firstSequence, lastSequence, channels, conditions]
+      required:
+        [
+          pointId,
+          method,
+          windowStartedAt,
+          windowEndedAt,
+          durationSeconds,
+          firstSequence,
+          lastSequence,
+          channels,
+          conditions,
+        ]
       properties:
         pointId: { type: string, format: uuid }
         method: { type: string, const: singlePointLeakageV1, x-go-type: string }
         windowStartedAt: { type: string, format: date-time }
         windowEndedAt: { type: string, format: date-time }
         durationSeconds: { type: integer, minimum: 60, maximum: 300 }
-        firstSequence: { type: integer, format: int64, minimum: 0, description: Ноль при отсутствии отсчётов. }
-        lastSequence: { type: integer, format: int64, minimum: 0, description: Ноль при отсутствии отсчётов. }
+        firstSequence:
+          { type: integer, format: int64, minimum: 0, description: Ноль при отсутствии отсчётов. }
+        lastSequence:
+          { type: integer, format: int64, minimum: 0, description: Ноль при отсутствии отсчётов. }
         channels:
           type: array
           maxItems: 2
@@ -909,7 +963,17 @@ components:
           items: { type: string, enum: [dd2, dd3] }
         conditions: { $ref: "#/components/schemas/LeakageConditions" }
         values: { $ref: "#/components/schemas/LeakageValues" }
-        unavailableReason: { type: string, enum: [missingTestPressure, missingAirConditions, noUsableDifferential, invalidCalculationInputs] }
+        unavailableReason:
+          {
+            type: string,
+            enum:
+              [
+                missingTestPressure,
+                missingAirConditions,
+                noUsableDifferential,
+                invalidCalculationInputs,
+              ],
+          }
       if: { required: [values] }
       then:
         not: { required: [unavailableReason] }

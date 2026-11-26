@@ -145,7 +145,7 @@ func (s *Store) Confirm(ctx context.Context, testID, actionID uuid.UUID, command
 		if err != nil {
 			return err
 		}
-		if record.Stage != "running" && !(record.Stage == "finished" && kind.String == "confirmStopped") {
+		if record.Stage != "running" && (record.Stage != "finished" || kind.String != "confirmStopped") {
 			return ErrInvalidState
 		}
 		if err := ctx.Err(); err != nil {
@@ -666,8 +666,14 @@ func (s *Store) MeasurementsPage(ctx context.Context, testID uuid.UUID, after in
 	return page, nil
 }
 
-// Complete receives the elapsed interval measured by the engine's monotonic clock.
-func (s *Store) Complete(ctx context.Context, testID uuid.UUID, elapsed time.Duration, calculation *contract.LeakageCalculation, stopped ...contract.PendingAction) (OperationResult, error) {
+type MeasurementCompletion struct {
+	Elapsed                 time.Duration
+	ReachedLastRequiredPoll bool
+}
+
+// Complete receives the monotonic interval and the final polling boundary from the engine.
+func (s *Store) Complete(ctx context.Context, testID uuid.UUID, completion MeasurementCompletion, calculation *contract.LeakageCalculation, stopped ...contract.PendingAction) (OperationResult, error) {
+	elapsed := completion.Elapsed
 	if elapsed < 0 || elapsed > 24*time.Hour {
 		return OperationResult{}, ErrInvalidCommand
 	}
@@ -710,9 +716,11 @@ func (s *Store) Complete(ctx context.Context, testID uuid.UUID, elapsed time.Dur
 		s.noteWriteError(ctx, err, false)
 		return OperationResult{}, err
 	}
-	count := [3]int{}
 	var firstSequence, lastSequence int64
-	complete := true
+	const allChannels = 0b111
+	var pollChannels uint8
+	var pollOffset int64
+	complete := completion.ReachedLastRequiredPoll
 	for rows.Next() {
 		var body []byte
 		var offset int64
@@ -733,19 +741,25 @@ func (s *Store) Complete(ctx context.Context, testID uuid.UUID, elapsed time.Dur
 		}
 		if firstSequence == 0 {
 			firstSequence = sample.Sequence
+			pollOffset = offset
+		} else if offset != pollOffset {
+			complete = complete && pollChannels == allChannels
+			pollChannels = 0
+			pollOffset = offset
 		}
 		lastSequence = sample.Sequence
-		if sample.Quality != "valid" || sample.MeasuredAt == nil {
-			complete = false
-		}
+		var channel uint8
 		switch sample.Channel {
 		case "dd1":
-			count[0]++
+			channel = 0b001
 		case "dd2":
-			count[1]++
+			channel = 0b010
 		case "dd3":
-			count[2]++
+			channel = 0b100
 		}
+		complete = complete && offset > 0 && sample.Quality == "valid" &&
+			sample.MeasuredAt != nil && !sample.GapBefore && pollChannels&channel == 0
+		pollChannels |= channel
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()
@@ -768,8 +782,7 @@ func (s *Store) Complete(ctx context.Context, testID uuid.UUID, elapsed time.Dur
 	record.Stage = "finished"
 	record.Outcome = "completed"
 	record.DataQuality = "incomplete"
-	expected := int(record.Parameters.MeasurementSeconds * 10)
-	if complete && count == [3]int{expected, expected, expected} {
+	if complete && pollChannels == allChannels {
 		record.DataQuality = "complete"
 	}
 	record.FinishedAt = &now

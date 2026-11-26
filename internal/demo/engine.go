@@ -33,7 +33,7 @@ type Repository interface {
 	CompleteStart(context.Context, uuid.UUID, uuid.UUID) (storage.OperationResult, error)
 	RecordMeasurements(context.Context, uuid.UUID, []storage.TimedMeasurement) error
 	MeasurementWindowSamples(context.Context, uuid.UUID) ([]storage.TimedMeasurement, error)
-	Complete(context.Context, uuid.UUID, time.Duration, *contract.LeakageCalculation, ...contract.PendingAction) (storage.OperationResult, error)
+	Complete(context.Context, uuid.UUID, storage.MeasurementCompletion, *contract.LeakageCalculation, ...contract.PendingAction) (storage.OperationResult, error)
 	FinishStop(context.Context, uuid.UUID, uuid.UUID, storage.StopDetails) (storage.OperationResult, error)
 	LookupStop(context.Context, uuid.UUID, uuid.UUID) (contract.CommandStatus, error)
 }
@@ -71,7 +71,7 @@ type run struct {
 	stopping          bool
 	naturalDone       bool
 	finishDone        chan struct{}
-	finishElapsed     time.Duration
+	completion        storage.MeasurementCompletion
 	finalized         bool
 	stopStatus        *contract.CommandStatus
 	stopDone          chan struct{}
@@ -868,7 +868,8 @@ func (e *Engine) refreshFinished(ctx context.Context) error {
 			return nil
 		}
 	}
-	testID, stopID, details, elapsed := current.record.TestId, current.record.StopCommandId, current.stopDetails, current.finishElapsed
+	testID, stopID, details := current.record.TestId, current.record.StopCommandId, current.stopDetails
+	completion := current.completion
 	stopping := current.stopping
 	stopConfirmation := current.stopConfirmation
 	e.mu.Unlock()
@@ -901,7 +902,7 @@ func (e *Engine) refreshFinished(ctx context.Context) error {
 		if stopConfirmation != nil {
 			actions = append(actions, *stopConfirmation)
 		}
-		result, err := e.completeManualMeasurement(ctx, testID, current.manual.window, elapsed, record.Parameters.AreaM2, actions...)
+		result, err := e.completeManualMeasurement(ctx, testID, current.manual.window, completion, record.Parameters.AreaM2, actions...)
 		if err != nil {
 			return err
 		}

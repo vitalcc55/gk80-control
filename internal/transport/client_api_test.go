@@ -80,7 +80,8 @@ func TestNativeClientRunsAndReopensDemo(t *testing.T) {
 	if err != nil || recovered.LeaseId != lease.LeaseId {
 		t.Fatalf("recover lease: %+v %v", recovered, err)
 	}
-	command := contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: 0, Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 13, PostCloseStabilizationSeconds: 17, PostCloseStabilizationRetries: 7, Valve: "V", AreaM2: 1, PmaxPa: 1000, LowerPressureLimitPa: new(900.0), UpperPressureLimitPa: new(1080.0), LowerPressureHoldSeconds: new(2), UpperPressureHoldSeconds: new(2), MeasurementSeconds: 60, Direction: "pressure"}}
+	// Leave time for the simulator's pressure ramp within the action deadline.
+	command := contract.CreateTestCommand{CommandId: uuid.New(), ExpectedRevision: 0, Parameters: contract.TestParameters{PreOpenStabilizationSeconds: 11, PostCloseStabilizationSeconds: 17, PostCloseStabilizationRetries: 7, Valve: "V", AreaM2: 1, PmaxPa: 1000, LowerPressureLimitPa: new(900.0), UpperPressureLimitPa: new(1080.0), LowerPressureHoldSeconds: new(2), UpperPressureHoldSeconds: new(2), MeasurementSeconds: 60, Direction: "pressure"}}
 	created, err := client.CreateTest(ctx, lease.LeaseId, command)
 	if err != nil || created.Status != "completed" || created.TestId == nil {
 		t.Fatalf("create: %+v %v", created, err)
@@ -250,7 +251,10 @@ func TestNativeClientRunsAndReopensDemo(t *testing.T) {
 		t.Fatal(err)
 	}
 	record, err := client.Test(ctx, lease.LeaseId, id)
-	if err != nil || record.Outcome != "interrupted" || record.SaveStatus != "saved" || record.Parameters.Valve != "V" || record.Parameters.PreOpenStabilizationSeconds != 13 || record.Parameters.PostCloseStabilizationSeconds != 17 || record.Parameters.PostCloseStabilizationRetries != 7 {
+	if err != nil || record.Outcome != "interrupted" || record.SaveStatus != "saved" || record.Parameters.Valve != "V" ||
+		record.Parameters.PreOpenStabilizationSeconds != command.Parameters.PreOpenStabilizationSeconds ||
+		record.Parameters.PostCloseStabilizationSeconds != command.Parameters.PostCloseStabilizationSeconds ||
+		record.Parameters.PostCloseStabilizationRetries != command.Parameters.PostCloseStabilizationRetries {
 		t.Fatalf("record: %+v %v", record, err)
 	}
 	stopped, err = client.LookupStopExact(ctx, lease.LeaseId, nextHandshake.DatabaseId, id, stopID, stopBody)

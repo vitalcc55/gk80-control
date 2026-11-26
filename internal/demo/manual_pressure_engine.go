@@ -110,6 +110,7 @@ func (e *Engine) runManualPressure(current *run, testID uuid.UUID) {
 func (e *Engine) pollManualPressure(current *run, testID uuid.UUID, ticks <-chan time.Time) {
 	var gridOrigin time.Time
 	var previousSlot time.Time
+	var lastScheduledPoll time.Time
 	var queue chan samplePacket
 	defer func() {
 		if queue != nil {
@@ -133,17 +134,23 @@ func (e *Engine) pollManualPressure(current *run, testID uuid.UUID, ticks <-chan
 		acquiredAt := time.Now()
 		now := e.runTime(acquiredAt)
 		phase := current.manual.phase
+		if gridOrigin.IsZero() {
+			gridOrigin = tick
+		}
+		scheduled := gridOrigin.Add(tick.Sub(gridOrigin).Round(demoMeasurementInterval))
 		if phase == measuringManualPressure && now.After(current.manual.window.end) {
-			e.finishManualMeasurementLocked(current, queue)
+			required := lastScheduledPoll
+			// The closing tick can be the last scheduled poll delayed past
+			// the deadline. A later tick cannot excuse a skipped final slot.
+			if scheduled.Equal(lastScheduledPoll) {
+				required = required.Add(-demoMeasurementInterval)
+			}
+			e.finishManualMeasurementLocked(current, queue, !previousSlot.Before(required))
 			queue = nil
 			return
 		}
 		// A buffered ticker event can be older than the observation. Locate
 		// the acquisition on the grid to detect omitted polls.
-		if gridOrigin.IsZero() {
-			gridOrigin = tick
-		}
-		scheduled := gridOrigin.Add(tick.Sub(gridOrigin).Round(demoMeasurementInterval))
 		slot := scheduled.Add(max(0, acquiredAt.Sub(scheduled)).Truncate(demoMeasurementInterval))
 		gapBefore := !previousSlot.IsZero() && slot.Sub(previousSlot) > demoMeasurementInterval
 		if gapBefore {
@@ -168,6 +175,7 @@ func (e *Engine) pollManualPressure(current *run, testID uuid.UUID, ticks <-chan
 			current.searchStarted = now
 		}
 		if current.manual.phase == measuringManualPressure && phase != measuringManualPressure {
+			lastScheduledPoll = slot.Add(current.manual.parameters.measurementDuration)
 			current.currentReadings = nil
 			queue = make(chan samplePacket, sampleQueueLimit)
 			current.writerDone = make(chan struct{})
@@ -212,7 +220,7 @@ func (e *Engine) pollManualPressure(current *run, testID uuid.UUID, ticks <-chan
 			return
 		}
 		if phase == measuringManualPressure && !now.Before(current.manual.window.end) {
-			e.finishManualMeasurementLocked(current, queue)
+			e.finishManualMeasurementLocked(current, queue, !slot.Before(lastScheduledPoll))
 			queue = nil
 			return
 		}
@@ -285,7 +293,7 @@ func (e *Engine) requestValveOpening(current *run, testID uuid.UUID) bool {
 
 // Called with the Engine lock. Publishes the outcome and stops the simulator
 // before waiting for the measurement writer or final commit.
-func (e *Engine) finishManualMeasurementLocked(current *run, queue chan samplePacket) {
+func (e *Engine) finishManualMeasurementLocked(current *run, queue chan samplePacket, reachedLastRequiredPoll bool) {
 	close(queue)
 	if err := e.equipment.Finish(); err != nil {
 		e.acceptStopLocked(current, "system", "simulator_error")
@@ -294,13 +302,15 @@ func (e *Engine) finishManualMeasurementLocked(current *run, queue chan samplePa
 		return
 	}
 	testID := current.record.TestId
-	elapsed := current.manual.parameters.measurementDuration
+	completion := storage.MeasurementCompletion{
+		Elapsed: current.manual.parameters.measurementDuration, ReachedLastRequiredPoll: reachedLastRequiredPoll,
+	}
 	window, area := current.manual.window, current.record.Parameters.AreaM2
 	action := newRunAction(testID, "confirmStopped")
 	current.naturalDone = true
 	current.finishDone = make(chan struct{})
 	defer close(current.finishDone)
-	current.finishElapsed = elapsed
+	current.completion = completion
 	current.stopConfirmation = &action
 	current.record.Stage, current.record.Outcome = "finished", "completed"
 	current.record.DataQuality, current.record.SaveStatus = "pending", "pending"
@@ -319,7 +329,7 @@ func (e *Engine) finishManualMeasurementLocked(current *run, queue chan samplePa
 	e.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), measurementWriteTimeout)
 	defer cancel()
-	result, err := e.completeManualMeasurement(ctx, testID, window, elapsed, area, action)
+	result, err := e.completeManualMeasurement(ctx, testID, window, completion, area, action)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.active != current {

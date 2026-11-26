@@ -171,8 +171,9 @@ test('тот же canvas обновляет физические шкалы, д�
     const rows = page.locator('.chart-data-table tbody tr');
     const last = rows.last().locator('td');
     expect(parse((await last.nth(0).textContent()) ?? '')).toBe(example.range / 2);
-    const expectedPressure = example.button === 'Обычный' ? 10010 : example.target * 1.001;
-    expect(parse((await last.nth(1).textContent()) ?? '') / expectedPressure).toBeCloseTo(1, 12);
+    // The table rounds the mantissa to two digits, so 1.001 is displayed as 1.
+    const displayedPressure = example.button === 'Обычный' ? 10010 : example.target;
+    expect(parse((await last.nth(1).textContent()) ?? '')).toBe(displayedPressure);
     if (example.button !== 'Обычный') {
       await expect(rows.nth(2)).toContainText('Нет данных');
       const pixels = await canvas.evaluate((element) => {

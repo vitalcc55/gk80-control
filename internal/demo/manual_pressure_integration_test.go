@@ -28,7 +28,8 @@ func (s *recordingSimulator) Observe(elapsed time.Duration) (float64, float64, f
 
 type recordedPolls struct {
 	Repository
-	samples []storage.TimedMeasurement
+	samples    []storage.TimedMeasurement
+	completion storage.MeasurementCompletion
 }
 
 func (s *recordedPolls) RecordMeasurements(_ context.Context, _ uuid.UUID, samples []storage.TimedMeasurement) error {
@@ -40,7 +41,8 @@ func (s *recordedPolls) MeasurementWindowSamples(context.Context, uuid.UUID) ([]
 	return s.samples, nil
 }
 
-func (s *recordedPolls) Complete(context.Context, uuid.UUID, time.Duration, *contract.LeakageCalculation, ...contract.PendingAction) (storage.OperationResult, error) {
+func (s *recordedPolls) Complete(_ context.Context, _ uuid.UUID, completion storage.MeasurementCompletion, _ *contract.LeakageCalculation, _ ...contract.PendingAction) (storage.OperationResult, error) {
+	s.completion = completion
 	return storage.OperationResult{Saved: &storage.SavedState{}}, nil
 }
 
@@ -93,7 +95,7 @@ func TestManualPressureRejectsBufferedPollAfterWindow(t *testing.T) {
 	case <-current.ctx.Done():
 		t.Fatal("measurement did not finish")
 	}
-	if got := simulator.observations.Load(); got != 1 || len(repo.samples) != 0 {
+	if got := simulator.observations.Load(); got != 1 || len(repo.samples) != 0 || repo.completion.ReachedLastRequiredPoll {
 		t.Fatalf("observations: %d, archived samples: %d; only the stabilization observation is due", got, len(repo.samples))
 	}
 }
@@ -135,6 +137,65 @@ func TestManualPressureMarksPollAfterSkippedSlot(t *testing.T) {
 		if sample.Measurement.GapBefore != (i == 3) {
 			t.Fatalf("unexpected gap marker for sample %+v at index %d", sample, i)
 		}
+	}
+}
+
+func TestManualPressurePollingCoverageAtDeadline(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		startDelay  time.Duration
+		lastPoll    time.Duration
+		closingTick time.Duration
+		closingPoll time.Duration
+		covered     bool
+	}{
+		{"boundary poll just outside", 0, 201 * time.Millisecond, 300 * time.Millisecond, 301 * time.Millisecond, true},
+		{"boundary poll on time", 0, 201 * time.Millisecond, 300 * time.Millisecond, 300 * time.Millisecond, true},
+		{"required penultimate poll missing", 0, 101 * time.Millisecond, 300 * time.Millisecond, 301 * time.Millisecond, false},
+		{"final poll delayed past a delayed window", 90 * time.Millisecond, 201 * time.Millisecond, 300 * time.Millisecond, 391 * time.Millisecond, true},
+		{"final poll skipped inside a delayed window", 90 * time.Millisecond, 201 * time.Millisecond, 400 * time.Millisecond, 401 * time.Millisecond, false},
+		{"skipped polls after a covered window", 90 * time.Millisecond, 301 * time.Millisecond, 500 * time.Millisecond, 501 * time.Millisecond, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gridStart := time.Now().Add(10 * time.Second)
+			engine, repo, _ := newManualPollingTest(t, gridStart)
+			current := engine.active
+			current.manual.parameters.measurementDuration = 300 * time.Millisecond
+			now := gridStart.Add(tc.startDelay)
+			engine.measurementNow = func() time.Time { return now }
+			ticks := make(chan time.Time, 1)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				engine.pollManualPressure(current, current.record.TestId, ticks)
+			}()
+			ticks <- gridStart
+			waitFor(t, engine, func(s State) bool { return s.RunPhase != nil && *s.RunPhase == "measuring" })
+			polls := int64(0)
+			for actual := 101 * time.Millisecond; actual <= tc.lastPoll; actual += demoMeasurementInterval {
+				engine.mu.Lock()
+				now = gridStart.Add(actual)
+				engine.mu.Unlock()
+				ticks <- gridStart.Add(actual.Truncate(demoMeasurementInterval))
+				polls++
+				waitFor(t, engine, func(s State) bool { return s.MeasurementBatch != nil && *s.MeasurementBatch == polls })
+			}
+			engine.mu.Lock()
+			now = gridStart.Add(tc.closingPoll)
+			engine.mu.Unlock()
+			ticks <- gridStart.Add(tc.closingTick)
+			select {
+			case <-done:
+			case <-current.ctx.Done():
+				t.Fatal("measurement did not finish")
+			}
+			if tc.closingPoll <= tc.startDelay+current.manual.parameters.measurementDuration {
+				polls++
+			}
+			if repo.completion.ReachedLastRequiredPoll != tc.covered || len(repo.samples) != int(polls)*3 {
+				t.Fatalf("coverage: %t, archived samples: %d; want %t, %d", repo.completion.ReachedLastRequiredPoll, len(repo.samples), tc.covered, polls*3)
+			}
+		})
 	}
 }
 

@@ -11,13 +11,13 @@ import (
 
 const leakageMethod = "singlePointLeakageV1"
 
-func (e *Engine) completeManualMeasurement(ctx context.Context, testID uuid.UUID, window measurementWindow, elapsed time.Duration, area float64, actions ...contract.PendingAction) (storage.OperationResult, error) {
+func (e *Engine) completeManualMeasurement(ctx context.Context, testID uuid.UUID, window measurementWindow, completion storage.MeasurementCompletion, area float64, actions ...contract.PendingAction) (storage.OperationResult, error) {
 	samples, err := e.store.MeasurementWindowSamples(ctx, testID)
 	if err != nil {
 		return storage.OperationResult{}, err
 	}
-	calculation := manualLeakageCalculation(testID, window, elapsed, area, samples)
-	return e.store.Complete(ctx, testID, elapsed, &calculation, actions...)
+	calculation := manualLeakageCalculation(testID, window, completion.Elapsed, area, samples)
+	return e.store.Complete(ctx, testID, completion, &calculation, actions...)
 }
 
 func manualLeakageCalculation(testID uuid.UUID, window measurementWindow, elapsed time.Duration, area float64, samples []storage.TimedMeasurement) contract.LeakageCalculation {

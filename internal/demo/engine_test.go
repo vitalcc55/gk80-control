@@ -933,11 +933,11 @@ type delayedCompleteCommit struct {
 	calls atomic.Int32
 }
 
-func (s *delayedCompleteCommit) Complete(ctx context.Context, id uuid.UUID, elapsed time.Duration, calculation *contract.LeakageCalculation, stopped ...contract.PendingAction) (storage.OperationResult, error) {
+func (s *delayedCompleteCommit) Complete(ctx context.Context, id uuid.UUID, completion storage.MeasurementCompletion, calculation *contract.LeakageCalculation, stopped ...contract.PendingAction) (storage.OperationResult, error) {
 	if s.calls.Add(1) == 1 {
 		return storage.OperationResult{}, context.DeadlineExceeded
 	}
-	return s.Store.Complete(ctx, id, elapsed, calculation, stopped...)
+	return s.Store.Complete(ctx, id, completion, calculation, stopped...)
 }
 
 func TestRefreshPersistsCompletedRunAfterWriteDeadline(t *testing.T) {
@@ -1585,10 +1585,10 @@ type heldComplete struct {
 	release chan struct{}
 }
 
-func (s *heldComplete) Complete(ctx context.Context, id uuid.UUID, elapsed time.Duration, calculation *contract.LeakageCalculation, stopped ...contract.PendingAction) (storage.OperationResult, error) {
+func (s *heldComplete) Complete(ctx context.Context, id uuid.UUID, completion storage.MeasurementCompletion, calculation *contract.LeakageCalculation, stopped ...contract.PendingAction) (storage.OperationResult, error) {
 	close(s.entered)
 	<-s.release
-	return s.Store.Complete(ctx, id, elapsed, calculation, stopped...)
+	return s.Store.Complete(ctx, id, completion, calculation, stopped...)
 }
 
 func TestShutdownWaitsForNaturalCompletion(t *testing.T) {
