@@ -19,6 +19,7 @@
 - [Испытание в одной точке](engineering/single-point-test.md)
 - [Незакрытые вопросы](engineering/open-questions.md)
 - [Локальное окружение разработки](engineering/development-environment.md)
+- [Режимы запуска EXE и IAB](engineering/launch-modes.md)
 - [Проверки качества](engineering/quality-workflow.md)
 - [Прототип экранов и сценарий показа](engineering/ui-prototype.md)
 - [Активный план первого сквозного demo](engineering/first-core-demo-plan.md)

@@ -37,7 +37,7 @@ platform = "win32"
 command = '''& { $ErrorActionPreference = 'Stop'; . .\scripts\use-dev-tools.ps1; npm run check:go }'''
 
 [[actions]]
-name = "Запустить демо интерфейса"
+name = "Запустить интерфейс ГК80"
 icon = "run"
 platform = "win32"
-command = '''& { $ErrorActionPreference = 'Stop'; . .\scripts\use-dev-tools.ps1; npm run ui:fixtures }'''
+command = '''& { $ErrorActionPreference = 'Stop'; . .\scripts\use-dev-tools.ps1; npm run iab:preview; exit $LASTEXITCODE }'''

@@ -14,6 +14,7 @@ import (
 	"github.com/vitalcc55/gk80-control/internal/contract"
 	"github.com/vitalcc55/gk80-control/internal/desktop"
 	"github.com/vitalcc55/gk80-control/internal/diagnostics"
+	"github.com/vitalcc55/gk80-control/internal/profile"
 	"github.com/vitalcc55/gk80-control/internal/transport"
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"golang.org/x/sys/windows"
@@ -23,7 +24,7 @@ import (
 var desktopAssets embed.FS
 
 const appVersion = "0.1.0"
-const profileID = "demo-gk80-control"
+const profileID = profile.DemoID
 
 func main() {
 	if err := runSafely(); err != nil {
@@ -71,16 +72,9 @@ func run() (resultErr error) {
 	if err != nil {
 		return errors.New("desktop location unavailable")
 	}
-	profileDir := os.Getenv("GK80_DEMO_PROFILE_DIR")
-	if profileDir == "" {
-		local := os.Getenv("LOCALAPPDATA")
-		if !filepath.IsAbs(local) {
-			return errors.New("local data directory unavailable")
-		}
-		profileDir = filepath.Join(local, "GK80", profileID, "manual-parameters")
-	}
-	if !filepath.IsAbs(profileDir) {
-		return errors.New("invalid demo profile directory")
+	profileDir, err := profile.DemoDir(os.Getenv("LOCALAPPDATA"), os.Getenv("GK80_DEMO_PROFILE_DIR"))
+	if err != nil {
+		return err
 	}
 	hostID, err := uuid.NewRandom()
 	if err != nil {

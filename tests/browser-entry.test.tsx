@@ -40,6 +40,7 @@ class Socket {
 
 describe('browser entry', () => {
   beforeEach(() => {
+    window.history.replaceState(null, '', '/');
     sessionStorage.clear();
     Socket.instances = [];
     vi.stubGlobal('WebSocket', Socket);
@@ -51,10 +52,15 @@ describe('browser entry', () => {
     vi.useRealTimers();
   });
 
-  it('connects automatically and restores the screen after a channel break', async () => {
+  it.each([
+    ['/', '/api/session/stream'],
+    ['/demo', '/demo/api/session/stream'],
+  ])('connects and restores the screen on the same routes at %s', async (path, channelPath) => {
+    window.history.replaceState(null, '', path);
     render(<BrowserApp />);
     await waitFor(() => expect(Socket.instances).toHaveLength(1));
     expect(Socket.instances[0]?.protocols).toEqual(['gk80-v1']);
+    expect(Socket.instances[0]?.url).toBe(`ws://127.0.0.1:17880${channelPath}`);
     expect(fetch).not.toHaveBeenCalled();
     Socket.instances[0]?.receive({ channel: generation });
     expect(await screen.findByText('Рабочий экран')).toBeTruthy();
@@ -62,6 +68,7 @@ describe('browser entry', () => {
     Socket.instances[0]?.close();
     expect(await screen.findByText(/Подключение…/)).toBeTruthy();
     await waitFor(() => expect(Socket.instances).toHaveLength(2));
+    expect(Socket.instances[1]?.url).toBe(Socket.instances[0]?.url);
     Socket.instances[1]?.receive({ channel: generation });
     expect(await screen.findByText('Рабочий экран')).toBeTruthy();
     expect((screen.getByLabelText('Черновик') as HTMLInputElement).value).toBe('Клапан');

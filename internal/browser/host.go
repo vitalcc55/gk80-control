@@ -19,6 +19,21 @@ import (
 
 var ErrAssetsUnavailable = errors.New("browser assets unavailable")
 
+type Mode string
+
+const (
+	Preview    Mode = ""
+	SharedDemo Mode = "/demo"
+)
+
+// EntryPath is the browser page for this launch mode.
+func (mode Mode) EntryPath() string {
+	if mode == Preview {
+		return "/"
+	}
+	return string(mode)
+}
+
 // Host serves the local development browser entry and demo routes.
 type Host struct {
 	listener net.Listener
@@ -28,15 +43,15 @@ type Host struct {
 }
 
 // NewHost binds an existing loopback listener to the supplied owner and assets.
-func NewHost(listener net.Listener, owner *desktop.Owner, assets fs.FS) (*Host, error) {
+func NewHost(listener net.Listener, owner *desktop.Owner, assets fs.FS, mode Mode) (*Host, error) {
 	if owner == nil {
 		return nil, errSessionDenied
 	}
-	return newHost(listener, desktop.NewService(owner), desktop.NewBootstrapService(owner), assets)
+	return newHost(listener, desktop.NewService(owner), desktop.NewBootstrapService(owner), assets, mode)
 }
 
-func newHost(listener net.Listener, service browserOperations, bootstrap bootstrapOperations, assets fs.FS) (*Host, error) {
-	if listener == nil || assets == nil {
+func newHost(listener net.Listener, service browserOperations, bootstrap bootstrapOperations, assets fs.FS, mode Mode) (*Host, error) {
+	if listener == nil || assets == nil || (mode != Preview && mode != SharedDemo) {
 		return nil, errSessionDenied
 	}
 	entry, err := fs.Stat(assets, "index.html")
@@ -47,7 +62,14 @@ func newHost(listener net.Listener, service browserOperations, bootstrap bootstr
 	if err != nil {
 		return nil, err
 	}
-	api := newRoutes(s, service, bootstrap)
+	api := http.StripPrefix(string(mode), newRoutes(s, service, bootstrap))
+	apiPath := string(mode) + "/api"
+	entryPath := mode.EntryPath()
+	other := SharedDemo
+	if mode == SharedDemo {
+		other = Preview
+	}
+	otherAPIPath := string(other) + "/api"
 	assetsGate := make(chan struct{}, 4)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Host != s.host {
@@ -55,8 +77,13 @@ func newHost(listener net.Listener, service browserOperations, bootstrap bootstr
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
+		if r.URL.Path == apiPath || strings.HasPrefix(r.URL.Path, apiPath+"/") {
 			api.ServeHTTP(w, r)
+			return
+		}
+		if r.URL.Path == other.EntryPath() || r.URL.Path == otherAPIPath || strings.HasPrefix(r.URL.Path, otherAPIPath+"/") {
+			closeUnreadRequest(w)
+			http.NotFound(w, r)
 			return
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -81,7 +108,7 @@ func newHost(listener net.Listener, service browserOperations, bootstrap bootstr
 			return
 		}
 		name := strings.TrimPrefix(r.URL.Path, "/")
-		if name == "" {
+		if r.URL.Path == entryPath {
 			name = "index.html"
 		}
 		if !fs.ValidPath(name) {
@@ -136,7 +163,9 @@ func (h *Host) Shutdown(ctx context.Context) error {
 		_ = h.server.Close()
 		return errors.New("browser session shutdown unconfirmed")
 	}
-	if err := h.server.Shutdown(ctx); err != nil {
+	// The listener was closed above to prevent new clients during channel revocation.
+	// net/http may still have it registered until Serve returns.
+	if err := h.server.Shutdown(ctx); err != nil && !errors.Is(err, net.ErrClosed) {
 		_ = h.server.Close()
 		return err
 	}

@@ -23,9 +23,65 @@ func TestHostReportsMissingEntryAsset(t *testing.T) {
 	}
 	defer func() { _ = listener.Close() }()
 	fake := &routeService{}
-	_, err = newHost(listener, fake, fake, fstest.MapFS{})
+	_, err = newHost(listener, fake, fake, fstest.MapFS{}, Preview)
 	if !errors.Is(err, ErrAssetsUnavailable) {
 		t.Fatalf("missing entry: %v", err)
+	}
+}
+
+func TestHostSeparatesLaunchModeRoutes(t *testing.T) {
+	for _, test := range []struct {
+		name                    string
+		mode                    Mode
+		entry, other, api, deny string
+	}{
+		{"preview", Preview, "/", "/demo", "/api/status", "/demo/api/status"},
+		{"shared demo", SharedDemo, "/demo", "/", "/demo/api/status", "/api/status"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			listener, err := net.Listen("tcp4", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			fake := &routeService{}
+			assets := fstest.MapFS{"index.html": {Data: []byte("entry")}, "assets/app.js": {Data: []byte("script")}}
+			host, err := newHost(listener, fake, fake, assets, test.mode)
+			if err != nil {
+				_ = listener.Close()
+				t.Fatal(err)
+			}
+			go func() { _ = host.Serve() }()
+			t.Cleanup(func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := host.Shutdown(ctx); err != nil {
+					t.Error(err)
+				}
+			})
+			// Route assertions use independent requests. Graceful shutdown is tested separately.
+			client := &http.Client{
+				Timeout:   5 * time.Second,
+				Transport: &http.Transport{DisableKeepAlives: true},
+			}
+			for path, expected := range map[string]int{
+				test.entry: http.StatusOK, test.other: http.StatusNotFound,
+				test.api: http.StatusConflict, test.deny: http.StatusNotFound,
+				"/assets/app.js": http.StatusOK,
+			} {
+				response, err := client.Get("http://" + listener.Addr().String() + path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, readErr := io.Copy(io.Discard, response.Body)
+				_ = response.Body.Close()
+				if readErr != nil {
+					t.Fatalf("%s: %v", path, readErr)
+				}
+				if response.StatusCode != expected {
+					t.Errorf("%s: got %d, want %d", path, response.StatusCode, expected)
+				}
+			}
+		})
 	}
 }
 
@@ -36,7 +92,7 @@ func TestHostShutdownBoundsStalledChannelClose(t *testing.T) {
 	}
 	blocked := &delayedCloseListener{Listener: listener, entered: make(chan struct{}), release: make(chan struct{})}
 	fake := &routeService{}
-	host, err := newHost(blocked, fake, fake, fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("demo")}})
+	host, err := newHost(blocked, fake, fake, fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("demo")}}, Preview)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +155,7 @@ func TestHostBoundsConcurrentAssetReads(t *testing.T) {
 	}
 	assets := blockedAssets{FS: fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("demo")}, "slow.js": &fstest.MapFile{Data: []byte("script")}}, entered: make(chan struct{}, 4), release: make(chan struct{})}
 	fake := &routeService{}
-	host, err := newHost(listener, fake, fake, assets)
+	host, err := newHost(listener, fake, fake, assets, Preview)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +202,7 @@ func TestHostServesOnlyAssetsAndBoundApplicationRoutes(t *testing.T) {
 	}
 	fake := &routeService{}
 	assets := fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("demo entry")}, "assets/app.js": &fstest.MapFile{Data: []byte("demo script")}}
-	host, err := newHost(listener, fake, fake, assets)
+	host, err := newHost(listener, fake, fake, assets, Preview)
 	if err != nil {
 		t.Fatal(err)
 	}

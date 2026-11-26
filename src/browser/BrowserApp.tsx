@@ -15,10 +15,13 @@ export function BrowserApp() {
 
   useEffect(() => {
     if (!shouldConnect) return;
-    if (window.location.origin !== 'http://127.0.0.1:17880') {
+    const { origin, pathname } = window.location;
+    if (origin !== 'http://127.0.0.1:17880' || (pathname !== '/' && pathname !== '/demo')) {
       setScreen('unavailable');
       return;
     }
+    // Keep reconnection on the launched mode's routes when the other mode takes the same port.
+    const apiPrefix = pathname === '/demo' ? pathname : '';
     try {
       pendingStorage.current = window.localStorage;
       pendingStorage.current.getItem('gk80.browser.storage-check');
@@ -41,7 +44,7 @@ export function BrowserApp() {
       let accepted = false;
       let busy = false;
       try {
-        socket = new WebSocket('ws://127.0.0.1:17880/api/session/stream', ['gk80-v1']);
+        socket = new WebSocket(`ws://127.0.0.1:17880${apiPrefix}/api/session/stream`, ['gk80-v1']);
       } catch {
         setScreen('unavailable');
         return;
@@ -80,7 +83,7 @@ export function BrowserApp() {
           }, 10000);
           channel = new AbortController();
           setConnection({
-            bridges: createBrowserBridge({ generation, signal: channel.signal }),
+            bridges: createBrowserBridge({ generation, signal: channel.signal, apiPrefix }),
             instance: generation.split(':')[0] ?? '',
           });
           setScreen('connected');

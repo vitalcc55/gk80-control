@@ -1,3 +1,5 @@
+param([switch]$SharedProfile)
+
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 $hostStarted = $false
@@ -15,10 +17,13 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Core build failed.' }
     go build -o (Join-Path $runDir 'gk80-browser.exe') ./cmd/gk80-browser
     if ($LASTEXITCODE -ne 0) { throw 'Browser host build failed.' }
+    $browserArgs = @()
+    if ($SharedProfile) { $browserArgs += '--shared-profile' }
     $hostStarted = $true
-    & (Join-Path $runDir 'gk80-browser.exe')
-    $hostExitedSafely = $LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq 2
-    if ($LASTEXITCODE -ne 0) { throw 'Browser host failed.' }
+    & (Join-Path $runDir 'gk80-browser.exe') @browserArgs
+    $hostExitCode = $LASTEXITCODE
+    $hostExitedSafely = $hostExitCode -eq 0 -or $hostExitCode -eq 2
+    exit $hostExitCode
 }
 finally {
     if ($runDir -and (Test-Path -LiteralPath $runDir)) {
