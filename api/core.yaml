@@ -737,6 +737,7 @@ components:
             not: { required: [selectedDifferential] }
           else:
             properties: { quantity: { const: differentialPressure } }
+            not: { required: [gapBefore] }
         - if:
             properties: { quality: { const: unavailable } }
           then:
@@ -760,6 +761,10 @@ components:
         selectedDifferential:
           type: boolean
           description: Выбор этого ДД2 или ДД3 в данном опросе. Поле отсутствует у ДД1 и у неразмеченных отсчётов.
+        gapBefore:
+          type: boolean
+          x-go-type-skip-optional-pointer: true
+          description: У ДД1 значение true означает, что перед этим опросом пропущен хотя бы один тик опроса.
     MeasurementPage:
       type: object
       additionalProperties: false

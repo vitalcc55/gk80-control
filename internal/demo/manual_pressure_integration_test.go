@@ -17,11 +17,125 @@ import (
 type recordingSimulator struct {
 	*Simulator
 	observations atomic.Int64
+	elapsed      []time.Duration
 }
 
 func (s *recordingSimulator) Observe(elapsed time.Duration) (float64, float64, float64, error) {
 	s.observations.Add(1)
+	s.elapsed = append(s.elapsed, elapsed)
 	return s.Simulator.Observe(elapsed)
+}
+
+type recordedPolls struct {
+	Repository
+	samples []storage.TimedMeasurement
+}
+
+func (s *recordedPolls) RecordMeasurements(_ context.Context, _ uuid.UUID, samples []storage.TimedMeasurement) error {
+	s.samples = append(s.samples, samples...)
+	return nil
+}
+
+func (s *recordedPolls) MeasurementWindowSamples(context.Context, uuid.UUID) ([]storage.TimedMeasurement, error) {
+	return s.samples, nil
+}
+
+func (s *recordedPolls) Complete(context.Context, uuid.UUID, time.Duration, *contract.LeakageCalculation, ...contract.PendingAction) (storage.OperationResult, error) {
+	return storage.OperationResult{Saved: &storage.SavedState{}}, nil
+}
+
+func newManualPollingTest(t *testing.T, gridStart time.Time) (*Engine, *recordedPolls, *recordingSimulator) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	parameters := command(60).Parameters
+	current := &run{
+		ctx:           ctx,
+		record:        contract.TestRecord{TestId: uuid.New(), Stage: "running", Parameters: parameters},
+		searchStarted: gridStart.Add(-3 * time.Second),
+		manual: manualPressureRun{
+			parameters: manualParameters(parameters), phase: stabilizingAfterClosing,
+			stabilizationPhase: stabilizingAfterClosing, stableSince: gridStart.Add(-10 * time.Second),
+		},
+	}
+	repo := &recordedPolls{}
+	simulator := &recordingSimulator{Simulator: NewSimulator()}
+	if err := simulator.Start(1000); err != nil {
+		t.Fatal(err)
+	}
+	engine := &Engine{active: current, store: repo, equipment: simulator, changed: make(chan struct{}, 1)}
+	return engine, repo, simulator
+}
+
+func TestManualPressureRejectsBufferedPollAfterWindow(t *testing.T) {
+	gridStart := time.Now().Add(-3 * time.Second)
+	engine, repo, simulator := newManualPollingTest(t, gridStart)
+	current := engine.active
+	ticks := make(chan time.Time, 2)
+	ticks <- gridStart
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		engine.pollManualPressure(current, current.record.TestId, ticks)
+	}()
+	waitFor(t, engine, func(s State) bool { return s.RunPhase != nil && *s.RunPhase == "measuring" })
+
+	// A buffered tick precedes the deadline, but its observation would be taken
+	// after it. The subsequent tick lets the uncorrected loop also finish.
+	end := gridStart.Add(2 * time.Second)
+	engine.mu.Lock()
+	current.manual.window = measurementWindow{start: end.Add(-60 * time.Second), end: end}
+	engine.mu.Unlock()
+	ticks <- end.Add(-demoMeasurementInterval)
+	ticks <- time.Now().Add(demoMeasurementInterval)
+	select {
+	case <-done:
+	case <-current.ctx.Done():
+		t.Fatal("measurement did not finish")
+	}
+	if got := simulator.observations.Load(); got != 1 || len(repo.samples) != 0 {
+		t.Fatalf("observations: %d, archived samples: %d; only the stabilization observation is due", got, len(repo.samples))
+	}
+}
+
+func TestManualPressureMarksPollAfterSkippedSlot(t *testing.T) {
+	gridStart := time.Now().Add(10 * time.Second)
+	engine, repo, _ := newManualPollingTest(t, gridStart)
+	current := engine.active
+	now := gridStart
+	engine.measurementNow = func() time.Time { return now }
+	ticks := make(chan time.Time, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		engine.pollManualPressure(current, current.record.TestId, ticks)
+	}()
+	ticks <- gridStart
+	waitFor(t, engine, func(s State) bool { return s.RunPhase != nil && *s.RunPhase == "measuring" })
+	for i, offset := range []time.Duration{100 * time.Millisecond, 300 * time.Millisecond} {
+		engine.mu.Lock()
+		now = gridStart.Add(offset)
+		engine.mu.Unlock()
+		ticks <- gridStart.Add(offset)
+		waitFor(t, engine, func(s State) bool { return s.MeasurementBatch != nil && *s.MeasurementBatch == int64(i+1) })
+	}
+	engine.mu.Lock()
+	now = gridStart.Add(61 * time.Second)
+	engine.mu.Unlock()
+	ticks <- gridStart.Add(61 * time.Second)
+	select {
+	case <-done:
+	case <-current.ctx.Done():
+		t.Fatal("measurement did not finish")
+	}
+	if len(repo.samples) != 6 {
+		t.Fatalf("archived samples: %d, want two packets", len(repo.samples))
+	}
+	for i, sample := range repo.samples {
+		if sample.Measurement.GapBefore != (i == 3) {
+			t.Fatalf("unexpected gap marker for sample %+v at index %d", sample, i)
+		}
+	}
 }
 
 func TestManualPressureSQLitePass(t *testing.T) {
@@ -163,6 +277,29 @@ func TestManualPressureSQLitePass(t *testing.T) {
 			}
 			if tc.realTime && count < int64(tc.seconds*30)*99/100 {
 				t.Fatalf("saved %d of about %d samples", count, tc.seconds*30)
+			}
+			if tc.realTime {
+				samples, err := reopened.MeasurementWindowSamples(ctx, id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				engine.mu.Lock()
+				window, searchStarted := engine.active.manual.window, engine.active.searchStarted
+				attempts := append([]time.Duration(nil), simulator.elapsed...)
+				engine.mu.Unlock()
+				// The simulator's elapsed arguments and the window use the same
+				// monotonic clock. UTC can move independently during the run.
+				polls := len(samples) / 3
+				if len(samples) != int(count) || polls > len(attempts) {
+					t.Fatalf("inconsistent archived samples: %d, paged samples: %d, polls: %d", len(samples), count, len(attempts))
+				}
+				attempts = attempts[len(attempts)-polls:]
+				for i, sample := range samples {
+					acquiredAt := searchStarted.Add(attempts[i/3])
+					if !window.contains(acquiredAt) || sample.Elapsed != acquiredAt.Sub(window.start) {
+						t.Fatalf("sample %d outside the monotonic window or saved with a different offset", sample.Measurement.Sequence)
+					}
+				}
 			}
 			t.Logf("saved %d measurements from %d observation attempts across the pass, quality %s", count, simulator.observations.Load(), record.DataQuality)
 		})

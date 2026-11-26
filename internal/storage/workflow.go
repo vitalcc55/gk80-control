@@ -483,7 +483,7 @@ func validMeasurement(m contract.Measurement) bool {
 	if m.Sequence < 1 || !m.Channel.Valid() || !m.Quantity.Valid() || !m.Quality.Valid() || m.Unit != "Pa" || m.Source != "simulator" || m.ObservedAt.IsZero() {
 		return false
 	}
-	if (m.Channel == "dd1") != (m.Quantity == "pressure") || (m.Channel == "dd1" && m.SelectedDifferential != nil) {
+	if (m.Channel == "dd1") != (m.Quantity == "pressure") || (m.Channel == "dd1" && m.SelectedDifferential != nil) || (m.Channel != "dd1" && m.GapBefore) {
 		return false
 	}
 	if m.Quality == "unavailable" {

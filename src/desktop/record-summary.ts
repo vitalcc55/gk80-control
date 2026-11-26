@@ -64,6 +64,13 @@ export function measurementSegments(items: readonly Measurement[]): MeasurementS
     }
     if (!current || current.time !== time) {
       flush();
+      if (item.gapBefore && current && origin !== undefined) {
+        points.push({
+          seconds: Number(current.time + time - 2n * origin) / 2e9,
+          pressure: null,
+          differential: null,
+        });
+      }
       if (origin === undefined) {
         origin = time;
         startedAt = when;

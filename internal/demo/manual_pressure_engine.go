@@ -104,8 +104,12 @@ func (decision manualPressureDecision) stopReason() string {
 func (e *Engine) runManualPressure(current *run, testID uuid.UUID) {
 	ticker := time.NewTicker(demoMeasurementInterval)
 	defer ticker.Stop()
+	e.pollManualPressure(current, testID, ticker.C)
+}
+
+func (e *Engine) pollManualPressure(current *run, testID uuid.UUID, ticks <-chan time.Time) {
 	var gridOrigin time.Time
-	var previousTick time.Time
+	var previousSlot time.Time
 	var queue chan samplePacket
 	defer func() {
 		if queue != nil {
@@ -119,31 +123,34 @@ func (e *Engine) runManualPressure(current *run, testID uuid.UUID) {
 		select {
 		case <-current.ctx.Done():
 			return
-		case tick = <-ticker.C:
+		case tick = <-ticks:
 		}
 		e.mu.Lock()
 		if e.active != current || current.stopping {
 			e.mu.Unlock()
 			return
 		}
-		// Normalize the ticker's scheduled timestamp to its own grid. The
-		// observation itself is timestamped separately when it is taken.
-		if gridOrigin.IsZero() {
-			gridOrigin = tick
-		}
-		scheduled := gridOrigin.Add(tick.Sub(gridOrigin).Round(demoMeasurementInterval))
-		now := e.runTime(scheduled)
-		if !previousTick.IsZero() && scheduled.Sub(previousTick) > demoMeasurementInterval {
-			current.manual.breakPressureHolds()
-		}
-		previousTick = scheduled
-		current.observedAt = now
+		acquiredAt := time.Now()
+		now := e.runTime(acquiredAt)
 		phase := current.manual.phase
 		if phase == measuringManualPressure && now.After(current.manual.window.end) {
 			e.finishManualMeasurementLocked(current, queue)
 			queue = nil
 			return
 		}
+		// A buffered ticker event can be older than the observation. Locate
+		// the acquisition on the grid to detect omitted polls.
+		if gridOrigin.IsZero() {
+			gridOrigin = tick
+		}
+		scheduled := gridOrigin.Add(tick.Sub(gridOrigin).Round(demoMeasurementInterval))
+		slot := scheduled.Add(max(0, acquiredAt.Sub(scheduled)).Truncate(demoMeasurementInterval))
+		gapBefore := !previousSlot.IsZero() && slot.Sub(previousSlot) > demoMeasurementInterval
+		if gapBefore {
+			current.manual.breakPressureHolds()
+		}
+		previousSlot = slot
+		current.observedAt = now
 		pressure, dd2, dd3, err := e.equipment.Observe(now.Sub(current.searchStarted))
 		var readings [3]*float64
 		if err == nil {
@@ -166,11 +173,12 @@ func (e *Engine) runManualPressure(current *run, testID uuid.UUID) {
 			current.writerDone = make(chan struct{})
 			go e.writeSamples(current, testID, queue)
 		} else if phase != measuringManualPressure && (!waitingForValve || previousDifferential != channel) {
-			current.currentReadings = manualReadings(readings, &readingSequence)
+			current.currentReadings = manualReadings(acquiredAt, readings, &readingSequence)
 		}
 		if phase == measuringManualPressure && current.manual.window.contains(now) {
 			elapsed := now.Sub(current.manual.window.start)
-			latest := manualReadings(readings, &sequence)
+			latest := manualReadings(acquiredAt, readings, &sequence)
+			latest[0].GapBefore = gapBefore
 			packet := make(samplePacket, 0, len(latest))
 			for _, measurement := range latest {
 				selected := string(measurement.Channel) == channel
@@ -230,15 +238,15 @@ func (e *Engine) runManualPressure(current *run, testID uuid.UUID) {
 	}
 }
 
-func (e *Engine) runTime(tick time.Time) time.Time {
+func (e *Engine) runTime(acquiredAt time.Time) time.Time {
 	if e.measurementNow != nil {
 		return e.measurementNow()
 	}
-	return tick
+	return acquiredAt
 }
 
-func manualReadings(readings [3]*float64, sequence *int64) []contract.Measurement {
-	now := time.Now().UTC()
+func manualReadings(acquiredAt time.Time, readings [3]*float64, sequence *int64) []contract.Measurement {
+	now := acquiredAt.UTC()
 	measuredAt := now.Format(time.RFC3339Nano)
 	latest := make([]contract.Measurement, 0, 3)
 	for index, channel := range [...]contract.MeasurementChannel{"dd1", "dd2", "dd3"} {

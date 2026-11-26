@@ -782,7 +782,10 @@ type LeaseRequest struct {
 
 // Measurement defines model for Measurement.
 type Measurement struct {
-	Channel    MeasurementChannel  `json:"channel"`
+	Channel MeasurementChannel `json:"channel"`
+
+	// GapBefore У ДД1 значение true означает, что перед этим опросом пропущен хотя бы один тик опроса.
+	GapBefore  bool                `json:"gapBefore,omitempty"`
 	MeasuredAt *string             `json:"measuredAt"`
 	ObservedAt time.Time           `json:"observedAt"`
 	Quality    MeasurementQuality  `json:"quality"`

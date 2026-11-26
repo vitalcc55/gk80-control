@@ -1966,5 +1966,21 @@
     "valid": false,
     "browserValid": false,
     "kind": "schema"
+  },
+  {
+    "name": "omitted poll before DD1",
+    "schema": "Measurement",
+    "json": "{\"sequence\":4,\"channel\":\"dd1\",\"quantity\":\"pressure\",\"value\":1000,\"unit\":\"Pa\",\"observedAt\":\"2026-11-05T10:00:00.300Z\",\"measuredAt\":\"2026-11-05T10:00:00.300Z\",\"quality\":\"valid\",\"source\":\"simulator\",\"gapBefore\":true}",
+    "valid": true,
+    "browserValid": true,
+    "kind": "schema"
+  },
+  {
+    "name": "omitted poll annotation is invalid for differential channel",
+    "schema": "Measurement",
+    "json": "{\"sequence\":5,\"channel\":\"dd2\",\"quantity\":\"differentialPressure\",\"value\":5,\"unit\":\"Pa\",\"observedAt\":\"2026-11-05T10:00:00.300Z\",\"measuredAt\":\"2026-11-05T10:00:00.300Z\",\"quality\":\"valid\",\"source\":\"simulator\",\"gapBefore\":true}",
+    "valid": false,
+    "browserValid": false,
+    "kind": "schema"
   }
 ]

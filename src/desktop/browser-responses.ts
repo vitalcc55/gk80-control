@@ -331,7 +331,7 @@ function measurement(value: unknown): value is Contract.Measurement {
         'quality',
         'source',
       ],
-      ['selectedDifferential'],
+      ['selectedDifferential', 'gapBefore'],
     ) &&
     counter(value['sequence'], 1) &&
     oneOf(value['channel'], ['dd1', 'dd2', 'dd3']) &&
@@ -339,6 +339,8 @@ function measurement(value: unknown): value is Contract.Measurement {
     value['unit'] === 'Pa' &&
     (!Object.hasOwn(value, 'selectedDifferential') ||
       (value['channel'] !== 'dd1' && typeof value['selectedDifferential'] === 'boolean')) &&
+    (!Object.hasOwn(value, 'gapBefore') ||
+      (value['channel'] === 'dd1' && typeof value['gapBefore'] === 'boolean')) &&
     value['source'] === 'simulator' &&
     dateTime(value['observedAt']) &&
     oneOf(value['quality'], ['valid', 'stale', 'unavailable']) &&

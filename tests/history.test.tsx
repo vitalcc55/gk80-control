@@ -204,6 +204,40 @@ it('сохраняет точность строчных временных ме
   ]);
 });
 
+it('оставляет разрыв между пригодными отсчётами после пропуска опроса', () => {
+  const first = measurementPage(1).items?.[0];
+  if (!first) throw new Error('Measurement missing');
+  const samples = (
+    [
+      ['2026-11-05T00:00:00Z', false],
+      ['2026-11-05T00:00:00.100Z', false],
+      ['2026-11-05T00:00:01.100Z', true],
+    ] as const
+  ).flatMap(([measuredAt, gapBefore], index) => [
+    { ...first, sequence: index * 2 + 1, measuredAt, value: 10 * (index + 1), gapBefore },
+    {
+      ...first,
+      sequence: index * 2 + 2,
+      measuredAt,
+      channel: MeasurementChannel.MeasurementChannelDd2,
+      quantity: MeasurementQuantity.MeasurementQuantityDifferentialPressure,
+      selectedDifferential: true,
+      value: index + 1,
+    },
+  ]);
+  expect(measurementSegments(samples)).toEqual([
+    {
+      startedAt: '2026-11-05T00:00:00Z',
+      points: [
+        { seconds: 0, pressure: 10, differential: 1 },
+        { seconds: 0.1, pressure: 20, differential: 2 },
+        { seconds: 0.6, pressure: null, differential: null },
+        { seconds: 1.1, pressure: 30, differential: 3 },
+      ],
+    },
+  ]);
+});
+
 it('различает ожидание связи и отсутствие сохранённой причины', async () => {
   const stopped = { ...record, outcome: TestRecordOutcome.TestRecordOutcomeUnknown };
   const audit = vi.fn().mockResolvedValue({ items: [], nextAfter: null });

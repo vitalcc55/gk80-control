@@ -357,6 +357,11 @@ export interface ListTestsParams {
  */
 export interface Measurement {
     "channel": MeasurementChannel;
+
+    /**
+     * GapBefore У ДД1 значение true означает, что перед этим опросом пропущен хотя бы один тик опроса.
+     */
+    "gapBefore"?: boolean;
     "measuredAt": string | null;
     "observedAt": string;
     "quality": MeasurementQuality;

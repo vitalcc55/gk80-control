@@ -137,8 +137,8 @@ func (r *manualPressureRun) advanceTime(now time.Time) manualPressureDecision {
 	return manualPressureNoDecision
 }
 
-// The Engine supplies scheduled DD1 observations in time order, passing nil
-// for a missed or unusable observation. A clock tick alone cannot prove a hold.
+// The Engine supplies DD1 observations in acquisition order, passing nil for
+// an unusable observation. A clock tick alone cannot prove a hold.
 func (r *manualPressureRun) observePressure(now time.Time, dd1 *float64) manualPressureDecision {
 	valid := dd1 != nil && !math.IsNaN(*dd1) && !math.IsInf(*dd1, 0)
 	switch r.phase {
