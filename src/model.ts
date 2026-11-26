@@ -71,7 +71,6 @@ export interface Fixture {
   stage: StageId;
   pressure: Measurement;
   differential: Measurement;
-  graph: readonly GraphPoint[];
   instruction: string;
   actionLabel: string;
   status: string;

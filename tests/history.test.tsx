@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { expect, it, vi } from 'vitest';
 
@@ -3113,6 +3113,15 @@ it('uses operator language for saved measurement quality and source', async () =
         measuredAt: null,
         source: 'simulator',
       },
+      {
+        sequence: 2,
+        channel: 'dd2',
+        value: null,
+        unit: 'Pa',
+        quality: 'unavailable',
+        measuredAt: null,
+        source: 'simulator',
+      },
     ],
     nextAfter: null,
   });
@@ -3121,7 +3130,9 @@ it('uses operator language for saved measurement quality and source', async () =
   );
   await userEvent.setup().click(screen.getByText('Измерения', { selector: 'summary' }));
   expect(await screen.findByText('достоверно')).toBeTruthy();
-  expect(screen.getByText('симулятор')).toBeTruthy();
+  expect(screen.getAllByText('симулятор')).toHaveLength(2);
+  const missingReading = screen.getByRole('row', { name: /ДД2/ });
+  expect(within(missingReading).getAllByRole('cell', { name: '—' })).toHaveLength(2);
 });
 
 it('starts a changed offline query at the first cursor on reconnect, including unknown outcomes', async () => {

@@ -102,6 +102,43 @@ function EmptyForm({ submit }: { submit: (value: TestParameters) => void }) {
   );
 }
 
+it('gives each pressure limit field its own help without submitting the form', async () => {
+  const submit = vi.fn();
+  render(<Form submit={submit} />);
+  const user = userEvent.setup();
+  const lowerLabel = 'Нижний аварийный предел, Па';
+  const help = screen.getByRole('button', { name: `Подсказка к полю «${lowerLabel}»` });
+  expect(
+    screen.queryByRole('button', { name: 'Подсказка об аварийных пределах давления' }),
+  ).toBeNull();
+  expect(screen.queryByRole('tooltip')).toBeNull();
+
+  for (const [label, example] of [
+    [lowerLabel, '950 Па'],
+    ['Выдержка ниже нижнего предела, с', '3 с подряд'],
+    ['Верхний аварийный предел, Па', '1 050 Па'],
+    ['Выдержка выше верхнего предела, с', '2 с подряд'],
+  ]) {
+    const fieldHelp = screen.getByRole('button', { name: `Подсказка к полю «${label}»` });
+    await user.hover(fieldHelp);
+    expect((await screen.findByRole('tooltip')).textContent).toContain(example);
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('tooltip')).toBeNull();
+    await user.unhover(fieldHelp);
+  }
+
+  await user.click(screen.getByText(lowerLabel, { exact: true }));
+  expect(document.activeElement).toBe(screen.getByRole('textbox', { name: lowerLabel }));
+  await user.tab({ shift: true });
+  expect(document.activeElement).toBe(help);
+  expect((await screen.findByRole('tooltip')).textContent).toContain('950 Па');
+  await user.keyboard('{Escape}');
+  expect(screen.queryByRole('tooltip')).toBeNull();
+  expect(document.activeElement).toBe(help);
+  await user.keyboard('{Enter}');
+  expect(submit).not.toHaveBeenCalled();
+});
+
 it('keeps the original lossy input and prevents a demo command', async () => {
   const submit = vi.fn();
   render(<Form submit={submit} />);

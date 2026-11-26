@@ -7,13 +7,20 @@ import type { LeakagePoint } from '../model';
 const height = 550;
 const horizontalLabel = 'Удельная утечка, л/(с·м²)';
 const verticalLabel = 'Испытательное давление, Па';
-const boundaryPressures = [10, 10_000] as const;
+const defaultPressureRange = [10, 10_000] as const;
 const classBoundaries = [
   { coefficient: 15, dash: [] },
   { coefficient: 3, dash: [8, 4] },
   { coefficient: 0.6, dash: [3, 3] },
   { coefficient: 0.12, dash: [8, 3, 2, 3] },
 ];
+const largestBoundaryCoefficient = Math.max(
+  ...classBoundaries.map(({ coefficient }) => coefficient),
+);
+
+function boundaryLeakage(pressure: number, coefficient: number): number {
+  return coefficient * pressure ** 0.56;
+}
 
 function includePoint(min: number, max: number, value?: number) {
   return positiveFinite(value)
@@ -29,6 +36,12 @@ function includePoint(min: number, max: number, value?: number) {
 }
 
 function drawBoundaries(chart: uPlot, stroke: string) {
+  const maxPressure = chart.scales['y']?.max;
+  if (!positiveFinite(maxPressure)) return;
+
+  const [minPressure] = defaultPressureRange;
+  const bottom = chart.valToPos(minPressure, 'y', true);
+  const top = chart.valToPos(maxPressure, 'y', true);
   const ctx = chart.ctx;
   const ratio = uPlot.pxRatio;
   ctx.save();
@@ -37,12 +50,8 @@ function drawBoundaries(chart: uPlot, stroke: string) {
   for (const { coefficient, dash } of classBoundaries) {
     ctx.setLineDash(dash.map((length) => length * ratio));
     ctx.beginPath();
-    for (const [endpoint, pressure] of boundaryPressures.entries()) {
-      const x = chart.valToPos(coefficient * pressure ** 0.56, 'x', true);
-      const y = chart.valToPos(pressure, 'y', true);
-      if (endpoint === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
+    ctx.moveTo(chart.valToPos(boundaryLeakage(minPressure, coefficient), 'x', true), bottom);
+    ctx.lineTo(chart.valToPos(boundaryLeakage(maxPressure, coefficient), 'x', true), top);
     ctx.stroke();
   }
   ctx.restore();
@@ -131,10 +140,13 @@ export function LeakageChart({
   useLayoutEffect(() => {
     const chart = plot.current;
     if (!chart) return;
+    const yScale = includePoint(...defaultPressureRange, hasPoint ? pressure : undefined);
+    const xScale = includePoint(0.1, 10_000, hasPoint ? leakage : undefined);
+    const largestBoundary = boundaryLeakage(yScale.max, largestBoundaryCoefficient);
     chart.batch(() => {
       chart.setData(hasPoint ? [[leakage], [pressure]] : [[], []], false);
-      chart.setScale('x', includePoint(0.1, 10_000, hasPoint ? leakage : undefined));
-      chart.setScale('y', includePoint(...boundaryPressures, hasPoint ? pressure : undefined));
+      chart.setScale('x', includePoint(xScale.min, xScale.max, largestBoundary));
+      chart.setScale('y', yScale);
     });
   }, [hasPoint, leakage, pressure]);
 
@@ -152,7 +164,6 @@ export function LeakageChart({
         role="img"
         aria-label={`${horizontalLabel}. ${verticalLabel}. Логарифмические шкалы.`}
       />
-      <p className="leakage-chart-source">Границы классов · EN 1751:2024, таблица C.1</p>
       <ul className="leakage-chart-legend" aria-label="Справочные линии">
         {classBoundaries.map(({ coefficient, dash }, index) => (
           <li key={coefficient}>

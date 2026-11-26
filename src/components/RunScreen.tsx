@@ -1,24 +1,7 @@
 import { Check } from 'lucide-react';
-import type { ComponentProps, ReactNode, Ref } from 'react';
-import { MeasurementChart } from './MeasurementChart';
+import type { ReactNode, Ref } from 'react';
+import { LeakageChart } from './LeakageChart';
 import { PressureNotation } from './PressureNotation';
-
-export function RunMeasurementChart({
-  note,
-  ...chart
-}: ComponentProps<typeof MeasurementChart> & { note?: ReactNode }) {
-  return (
-    <>
-      <div className="section-heading">
-        <div>
-          <h2>Изменение показаний</h2>
-          {note && <p>{note}</p>}
-        </div>
-      </div>
-      <MeasurementChart {...chart} />
-    </>
-  );
-}
 
 export function RunScreen({
   subtitle,
@@ -28,10 +11,8 @@ export function RunScreen({
   differentialChannel = 'ДД2',
   differentialNote,
   target,
-  readingNote,
   pressureNote,
-  details,
-  chart,
+  leakageMessage,
   actionTitle,
   instruction,
   actionLabel,
@@ -46,11 +27,9 @@ export function RunScreen({
   differential: ReactNode;
   differentialChannel?: string | undefined;
   target: ReactNode;
-  readingNote?: ReactNode | undefined;
-  details?: ReactNode;
   pressureNote?: ReactNode;
   differentialNote?: ReactNode;
-  chart: ReactNode;
+  leakageMessage: string;
   actionTitle: string;
   instruction?: string | undefined;
   actionLabel?: string;
@@ -105,7 +84,6 @@ export function RunScreen({
             <div className="section-heading">
               <h2>Показания</h2>
             </div>
-            {readingNote && <p className="reading-note">{readingNote}</p>}
             <div className="measurements live-measurements">
               <div className="reading main-reading">
                 <span>
@@ -128,7 +106,6 @@ export function RunScreen({
                 {differentialNote}
               </div>
             </div>
-            {details}
           </div>
         </section>
         <aside className="action-panel" aria-label={actionLabel ?? 'Текущее действие'}>
@@ -142,7 +119,9 @@ export function RunScreen({
           </div>
           {stop && <div className="stop-area">{stop}</div>}
         </aside>
-        <div className="chart-panel">{chart}</div>
+        <div className="chart-panel">
+          <LeakageChart emptyMessage={leakageMessage} />
+        </div>
       </div>
     </section>
   );

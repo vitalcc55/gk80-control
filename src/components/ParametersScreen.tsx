@@ -1,4 +1,5 @@
-import { ArrowLeft, ArrowRight } from 'lucide-react';
+import { ArrowLeft, ArrowRight, CircleQuestionMark } from 'lucide-react';
+import { Tooltip } from 'radix-ui';
 import {
   type Dispatch,
   type FormEvent,
@@ -15,10 +16,56 @@ import { PressureNotation } from './PressureNotation';
 import './screens.css';
 
 const pressureLimitFields = [
-  ['lowerPressureLimitPa', 'Нижний аварийный предел, Па', 'decimal'],
-  ['lowerPressureHoldSeconds', 'Выдержка ниже нижнего предела, с', 'numeric'],
-  ['upperPressureLimitPa', 'Верхний аварийный предел, Па', 'decimal'],
-  ['upperPressureHoldSeconds', 'Выдержка выше верхнего предела, с', 'numeric'],
+  {
+    name: 'lowerPressureLimitPa',
+    label: 'Нижний аварийный предел, Па',
+    inputMode: 'decimal',
+    help: (
+      <>
+        Это нижняя граница давления в ёмкости по ДД1 во время измерения. Введите значение от 0 Па до{' '}
+        <PressureNotation />, не включая <PressureNotation />.
+      </>
+    ),
+    example: (
+      <>
+        При <PressureNotation /> 1 000 Па можно задать предел 950 Па. Как только давление станет
+        ниже 950 Па, программа начнёт отсчёт нижней выдержки.
+      </>
+    ),
+  },
+  {
+    name: 'lowerPressureHoldSeconds',
+    label: 'Выдержка ниже нижнего предела, с',
+    inputMode: 'numeric',
+    help: 'Это время, в течение которого давление может оставаться ниже нижнего предела. Введите целое число секунд от 0 до длительности измерения. Возврат в диапазон сбрасывает отсчёт.',
+    example:
+      'При выдержке 3 с программа останавливает испытание, если давление остаётся ниже предела 3 с подряд. При 0 с остановка начинается при первом выходе за предел.',
+  },
+  {
+    name: 'upperPressureLimitPa',
+    label: 'Верхний аварийный предел, Па',
+    inputMode: 'decimal',
+    help: (
+      <>
+        Это верхняя граница давления в ёмкости по ДД1 во время измерения. Введите значение выше{' '}
+        <PressureNotation /> и не более 110 % от <PressureNotation />.
+      </>
+    ),
+    example: (
+      <>
+        При <PressureNotation /> 1 000 Па можно задать предел 1 050 Па. Давление 1 060 Па запустит
+        отсчёт верхней выдержки. При давлении выше 1 100 Па сработает отдельная защита без выдержки.
+      </>
+    ),
+  },
+  {
+    name: 'upperPressureHoldSeconds',
+    label: 'Выдержка выше верхнего предела, с',
+    inputMode: 'numeric',
+    help: 'Это время, в течение которого давление может оставаться выше верхнего предела. Введите целое число секунд от 0 до длительности измерения. Возврат в диапазон сбрасывает отсчёт.',
+    example:
+      'При выдержке 2 с программа останавливает испытание, если давление остаётся выше предела 2 с подряд. При 0 с остановка начинается при первом выходе за предел.',
+  },
 ] as const;
 
 type Direction = TestParameters['direction'];
@@ -307,7 +354,7 @@ export function ParametersScreen({
 
   function updateInput(name: keyof Errors, value: string) {
     setDraft({ ...draft, [name]: value });
-    if (pressureLimitFields.some(([field]) => field === name)) {
+    if (pressureLimitFields.some((field) => field.name === name)) {
       setErrors((current) => ({ ...current, [name]: undefined }));
       return;
     }
@@ -530,26 +577,55 @@ export function ParametersScreen({
                 <h2>Аварийные пределы давления</h2>
                 <p>Выдержка 0 с означает остановку при первом выходе за предел.</p>
               </div>
-              <div className="form-grid">
-                {pressureLimitFields.map(([name, label, inputMode]) => (
-                  <label className="form-field" key={name}>
-                    <RequiredLabel id={`${name}-label`}>{label}</RequiredLabel>
-                    <input
-                      className="work-input"
-                      aria-labelledby={`${name}-label`}
-                      inputMode={inputMode}
-                      value={draft[name] ?? ''}
-                      {...inputError(name)}
-                      onChange={(event) => updateInput(name, event.target.value)}
-                    />
-                    {errors[name] && (
-                      <small className="field-error" id={`${name}-error`}>
-                        {errors[name]}
-                      </small>
-                    )}
-                  </label>
-                ))}
-              </div>
+              <Tooltip.Provider delayDuration={200}>
+                <div className="form-grid">
+                  {pressureLimitFields.map(({ name, label, inputMode, help, example }) => (
+                    <div className="form-field" key={name}>
+                      <div className="pressure-limit-label">
+                        <label htmlFor={`parameter-${name}`}>
+                          <RequiredLabel id={`${name}-label`}>{label}</RequiredLabel>
+                        </label>
+                        <Tooltip.Root>
+                          <Tooltip.Trigger
+                            className="pressure-limits-help"
+                            type="button"
+                            aria-label={`Подсказка к полю «${label}»`}
+                          >
+                            <CircleQuestionMark aria-hidden="true" size={17} />
+                          </Tooltip.Trigger>
+                          <Tooltip.Portal>
+                            <Tooltip.Content
+                              className="pressure-limits-tooltip"
+                              side="top"
+                              align="start"
+                              sideOffset={6}
+                              collisionPadding={12}
+                            >
+                              <p>{help}</p>
+                              <p>
+                                <strong>Пример.</strong> {example}
+                              </p>
+                            </Tooltip.Content>
+                          </Tooltip.Portal>
+                        </Tooltip.Root>
+                      </div>
+                      <input
+                        className="work-input"
+                        aria-labelledby={`${name}-label`}
+                        inputMode={inputMode}
+                        value={draft[name] ?? ''}
+                        {...inputError(name)}
+                        onChange={(event) => updateInput(name, event.target.value)}
+                      />
+                      {errors[name] && (
+                        <small className="field-error" id={`${name}-error`}>
+                          {errors[name]}
+                        </small>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </Tooltip.Provider>
             </div>
           )}
           <div className="form-section">

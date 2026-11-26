@@ -143,11 +143,12 @@ h2 {
   border: 0;
 }
 .app-shell {
+  --shell-footer-height: 48px;
   min-height: 100vh;
-  padding-bottom: 48px;
+  padding-bottom: var(--shell-footer-height);
 }
 .app-shell-live {
-  padding-bottom: 0;
+  --shell-footer-height: 0px;
 }
 .brand {
   display: flex;
@@ -181,10 +182,7 @@ h2 {
 }
 .workspace {
   display: flex;
-  min-height: calc(100vh - 48px);
-}
-.app-shell-live .workspace {
-  min-height: 100vh;
+  min-height: calc(100vh - var(--shell-footer-height));
 }
 .sidebar {
   width: 160px;
@@ -197,11 +195,8 @@ h2 {
   position: sticky;
   top: 0;
   align-self: flex-start;
-  height: calc(100vh - 48px);
+  height: calc(100vh - var(--shell-footer-height));
   overflow: hidden;
-}
-.app-shell-live .sidebar {
-  height: 100vh;
 }
 .sidebar-session {
   margin-top: auto;
@@ -571,16 +566,6 @@ h2 {
   white-space: normal;
   overflow-wrap: anywhere;
 }
-.reading-note,
-.reading-details {
-  margin-top: 8px;
-  color: var(--muted);
-  font-size: var(--font-caption);
-}
-.reading-details summary {
-  cursor: pointer;
-  color: var(--accent);
-}
 .run-time {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 100px), 1fr));
@@ -619,11 +604,6 @@ h2 {
 }
 .leakage-chart-values dt {
   color: var(--muted);
-}
-.leakage-chart-source {
-  margin: 8px 0 0;
-  color: var(--muted);
-  font-size: var(--font-label);
 }
 .leakage-chart-legend {
   display: flex;
@@ -813,7 +793,7 @@ h2 {
   bottom: 0;
   left: 0;
   width: 100%;
-  height: 48px;
+  height: var(--shell-footer-height);
   display: flex;
   align-items: center;
   gap: 12px;

@@ -34,13 +34,11 @@ import {
 import type { DemoService } from './demo-service';
 import { History } from './History';
 import { LiveRun } from './LiveRun';
-import { MeasurementSeriesContext } from './measurement-series';
 import { measurementLabel, parametersForDisplay } from './presentation';
 import { RecordDetails } from './RecordDetails';
 import { observeReadiness } from './readiness-observation';
 import { SessionStatus } from './SessionStatus';
 import { type SessionObservation, sessionObservation } from './session-observation';
-import { useMeasurementObservation } from './use-measurement-series';
 import { useSessionObservation } from './use-session-observation';
 
 const empty: FormParameters = {
@@ -148,7 +146,6 @@ function CommandNotice({
 }
 
 type LiveAppProps = {
-  measurementContext?: MeasurementSeriesContext;
   session: SessionBridge;
   service: DemoService;
   hostRunId: string;
@@ -183,7 +180,6 @@ function bindObservationDatabase(props: LiveAppProps) {
 }
 
 export function LiveApp(props: LiveAppProps) {
-  const [localMeasurementContext] = useState(() => new MeasurementSeriesContext());
   const [binding, setBinding] = useState(() => bindObservationDatabase(props));
   let currentBinding = binding;
   if (
@@ -242,7 +238,6 @@ export function LiveApp(props: LiveAppProps) {
     <ActiveLiveApp
       key={`${props.hostRunId}:${props.backendRunId}:${props.databaseId}`}
       {...props}
-      measurementContext={props.measurementContext ?? localMeasurementContext}
       coordinator={coordinator}
       minimumObservation={currentBinding.minimum}
       draft={draft}
@@ -260,8 +255,6 @@ export function LiveApp(props: LiveAppProps) {
 
 function ActiveLiveApp({
   session,
-  measurementContext,
-  databaseId,
   service,
   hostRunId,
   backendRunId,
@@ -278,7 +271,6 @@ function ActiveLiveApp({
   setShowHistory,
   submittedCreate,
 }: LiveAppProps & {
-  measurementContext: MeasurementSeriesContext;
   minimumObservation: number;
   coordinator: CommandCoordinator;
   draft: ReturnType<typeof newDraft>;
@@ -301,7 +293,6 @@ function ActiveLiveApp({
   const acceptedProjection = projection.observationVersion >= minimumObservation;
   const connection = acceptedProjection ? projection.connection : null;
   const lastSnapshot = acceptedProjection ? projection.lastSnapshot : null;
-  const { gapVersion } = projection;
   const [showSavedParameters, setShowSavedParameters] = useState(false);
   const [historyResult, setHistoryResult] = useState(false);
   const [historyReset, setHistoryReset] = useState(0);
@@ -348,10 +339,6 @@ function ActiveLiveApp({
     connection,
     lastSnapshot,
   });
-  const measurementKey = record
-    ? `${hostRunId}:${backendRunId}:${databaseId}:${record.testId}`
-    : '';
-  useMeasurementObservation(measurementContext, measurementKey, snapshot, fresh, gapVersion);
   const activeId = record?.testId;
   const stage = record?.stage;
   const isExpectedStart = (key: string, notice: { id: string; startAcceptedFor?: string }) => {
@@ -468,6 +455,7 @@ function ActiveLiveApp({
   };
   const historyVisible = showHistory || (!record && !showForm);
   const active = !!record && stage !== 'finished';
+  const awaitingStopConfirmation = snapshot?.pendingAction?.kind === 'confirmStopped';
   const stopControl = (
     <StopButton
       disabled={stopCount >= 2 || totalStops >= 64}
@@ -735,7 +723,7 @@ function ActiveLiveApp({
           disabled={
             !fresh ||
             blocking ||
-            snapshot?.pendingAction?.kind === 'confirmStopped' ||
+            awaitingStopConfirmation ||
             (!!record && record.stage !== 'finished')
           }
           onNew={() => {
@@ -860,8 +848,6 @@ function ActiveLiveApp({
             record={record}
             snapshot={snapshot}
             fresh={fresh}
-            measurementContext={measurementContext}
-            measurementKey={measurementKey}
             stop={stopControl}
             pending={blocking}
             onConfirm={() => {
@@ -875,8 +861,18 @@ function ActiveLiveApp({
           record={record}
           saveError={record.saveStatus === 'failed'}
           interrupted={record.outcome === 'interrupted'}
-          active={blocking || snapshot?.pendingAction?.kind === 'confirmStopped'}
+          active={blocking}
           draftAvailable={draftAvailable}
+          stopConfirmation={
+            awaitingStopConfirmation
+              ? {
+                  disabled: !fresh,
+                  onConfirm: () => {
+                    void coordinator.confirmAction();
+                  },
+                }
+              : undefined
+          }
           onList={openHistory}
           onNew={() => {
             requestFocus('parameters');
@@ -888,22 +884,13 @@ function ActiveLiveApp({
             openDraft();
           }}
         >
-          {snapshot?.pendingAction?.kind === 'confirmStopped' && (
-            <div className="work-surface">
-              <p>{snapshot.pendingAction.instruction}</p>
-              <button
-                type="button"
-                className="primary-button"
-                disabled={!fresh || blocking}
-                onClick={() => {
-                  void coordinator.confirmAction();
-                }}
-              >
-                Подтвердить остановку вала
-              </button>
-            </div>
-          )}
-          <RecordDetails key={record.testId} record={record} service={service} available={fresh} />
+          <RecordDetails
+            key={record.testId}
+            record={record}
+            service={service}
+            available={fresh}
+            showArchiveDetails={false}
+          />
         </ResultScreen>
       )}
     </AppShell>

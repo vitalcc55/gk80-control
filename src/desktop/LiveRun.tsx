@@ -1,6 +1,5 @@
-import { type ReactNode, useState } from 'react';
-import { LeakageChart } from '../components/LeakageChart';
-import { RunMeasurementChart, RunScreen } from '../components/RunScreen';
+import type { ReactNode } from 'react';
+import { RunScreen } from '../components/RunScreen';
 import type {
   Measurement,
   Snapshot,
@@ -11,23 +10,20 @@ import {
   formatMeasurement,
   formatNumber,
   formatRemainingSeconds,
+  unavailableValue,
 } from '../lib/format';
 import { measurementQualityLabel } from './display';
-import type { MeasurementSeriesContext } from './measurement-series';
 import { measurementLabel } from './presentation';
-import { useMeasurementSeries } from './use-measurement-series';
 
 function shown(item: Measurement | undefined): string {
-  return (item?.quality === 'valid' || item?.quality === 'stale') && item.value !== null
+  return item?.quality === 'valid' || item?.quality === 'stale'
     ? formatMeasurement(item.value)
-    : 'Неизвестно';
+    : unavailableValue;
 }
 export function LiveRun({
   record,
   snapshot,
   fresh,
-  measurementContext,
-  measurementKey,
   pending,
   onConfirm,
   stop,
@@ -35,14 +31,10 @@ export function LiveRun({
   record: TestRecord;
   snapshot: Snapshot;
   fresh: boolean;
-  measurementContext: MeasurementSeriesContext;
-  measurementKey: string;
   pending: boolean;
   onConfirm: () => void;
   stop?: ReactNode;
 }) {
-  const series = useMeasurementSeries(measurementContext, measurementKey);
-  const [detailsOpen, setDetailsOpen] = useState(false);
   const readings = snapshot.currentReadings?.length
     ? snapshot.currentReadings
     : snapshot.measurements;
@@ -52,10 +44,6 @@ export function LiveRun({
   );
   const stopping = record.stage === 'stopping';
   const awaiting = !!snapshot.pendingAction;
-  const readingNote =
-    snapshot.runPhase === 'awaitingValveOpening' || snapshot.runPhase === 'awaitingValveClosing'
-      ? 'Показания на момент запроса подтверждения.'
-      : undefined;
   const timing = snapshot.phaseTiming ?? snapshot.measurementTiming;
   const phases = [
     ['awaitingPreparation', 'Подготовительные циклы'],
@@ -89,41 +77,16 @@ export function LiveRun({
       pressure={shown(pressure)}
       differential={shown(differential)}
       differentialChannel={snapshot.activeDifferential === 'dd3' ? 'ДД3' : 'ДД2'}
-      readingNote={readingNote}
       target={`${formatNumber(record.parameters.pmaxPa)} Па`}
-      pressureNote={<p>{measurementQualityLabel(pressure?.quality)} · последний отсчёт</p>}
-      differentialNote={<p>{measurementQualityLabel(differential?.quality)} · последний отсчёт</p>}
-      details={
-        <details className="reading-details" onToggle={(e) => setDetailsOpen(e.currentTarget.open)}>
-          <summary>Время и качество показаний</summary>
-          {detailsOpen &&
-            readings?.map((item) => (
-              <p key={item.channel}>
-                {item.channel.replace('dd', 'ДД')}: {shown(item)} ·{' '}
-                {item.measuredAt ?? 'время неизвестно'} · качество последнего наблюдения:{' '}
-                {measurementQualityLabel(item.quality)}
-              </p>
-            ))}
-        </details>
+      pressureNote={
+        pressure &&
+        pressure.quality !== 'valid' && <p>{measurementQualityLabel(pressure.quality)}</p>
       }
-      chart={
-        <>
-          <LeakageChart emptyMessage="Рабочая точка ещё не получена" />
-          <details className="reading-details">
-            <summary>Подробности измерений</summary>
-            <RunMeasurementChart
-              live
-              points={series.points}
-              target={record.parameters.pmaxPa}
-              note={
-                series.clockChanged
-                  ? 'Время измерения изменилось: график начат заново с нового отсчёта.'
-                  : 'Время от первого полученного отсчёта; пропуски не соединяются.'
-              }
-            />
-          </details>
-        </>
+      differentialNote={
+        differential &&
+        differential.quality !== 'valid' && <p>{measurementQualityLabel(differential.quality)}</p>
       }
+      leakageMessage={stopping ? 'Рабочая точка недоступна' : 'Рабочая точка ещё не получена'}
       actionTitle={phases[phase]?.[1] ?? measurementLabel(timing)}
       actionLabel={
         stopping
@@ -136,12 +99,14 @@ export function LiveRun({
           <dl className="run-time">
             <div>
               <dt>Прошло</dt>
-              <dd>{timing ? `${formatElapsedSeconds(timing.elapsedSeconds)} с` : 'Неизвестно'}</dd>
+              <dd>
+                {timing ? `${formatElapsedSeconds(timing.elapsedSeconds)} с` : unavailableValue}
+              </dd>
             </div>
             <div>
               <dt>Осталось</dt>
               <dd>
-                {timing ? `${formatRemainingSeconds(timing.remainingSeconds)} с` : 'Неизвестно'}
+                {timing ? `${formatRemainingSeconds(timing.remainingSeconds)} с` : unavailableValue}
               </dd>
             </div>
           </dl>

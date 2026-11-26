@@ -1,29 +1,11 @@
 import { fireEvent, render, screen, within } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
-import { type ComponentProps, StrictMode, useState } from 'react';
+import { StrictMode, useState } from 'react';
 import { expect, it, vi } from 'vitest';
 import { AppShell } from '../src/components/AppShell';
 import { StopButton } from '../src/components/StopButton';
 import { useScreenFocus } from '../src/components/use-screen-focus';
-import { LiveRun as LiveRunView } from '../src/desktop/LiveRun';
-import { MeasurementSeriesContext } from '../src/desktop/measurement-series';
-import { useMeasurementObservation } from '../src/desktop/use-measurement-series';
-import { formatMeasurement } from '../src/lib/format';
-
-function LiveRun({
-  gapVersion = 0,
-  ...props
-}: Omit<ComponentProps<typeof LiveRunView>, 'measurementContext' | 'measurementKey'> & {
-  gapVersion?: number;
-}) {
-  const [context] = useState(() => new MeasurementSeriesContext());
-  useMeasurementObservation(context, props.record.testId, props.snapshot, props.fresh, gapVersion);
-  return (
-    <LiveRunView {...props} measurementContext={context} measurementKey={props.record.testId} />
-  );
-}
-
+import { LiveRun } from '../src/desktop/LiveRun';
 import {
   MeasurementChannel,
   MeasurementQuality,
@@ -41,19 +23,11 @@ import {
   TestRecordSaveStatus,
   TestRecordStage,
 } from '../src/generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
-import type { GraphPoint } from '../src/model';
+import { formatMeasurement } from '../src/lib/format';
 
 // The characteristic's real canvas is exercised in Playwright.
 vi.mock('../src/components/LeakageChart', () => ({
   LeakageChart: ({ emptyMessage }: { emptyMessage: string }) => <p>{emptyMessage}</p>,
-}));
-
-vi.mock('../src/components/MeasurementChart', () => ({
-  MeasurementChart: ({ points }: { points: readonly GraphPoint[] }) => (
-    <div data-testid="chart" data-points={JSON.stringify(points)}>
-      {points.map((point) => point.pressure ?? 'gap').join(',')}
-    </div>
-  ),
 }));
 
 const record: TestRecord = {
@@ -120,7 +94,7 @@ it('округляет показания и различает малые зн�
   expect(formatMeasurement(-Number.MAX_VALUE)).not.toMatch(/Infinity|∞/);
 });
 
-it('показывает точные границы малых показаний, сохраняя исходные точки', async () => {
+it('показывает границы малых показаний текущих каналов', () => {
   const measured = {
     ...snapshot,
     measurements: [
@@ -134,9 +108,6 @@ it('показывает точные границы малых показани
   );
   expect(screen.getByText('< 0,01 Па')).toBeTruthy();
   expect(screen.getByText('−0,01 < значение < 0 Па')).toBeTruthy();
-  await userEvent.setup().click(screen.getByText('Время и качество показаний'));
-  expect(await screen.findByText(/ДД3: ≈ 1,23 Па/)).toBeTruthy();
-  expect(screen.getByTestId('chart').getAttribute('data-points')).toContain('0.0001');
   expect(screen.queryByText(/округление до 6/)).toBeNull();
 });
 
@@ -196,36 +167,6 @@ it('выбирает подпись подтверждения по типу д�
   );
   expect(screen.getByText('Проверьте подключение')).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Подтвердить действие' })).toBeTruthy();
-});
-
-it('leaves a gap when an accepted measurement packet was not observed', () => {
-  const context = new MeasurementSeriesContext();
-  context.accept('test', { ...snapshot, measurementBatch: 1 }, true, 0);
-  context.accept(
-    'test',
-    {
-      ...snapshot,
-      measurementBatch: 3,
-      measurements: [{ ...first, sequence: 7, measuredAt: '2026-10-30T00:00:03Z' }],
-    },
-    true,
-    0,
-  );
-  expect(context.read('test').points.map((point) => point.pressure)).toEqual([1000, null, 1000]);
-});
-
-it('keeps adjacent packets connected and ignores repeated or older packets', () => {
-  const context = new MeasurementSeriesContext();
-  const next = {
-    ...snapshot,
-    measurementBatch: 2,
-    measurements: [{ ...first, sequence: 4, measuredAt: '2026-10-30T00:00:02Z', value: 1001 }],
-  };
-  context.accept('test', snapshot, true, 0);
-  context.accept('test', next, true, 0);
-  context.accept('test', next, true, 0);
-  context.accept('test', snapshot, true, 0);
-  expect(context.read('test').points.map((point) => point.pressure)).toEqual([1000, 1001]);
 });
 
 function FocusShell({ children }: { children: ReactNode }) {
@@ -489,7 +430,7 @@ it('shows channel staleness without opening details and identifies the time obse
   );
   const reading = screen.getByText('Перепад на диафрагме').closest('.reading');
   if (!(reading instanceof HTMLElement)) throw new Error('Differential reading missing');
-  expect(within(reading).getByText('устарело · последний отсчёт')).toBeTruthy();
+  expect(within(reading).getByText('устарело')).toBeTruthy();
   expect(screen.queryByText('Время на последнем принятом отсчёте ядра')).toBeNull();
   expect(screen.getByText('5 с')).toBeTruthy();
   expect(screen.getByText('55 с')).toBeTruthy();
@@ -501,6 +442,7 @@ it('labels the selected differential sensor with its own reading', () => {
       record={record}
       snapshot={{
         ...snapshot,
+        runPhase: RunPhase.AwaitingValveOpening,
         activeDifferential: SnapshotActiveDifferential.SnapshotActiveDifferentialDd3,
         measurements: [
           first,
@@ -517,6 +459,10 @@ it('labels the selected differential sensor with its own reading', () => {
   if (!(reading instanceof HTMLElement)) throw new Error('Differential reading missing');
   expect(within(reading).getByText('ДД3')).toBeTruthy();
   expect(within(reading).getByText(/≈ 2\s?400,13 Па/)).toBeTruthy();
+  expect(screen.queryByText('Показания на момент запроса подтверждения.')).toBeNull();
+  expect(screen.queryByText(/последний отсчёт/)).toBeNull();
+  expect(screen.queryByText('Подробности измерений')).toBeNull();
+  expect(screen.queryByText('Время и качество показаний')).toBeNull();
 });
 
 it('does not invent completed measurement or pressure reduction after an early Stop', () => {
@@ -536,73 +482,7 @@ it('does not invent completed measurement or pressure reduction after an early S
   expect(screen.getByText(/безопасное давление не подтверждено/i)).toBeTruthy();
 });
 
-it('retains isolated recent source contexts and evicts the least recently observed context', () => {
-  const context = new MeasurementSeriesContext();
-  context.accept('source-A/database-A/test-A', snapshot, true, 0);
-  context.markGap('source-A/database-A/test-A');
-  expect(context.read('source-B/database-B/test-A').points).toEqual([]);
-  context.accept(
-    'source-B/database-B/test-A',
-    { ...snapshot, measurements: [{ ...first, value: 2000 }] },
-    true,
-    0,
-  );
-  context.accept(
-    'source-A/database-A/test-A',
-    {
-      ...snapshot,
-      measurementBatch: 2,
-      measurementTiming: null,
-      measurements: [{ ...first, sequence: 2, measuredAt: '2026-10-30T00:00:03Z', value: 1002 }],
-    },
-    true,
-    0,
-  );
-  expect(context.read('source-A/database-A/test-A').points).toEqual([
-    { seconds: 0, pressure: 1000, differential: null },
-    { seconds: 1, pressure: null, differential: null },
-    { seconds: 2, pressure: 1002, differential: null },
-  ]);
-  for (const key of ['source-C', 'source-D', 'source-E']) context.accept(key, snapshot, true, 0);
-  expect(context.read('source-B/database-B/test-A').points).toEqual([]);
-  expect(context.read('source-A/database-A/test-A').points).toHaveLength(3);
-});
-
-it('isolates a new test and bounds retained points without changing the original time axis', () => {
-  const context = new MeasurementSeriesContext();
-  context.accept(record.testId, snapshot, true, 0);
-  for (let index = 1; index <= 300; index++) {
-    context.accept(
-      record.testId,
-      {
-        ...snapshot,
-        measurementBatch: index + 1,
-        measurementTiming: null,
-        measurements: [
-          {
-            ...first,
-            sequence: index + 1,
-            value: 1000 + index,
-            measuredAt: new Date(Date.parse(first.measuredAt) + index * 1000).toISOString(),
-          },
-        ],
-      },
-      true,
-      0,
-    );
-  }
-  const retained = context.read(record.testId).points;
-  expect(retained).toHaveLength(300);
-  expect(retained[0]).toEqual({ seconds: 1, pressure: 1001, differential: null });
-  expect(retained[299]).toEqual({ seconds: 300, pressure: 1300, differential: null });
-  const other = { ...record, testId: '88888888-8888-4888-8888-888888888888' };
-  context.accept(other.testId, { ...snapshot, activeTest: other }, true, 0);
-  expect(context.read(other.testId).points).toEqual([
-    { seconds: 0, pressure: 1000, differential: null },
-  ]);
-});
-
-it('keeps the last received reading visible while a new snapshot is being confirmed', async () => {
+it('keeps the last received reading visible while a new snapshot is being confirmed', () => {
   const withAction = {
     ...snapshot,
     measurementTiming: null,
@@ -637,16 +517,11 @@ it('keeps the last received reading visible while a new snapshot is being confir
   expect(screen.getAllByText(/≈ 1\s?000 Па/)[0]).toBeTruthy();
   expect(screen.getByText('≈ 150 Па')).toBeTruthy();
   expect(screen.queryByText(/ДД3:.*≈ 80 Па/)).toBeNull();
-  await userEvent.setup().click(screen.getByText('Время и качество показаний'));
-  expect(await screen.findByText(/ДД3:.*≈ 80 Па/)).toBeTruthy();
   expect(screen.queryByText(/Последние полученные показания/)).toBeNull();
-  expect(screen.getAllByText(/качество последнего наблюдения: достоверно/)).toHaveLength(3);
-  expect(screen.getAllByText(/2026-10-30T00:00:01Z/)).toHaveLength(3);
   expect(screen.queryByText('Этап по последнему полученному снимку')).toBeNull();
   expect(
     screen.getByRole('button', { name: 'Подтвердить действие' }).hasAttribute('disabled'),
   ).toBe(true);
-  expect(screen.getByTestId('chart').textContent).toBe('1000');
   const next = { ...first, sequence: 2, measuredAt: '2026-10-30T00:00:02Z', value: 1001 };
   view.rerender(
     <LiveRun
@@ -658,7 +533,6 @@ it('keeps the last received reading visible while a new snapshot is being confir
     />,
   );
   expect(screen.getAllByText(/≈ 1\s?001 Па/)[0]).toBeTruthy();
-  expect(screen.getByTestId('chart').textContent).toBe('1000,1001');
   view.rerender(
     <LiveRun
       record={record}
@@ -682,7 +556,7 @@ it('keeps the last received reading visible while a new snapshot is being confir
     />,
   );
   expect(screen.queryByText(/≈ 1\s?001 Па/)).toBeNull();
-  expect(screen.getByText(/качество последнего наблюдения: недоступно/)).toBeTruthy();
+  expect(screen.getByText('недоступно', { selector: '.main-reading p' })).toBeTruthy();
   view.rerender(
     <LiveRun
       record={record}
@@ -704,16 +578,14 @@ it('keeps the last received reading visible while a new snapshot is being confir
     />,
   );
   expect(screen.getAllByText(/≈ 1\s?000 Па/)[0]).toBeTruthy();
-  expect(screen.getByText(/качество последнего наблюдения: устарело/)).toBeTruthy();
-  expect(screen.getByText(/2026-10-30T00:00:01Z/)).toBeTruthy();
+  expect(screen.getByText('устарело', { selector: '.main-reading p' })).toBeTruthy();
   expect(screen.queryByText(/2026-10-30T00:00:04Z/)).toBeNull();
 });
 
-it('breaks the chart across an unavailable measurement and labels pending confirmation honestly', () => {
+it('показывает недоступное давление при ожидании подтверждения', () => {
   const view = render(
     <LiveRun record={record} snapshot={snapshot} fresh pending={false} onConfirm={() => {}} />,
   );
-  expect(screen.getByTestId('chart').textContent).toBe('1000');
   const unavailable = {
     ...first,
     sequence: 2,
@@ -741,6 +613,9 @@ it('breaks the chart across an unavailable measurement and labels pending confir
     />,
   );
   expect(screen.getByRole('button', { name: 'Подтвердить действие' })).toBeTruthy();
+  expect(screen.getByText('—', { selector: '.main-reading strong' })).toBeTruthy();
+  expect(screen.getByText('—', { selector: '.differential-reading strong' })).toBeTruthy();
+  expect(screen.getAllByText('—', { selector: '.run-time dd' })).toHaveLength(2);
   const next = { ...first, sequence: 3, measuredAt: '2026-10-30T00:00:03Z', value: 1002 };
   view.rerender(
     <LiveRun
@@ -751,60 +626,5 @@ it('breaks the chart across an unavailable measurement and labels pending confir
       onConfirm={() => {}}
     />,
   );
-  expect(screen.getByTestId('chart').textContent).toBe('1000,gap,1002');
-});
-
-it('keeps adjacent samples connected across snapshot refresh but marks a real connection gap', () => {
-  const renderRun = (value: Snapshot, fresh: boolean, gapVersion: number) => (
-    <LiveRun
-      record={record}
-      snapshot={value}
-      fresh={fresh}
-      gapVersion={gapVersion}
-      pending={false}
-      onConfirm={() => {}}
-    />
-  );
-  const view = render(renderRun(snapshot, true, 0));
-  view.rerender(renderRun(snapshot, false, 0));
-  const second = { ...first, sequence: 2, measuredAt: '2026-10-30T00:00:02Z', value: 1001 };
-  view.rerender(renderRun({ ...snapshot, measurementBatch: 2, measurements: [second] }, true, 0));
-  expect(screen.getByTestId('chart').textContent).toBe('1000,1001');
-  view.rerender(renderRun({ ...snapshot, measurementBatch: 2, measurements: [second] }, false, 1));
-  const third = { ...first, sequence: 3, measuredAt: '2026-10-30T00:00:03Z', value: 1002 };
-  view.rerender(renderRun({ ...snapshot, measurementBatch: 3, measurements: [third] }, true, 1));
-  expect(screen.getByTestId('chart').textContent).toBe('1000,1001,gap,1002');
-});
-
-it('starts a new chart segment if measurement timestamps move backwards', () => {
-  const view = render(
-    <LiveRun record={record} snapshot={snapshot} fresh pending={false} onConfirm={() => {}} />,
-  );
-  const next = { ...first, sequence: 2, measuredAt: '2026-10-29T23:59:00Z', value: 1100 };
-  view.rerender(
-    <LiveRun
-      record={record}
-      snapshot={{ ...snapshot, measurementBatch: next.sequence, measurements: [next] }}
-      fresh
-      pending={false}
-      onConfirm={() => {}}
-    />,
-  );
-  expect(screen.getByTestId('chart').textContent).toBe('1100');
-  expect(screen.getByText(/график начат заново/)).toBeTruthy();
-});
-
-it('rounds displayed readings without changing chart samples', () => {
-  const measured = { ...first, value: 9986.022284815022 };
-  render(
-    <LiveRun
-      record={record}
-      snapshot={{ ...snapshot, measurements: [measured] }}
-      fresh
-      pending={false}
-      onConfirm={() => {}}
-    />,
-  );
-  expect(screen.getByText(/≈ 9\s?986,02 Па/)).toBeTruthy();
-  expect(screen.getByTestId('chart').textContent).toBe('9986.022284815022');
+  expect(screen.getByText(/≈ 1\s?002 Па/)).toBeTruthy();
 });

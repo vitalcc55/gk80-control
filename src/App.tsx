@@ -1,11 +1,10 @@
 import { ArrowRight } from 'lucide-react';
 import { useRef, useState } from 'react';
 import { AppShell } from './components/AppShell';
-import { LeakageChart } from './components/LeakageChart';
 import { draftFrom, ParametersScreen } from './components/ParametersScreen';
 import { ReadinessScreen } from './components/ReadinessScreen';
 import { ResultScreen } from './components/ResultScreen';
-import { RunMeasurementChart, RunScreen as SharedRunScreen } from './components/RunScreen';
+import { RunScreen as SharedRunScreen } from './components/RunScreen';
 import { StopButton } from './components/StopButton';
 import { Button } from './components/ui/button';
 import { useScreenFocus } from './components/use-screen-focus';
@@ -24,7 +23,7 @@ function initialFixture(): Fixture {
   const fixture = fixtureSource.find(query.get('fixture')) ?? fixtureSource.get('empty');
   if (fixture.id === 'stopping' && query.get('sensor') === 'lost') {
     const lost = fixtureSource.get('sensor-lost');
-    return { ...fixture, pressure: lost.pressure, graph: lost.graph };
+    return { ...fixture, pressure: lost.pressure };
   }
   return fixture;
 }
@@ -63,7 +62,7 @@ function RunScreen({
   const isLost = fixture.pressure.quality !== 'valid';
   const isStopping = fixture.id === 'stopping';
   const isActuator = parameters.actuator;
-  const { graph, pressureValue, lastPressure, differentialValue } = prepareRunDisplay(
+  const { pressureValue, lastPressure, differentialValue } = prepareRunDisplay(
     fixture,
     parameters,
     item.stage,
@@ -107,10 +106,8 @@ function RunScreen({
         ...stage,
         state: index === stageIndex ? 'current' : index < stageIndex ? 'done' : 'next',
       }))}
-      pressure={pressureValue === null ? 'Неизвестно' : formatMeasurement(pressureValue)}
-      differential={
-        differentialValue === null ? 'Неизвестно' : formatMeasurement(differentialValue)
-      }
+      pressure={formatMeasurement(pressureValue)}
+      differential={formatMeasurement(differentialValue)}
       target={`${formatNumber(parameters.pmax)} Па`}
       pressureNote={
         <>
@@ -126,36 +123,8 @@ function RunScreen({
           {isStopping && isLost && <p>Данные ДД1 недоступны</p>}
         </>
       }
-      chart={
-        <>
-          <LeakageChart
-            emptyMessage={
-              isStopping || isLost ? 'Рабочая точка недоступна' : 'Рабочая точка ещё не получена'
-            }
-          />
-          <details className="chart-data">
-            <summary>Подробности измерений</summary>
-            <RunMeasurementChart
-              points={graph}
-              target={parameters.pmax}
-              rangeSeconds={
-                item.stage === 'measurement' ? parameters.measurementSeconds : undefined
-              }
-              tolerance={
-                item.stage === 'stabilization'
-                  ? 2
-                  : item.stage === 'restabilization'
-                    ? 5
-                    : undefined
-              }
-              note={
-                item.stage === 'measurement'
-                  ? `Прошло ${formatNumber(parameters.measurementSeconds / 2)} с · длительность ${formatNumber(parameters.measurementSeconds)} с`
-                  : 'Ряд: 60 с'
-              }
-            />
-          </details>
-        </>
+      leakageMessage={
+        isStopping || isLost ? 'Рабочая точка недоступна' : 'Рабочая точка ещё не получена'
       }
       headingRef={actionHeadingRef}
       actionTitle={isStopping ? 'Остановка' : isLost ? 'Потеря данных ДД1' : item.title}
@@ -235,7 +204,6 @@ export function App() {
             ...base,
             pressure: context.fixture.pressure,
             differential: context.fixture.differential,
-            graph: context.fixture.graph,
           }
         : base;
     setFixture(selected);
@@ -454,12 +422,7 @@ export function App() {
               interrupted={fixture.id === 'stopping'}
               active={active}
               draftAvailable={draftAvailable}
-              calculation={
-                <LeakageChart
-                  point={historyResult ? undefined : leakagePoint}
-                  emptyMessage="Рабочая точка недоступна"
-                />
-              }
+              previewPoint={leakagePoint}
               onList={() => setScreen('tests')}
               onNew={() => {
                 if (draftAvailable) {

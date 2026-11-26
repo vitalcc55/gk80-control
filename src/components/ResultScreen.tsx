@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import { outcomeLabel, qualityLabel, saveLabel } from '../desktop/display';
 import type { TestRecord } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
 import { formatNumber } from '../lib/format';
-import type { TestParameters } from '../model';
+import type { LeakagePoint, TestParameters } from '../model';
 import { LeakageChart } from './LeakageChart';
 import { PressureNotation } from './PressureNotation';
 import './screens.css';
@@ -16,8 +16,9 @@ interface ResultScreenProps {
   draftAvailable: boolean;
   onList: () => void;
   onNew: () => void;
+  stopConfirmation?: { disabled: boolean; onConfirm: () => void } | undefined;
   record?: TestRecord;
-  calculation?: ReactNode;
+  previewPoint?: LeakagePoint | undefined;
   children?: ReactNode;
   hidden?: boolean;
 }
@@ -37,8 +38,9 @@ export function ResultScreen({
   draftAvailable,
   onList,
   onNew,
+  stopConfirmation,
   record,
-  calculation,
+  previewPoint,
   children,
   hidden = false,
 }: ResultScreenProps) {
@@ -55,7 +57,7 @@ export function ResultScreen({
           ? 'Сохранение расчёта не подтверждено.'
           : 'Расчёт отсутствует.';
   return (
-    <section className="workpage" aria-labelledby="result-title" hidden={hidden}>
+    <section className="workpage result-page" aria-labelledby="result-title" hidden={hidden}>
       {!hidden && (
         <>
           <div className="workpage-heading">
@@ -64,34 +66,11 @@ export function ResultScreen({
               <p>{record ? parameters.valve : `${parameters.id} · ${parameters.valve}`}</p>
             </div>
           </div>
-          <div className="result-overview">
-            <div>
-              <span>Ход испытания</span>
-              <strong>
-                {record ? outcomeLabel(record.outcome) : interrupted ? 'Прервано' : 'Завершено'}
-              </strong>
-            </div>
-            <div>
-              <span>Данные</span>
-              <strong>
-                {record
-                  ? qualityLabel(record.dataQuality)
-                  : interrupted
-                    ? 'Неполные'
-                    : 'Данные доступны'}
-              </strong>
-            </div>
-            <div>
-              <span>Сохранение</span>
-              <strong className={saveError ? 'error-text' : ''}>
-                {record
-                  ? saveLabel(record.saveStatus)
-                  : saveError
-                    ? 'Сохранение не подтверждено'
-                    : 'Сохранение не выполнялось'}
-              </strong>
-              {saveError && <p>Запись результата не подтверждена.</p>}
-            </div>
+          <div className="work-surface result-section">
+            <LeakageChart
+              point={record ? (values ?? undefined) : previewPoint}
+              emptyMessage={record ? emptyMessage : 'Рабочая точка недоступна'}
+            />
           </div>
           <div className="result-layout">
             <div className="work-surface result-section">
@@ -154,64 +133,92 @@ export function ResultScreen({
                 ))}
               </dl>
             </div>
-            <div className="work-surface result-section">
-              {calculation ?? (
-                <>
-                  <div className="section-heading">
-                    <h2>Результаты расчёта</h2>
-                  </div>
-                  <dl className="result-details">
-                    {values ? (
-                      <>
-                        <div>
-                          <dt>Рабочий объёмный расход</dt>
-                          <dd>{formatNumber(values.workingFlowM3PerSecond)} м³/с</dd>
-                        </div>
-                        <div>
-                          <dt>Приведённый расход при 20 °C и 101 325 Па</dt>
-                          <dd>{formatNumber(values.normalizedFlowM3PerHour)} м³/ч</dd>
-                        </div>
-                        <div>
-                          <dt>Условия расчёта</dt>
-                          <dd>Параметры симулятора</dd>
-                        </div>
-                      </>
-                    ) : (
+            {record && (
+              <div className="work-surface result-section">
+                <div className="section-heading">
+                  <h2>Результаты расчёта</h2>
+                </div>
+                <dl className="result-details">
+                  {values ? (
+                    <>
                       <div>
-                        <dt>Расход</dt>
-                        <dd>
-                          {record && record.saveStatus !== 'saved' ? 'Недоступен' : 'Не рассчитан'}
-                        </dd>
+                        <dt>Рабочий объёмный расход</dt>
+                        <dd>{formatNumber(values.workingFlowM3PerSecond)} м³/с</dd>
                       </div>
-                    )}
-                  </dl>
-                </>
-              )}
-            </div>
+                      <div>
+                        <dt>Приведённый расход при 20 °C и 101 325 Па</dt>
+                        <dd>{formatNumber(values.normalizedFlowM3PerHour)} м³/ч</dd>
+                      </div>
+                      <div>
+                        <dt>Условия расчёта</dt>
+                        <dd>Параметры симулятора</dd>
+                      </div>
+                    </>
+                  ) : (
+                    <div>
+                      <dt>Расход</dt>
+                      <dd>{record.saveStatus !== 'saved' ? 'Недоступен' : 'Не рассчитан'}</dd>
+                    </div>
+                  )}
+                </dl>
+              </div>
+            )}
           </div>
-          {record && !calculation && (
-            <div className="work-surface result-section">
-              <LeakageChart point={values ?? undefined} emptyMessage={emptyMessage} />
-            </div>
-          )}
         </>
       )}
       {children}
       {!hidden && (
-        <div className="work-actions">
-          <button className="work-button work-button-secondary" type="button" onClick={onList}>
-            <ArrowLeft aria-hidden="true" size={16} /> К списку
-          </button>
-          <button
-            className="work-button work-button-primary"
-            type="button"
-            onClick={onNew}
-            disabled={active}
-          >
-            {draftAvailable && !active ? 'Продолжить подготовку' : 'Новое по этим параметрам'}{' '}
-            <ArrowRight aria-hidden="true" size={16} />
-          </button>
-        </div>
+        <>
+          <div className="result-overview">
+            <div>
+              <span>Ход испытания</span>
+              <strong>
+                {record ? outcomeLabel(record.outcome) : interrupted ? 'Прервано' : 'Завершено'}
+              </strong>
+            </div>
+            <div>
+              <span>Данные</span>
+              <strong>
+                {record
+                  ? qualityLabel(record.dataQuality)
+                  : interrupted
+                    ? 'Неполные'
+                    : 'Данные доступны'}
+              </strong>
+            </div>
+            <div>
+              <span>Сохранение</span>
+              <strong className={saveError ? 'error-text' : ''}>
+                {record
+                  ? saveLabel(record.saveStatus)
+                  : saveError
+                    ? 'Сохранение не подтверждено'
+                    : 'Сохранение не выполнялось'}
+              </strong>
+              {saveError && <p>Запись результата не подтверждена.</p>}
+            </div>
+          </div>
+          <div className="work-actions">
+            <button className="work-button work-button-secondary" type="button" onClick={onList}>
+              <ArrowLeft aria-hidden="true" size={16} /> К списку
+            </button>
+            <button
+              className="work-button work-button-primary"
+              type="button"
+              onClick={stopConfirmation?.onConfirm ?? onNew}
+              disabled={active || stopConfirmation?.disabled}
+            >
+              {stopConfirmation ? (
+                'Подтвердить остановку вала'
+              ) : (
+                <>
+                  {draftAvailable && !active ? 'Продолжить подготовку' : 'Новое по этим параметрам'}{' '}
+                  <ArrowRight aria-hidden="true" size={16} />
+                </>
+              )}
+            </button>
+          </div>
+        </>
       )}
     </section>
   );

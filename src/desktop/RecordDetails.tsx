@@ -6,7 +6,7 @@ import type {
   MeasurementPage,
   TestRecord,
 } from '../generated/wails/github.com/vitalcc55/gk80-control/internal/contract/models';
-import { formatDateTime, formatEventDateTime, formatNumber } from '../lib/format';
+import { formatDateTime, formatEventDateTime, formatNumber, unavailableValue } from '../lib/format';
 import type { DemoService } from './demo-service';
 import {
   eventActionLabel,
@@ -100,11 +100,13 @@ export function RecordDetails({
   service,
   available,
   visible = true,
+  showArchiveDetails = true,
 }: {
   record: TestRecord;
   service: DemoService;
   available: boolean;
   visible?: boolean;
+  showArchiveDetails?: boolean;
 }) {
   const [informationOpen, setInformationOpen] = useState(false);
   const [measurementRetryVisible, setMeasurementRetryVisible] = useState(false);
@@ -116,7 +118,7 @@ export function RecordDetails({
   const measurement = useRecordPage<MeasurementPage>({
     id: record.testId,
     version,
-    visible,
+    visible: visible && showArchiveDetails,
     available,
     kind: 'measurements',
     read: (id, after) => service.measurements(id, after, 100),
@@ -124,7 +126,7 @@ export function RecordDetails({
   const journal = useRecordPage<AuditPage>({
     id: record.testId,
     version,
-    visible,
+    visible: visible && showArchiveDetails,
     available,
     kind: 'audit',
     read: (id, after) => service.audit(id, after, 100),
@@ -163,9 +165,9 @@ export function RecordDetails({
   useEffect(() => {
     if (record.outcome !== 'interrupted' || autoOpened.current === record.testId) return;
     autoOpened.current = record.testId;
-    measurement.setOpen(true);
+    if (showArchiveDetails) measurement.setOpen(true);
     trace.setOpen(true);
-  }, [record.testId, record.outcome, measurement.setOpen, trace.setOpen]);
+  }, [record.testId, record.outcome, measurement.setOpen, trace.setOpen, showArchiveDetails]);
   useEffect(() => {
     reason.setOpen(record.outcome === 'interrupted' || record.outcome === 'unknown');
   }, [record.outcome, reason.setOpen]);
@@ -296,182 +298,195 @@ export function RecordDetails({
           </>
         )}
       </details>
-      <details
-        className="work-surface result-section"
-        open={informationOpen}
-        onToggle={(event) => setInformationOpen(event.currentTarget.open)}
-      >
-        <summary>Сведения о записи</summary>
-        <dl className="result-details">
-          <div>
-            <dt>Идентификатор</dt>
-            <dd>{record.testId}</dd>
-          </div>
-          <div>
-            <dt>Создано</dt>
-            <dd>{formatDateTime(record.createdAt)}</dd>
-          </div>
-          <div>
-            <dt>Оператор</dt>
-            <dd>{eventActorLabel(record.operatorId)}</dd>
-          </div>
-          <div>
-            <dt>Идентификатор оператора</dt>
-            <dd>{record.operatorId}</dd>
-          </div>
-        </dl>
-      </details>
-      <details
-        className="work-surface result-section"
-        open={measurementOpen}
-        onToggle={(event) => {
-          if (event.target === event.currentTarget) measurement.setOpen(event.currentTarget.open);
-        }}
-      >
-        {/* biome-ignore lint/a11y/noStaticElementInteractions: native summary is keyboard interactive. */}
-        <summary
-          onClick={(event) => {
-            if (event.currentTarget.closest('details')?.open) measurement.beforeClose();
-          }}
-        >
-          Измерения
-        </summary>
-        {measurementOpen && (
-          <>
-            <p>Страница до 100 отсчётов. Среднее, расход и класс не рассчитываются.</p>
-            {measurementError && <p role="alert">{measurementError}</p>}
-            {measurementRetryVisible && (
-              <button
-                type="button"
-                className="measurement-retry"
-                ref={measurementRetryButton}
-                aria-disabled={measurementLoading || measurementRetry === null}
-                onBlur={() => {
-                  if (!measurementRetry && !measurementLoading) setMeasurementRetryVisible(false);
-                }}
-                onClick={() => {
-                  if (measurementRetry) measurement.retryRead();
-                }}
-              >
-                Повторить чтение измерений
-              </button>
-            )}
-            {measurementLoading && <p role="status">Чтение измерений…</p>}
-            {measurementStale && measurements && <p>Показана предыдущая страница измерений.</p>}
-            {measurements && (
-              <div className="table-scroll" ref={measurementTable}>
-                <table className="work-table">
-                  <thead>
-                    <tr>
-                      <th>Канал</th>
-                      <th>Значение</th>
-                      <th>Качество</th>
-                      <th>Время измерения</th>
-                      <th>Источник</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {measurements.items?.map((item) => (
-                      <tr key={item.sequence}>
-                        <td>{item.channel.replace('dd', 'ДД')}</td>
-                        <td>
-                          {item.value === null ? 'Неизвестно' : formatNumber(item.value)}{' '}
-                          {item.unit}
-                        </td>
-                        <td>{measurementQualityLabel(item.quality)}</td>
-                        <td>{item.measuredAt ?? 'Время неизвестно'}</td>
-                        <td>{measurementSourceLabel(item.source)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {!measurements.items?.length && <p>На этой странице нет сохранённых измерений.</p>}
+      {showArchiveDetails && (
+        <>
+          <details
+            className="work-surface result-section"
+            open={informationOpen}
+            onToggle={(event) => setInformationOpen(event.currentTarget.open)}
+          >
+            <summary>Сведения о записи</summary>
+            <dl className="result-details">
+              <div>
+                <dt>Идентификатор</dt>
+                <dd>{record.testId}</dd>
               </div>
+              <div>
+                <dt>Создано</dt>
+                <dd>{formatDateTime(record.createdAt)}</dd>
+              </div>
+              <div>
+                <dt>Оператор</dt>
+                <dd>{eventActorLabel(record.operatorId)}</dd>
+              </div>
+              <div>
+                <dt>Идентификатор оператора</dt>
+                <dd>{record.operatorId}</dd>
+              </div>
+            </dl>
+          </details>
+          <details
+            className="work-surface result-section"
+            open={measurementOpen}
+            onToggle={(event) => {
+              if (event.target === event.currentTarget)
+                measurement.setOpen(event.currentTarget.open);
+            }}
+          >
+            {/* biome-ignore lint/a11y/noStaticElementInteractions: native summary is keyboard interactive. */}
+            <summary
+              onClick={(event) => {
+                if (event.currentTarget.closest('details')?.open) measurement.beforeClose();
+              }}
+            >
+              Измерения
+            </summary>
+            {measurementOpen && (
+              <>
+                <p>Страница до 100 отсчётов. Среднее, расход и класс не рассчитываются.</p>
+                {measurementError && <p role="alert">{measurementError}</p>}
+                {measurementRetryVisible && (
+                  <button
+                    type="button"
+                    className="measurement-retry"
+                    ref={measurementRetryButton}
+                    aria-disabled={measurementLoading || measurementRetry === null}
+                    onBlur={() => {
+                      if (!measurementRetry && !measurementLoading)
+                        setMeasurementRetryVisible(false);
+                    }}
+                    onClick={() => {
+                      if (measurementRetry) measurement.retryRead();
+                    }}
+                  >
+                    Повторить чтение измерений
+                  </button>
+                )}
+                {measurementLoading && <p role="status">Чтение измерений…</p>}
+                {measurementStale && measurements && <p>Показана предыдущая страница измерений.</p>}
+                {measurements && (
+                  <div className="table-scroll" ref={measurementTable}>
+                    <table className="work-table">
+                      <thead>
+                        <tr>
+                          <th>Канал</th>
+                          <th>Значение</th>
+                          <th>Качество</th>
+                          <th>Время измерения</th>
+                          <th>Источник</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {measurements.items?.map((item) => (
+                          <tr key={item.sequence}>
+                            <td>{item.channel.replace('dd', 'ДД')}</td>
+                            <td>
+                              {item.value === null
+                                ? unavailableValue
+                                : `${formatNumber(item.value)} ${item.unit}`}
+                            </td>
+                            <td>{measurementQualityLabel(item.quality)}</td>
+                            <td>{item.measuredAt ?? unavailableValue}</td>
+                            <td>{measurementSourceLabel(item.source)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {!measurements.items?.length && (
+                      <p>На этой странице нет сохранённых измерений.</p>
+                    )}
+                  </div>
+                )}
+                <div className="history-pages">
+                  <button
+                    type="button"
+                    aria-disabled={measurementLoading}
+                    onClick={() => measurement.request(0, true)}
+                  >
+                    К началу измерений
+                  </button>
+                  {measurements && (
+                    <button
+                      type="button"
+                      aria-disabled={measurementLoading || !measurements.nextAfter}
+                      onClick={() => {
+                        if (measurements.nextAfter) measurement.request(measurements.nextAfter);
+                      }}
+                    >
+                      Следующая страница измерений
+                    </button>
+                  )}
+                </div>
+              </>
             )}
-            <div className="history-pages">
-              <button
-                type="button"
-                aria-disabled={measurementLoading}
-                onClick={() => measurement.request(0, true)}
-              >
-                К началу измерений
-              </button>
-              {measurements && (
-                <button
-                  type="button"
-                  aria-disabled={measurementLoading || !measurements.nextAfter}
-                  onClick={() => {
-                    if (measurements.nextAfter) measurement.request(measurements.nextAfter);
-                  }}
-                >
-                  Следующая страница измерений
-                </button>
-              )}
-            </div>
-          </>
-        )}
-      </details>
-      <details
-        className="work-surface result-section"
-        open={auditOpen}
-        onToggle={(event) => {
-          if (event.target === event.currentTarget) journal.setOpen(event.currentTarget.open);
-        }}
-      >
-        {/* biome-ignore lint/a11y/noStaticElementInteractions: native summary is keyboard interactive. */}
-        <summary
-          onClick={(event) => {
-            if (event.currentTarget.closest('details')?.open) journal.beforeClose();
-          }}
-        >
-          Журнал событий
-        </summary>
-        {auditOpen && (
-          <>
-            <p>Страница до 100 событий.</p>
-            {auditError && <p role="alert">{auditError}</p>}
-            {auditRetryVisible && (
-              <button
-                type="button"
-                ref={auditRetryButton}
-                aria-disabled={auditLoading || journal.retry === null}
-                onBlur={() => {
-                  if (!journal.retry && !auditLoading) setAuditRetryVisible(false);
-                }}
-                onClick={() => {
-                  if (journal.retry) journal.retryRead();
-                }}
-              >
-                Повторить чтение журнала
-              </button>
+          </details>
+          <details
+            className="work-surface result-section"
+            open={auditOpen}
+            onToggle={(event) => {
+              if (event.target === event.currentTarget) journal.setOpen(event.currentTarget.open);
+            }}
+          >
+            {/* biome-ignore lint/a11y/noStaticElementInteractions: native summary is keyboard interactive. */}
+            <summary
+              onClick={(event) => {
+                if (event.currentTarget.closest('details')?.open) journal.beforeClose();
+              }}
+            >
+              Журнал событий
+            </summary>
+            {auditOpen && (
+              <>
+                <p>Страница до 100 событий.</p>
+                {auditError && <p role="alert">{auditError}</p>}
+                {auditRetryVisible && (
+                  <button
+                    type="button"
+                    ref={auditRetryButton}
+                    aria-disabled={auditLoading || journal.retry === null}
+                    onBlur={() => {
+                      if (!journal.retry && !auditLoading) setAuditRetryVisible(false);
+                    }}
+                    onClick={() => {
+                      if (journal.retry) journal.retryRead();
+                    }}
+                  >
+                    Повторить чтение журнала
+                  </button>
+                )}
+                {auditLoading && <p role="status">Чтение журнала…</p>}
+                {auditStale && audit && <p>Показана предыдущая страница журнала.</p>}
+                <ul>
+                  {audit?.items?.map((item) => (
+                    <EventRow key={item.sequence} item={item} />
+                  ))}
+                </ul>
+                {audit && !audit.items?.length && <p>На этой странице нет сохранённых событий.</p>}
+                <div className="history-pages">
+                  <button
+                    type="button"
+                    aria-disabled={auditLoading}
+                    onClick={() => journal.request()}
+                  >
+                    К началу журнала
+                  </button>
+                  {audit && (
+                    <button
+                      type="button"
+                      aria-disabled={auditLoading || !audit.nextAfter}
+                      onClick={() => {
+                        if (audit.nextAfter) journal.request(audit.nextAfter);
+                      }}
+                    >
+                      Следующая страница журнала
+                    </button>
+                  )}
+                </div>
+              </>
             )}
-            {auditLoading && <p role="status">Чтение журнала…</p>}
-            {auditStale && audit && <p>Показана предыдущая страница журнала.</p>}
-            <ul>
-              {audit?.items?.map((item) => (
-                <EventRow key={item.sequence} item={item} />
-              ))}
-            </ul>
-            {audit && !audit.items?.length && <p>На этой странице нет сохранённых событий.</p>}
-            <div className="history-pages">
-              <button type="button" aria-disabled={auditLoading} onClick={() => journal.request()}>
-                К началу журнала
-              </button>
-              {audit && (
-                <button
-                  type="button"
-                  aria-disabled={auditLoading || !audit.nextAfter}
-                  onClick={() => {
-                    if (audit.nextAfter) journal.request(audit.nextAfter);
-                  }}
-                >
-                  Следующая страница журнала
-                </button>
-              )}
-            </div>
-          </>
-        )}
-      </details>
+          </details>
+        </>
+      )}
     </div>
   );
 }

@@ -8,7 +8,6 @@ import { DesktopApp as RealDesktopApp } from '../src/desktop/DesktopApp';
 import { CommandConflictError } from '../src/desktop/demo-service';
 import { History } from '../src/desktop/History';
 import { LiveApp as RealLiveApp } from '../src/desktop/LiveApp';
-import { MeasurementSeriesContext } from '../src/desktop/measurement-series';
 import { sessionObservation } from '../src/desktop/session-observation';
 import { desktopDemoService } from '../src/desktop/wails-bridge';
 import {
@@ -24,6 +23,7 @@ import {
   MeasurementQuantity,
   MeasurementSource,
   MeasurementUnit,
+  PendingActionKind,
   type Readiness,
   ReadinessCheckSource,
   type SessionView,
@@ -71,7 +71,9 @@ function LiveApp(
 }
 // The characteristic's real canvas is exercised in Playwright.
 vi.mock('../src/components/LeakageChart', () => ({
-  LeakageChart: ({ emptyMessage }: { emptyMessage: string }) => <p>{emptyMessage}</p>,
+  LeakageChart: ({ emptyMessage }: { emptyMessage: string }) => (
+    <section aria-label="Характеристика утечки">{emptyMessage}</section>
+  ),
 }));
 
 vi.mock('../src/components/MeasurementChart', () => ({
@@ -200,8 +202,7 @@ const record = {
   },
 };
 
-it('keeps the active series and completed result reachable without leaving the run', async () => {
-  const measurementContext = new MeasurementSeriesContext();
+it('keeps the current readings and completed result reachable without leaving the run', async () => {
   let snapshot: Snapshot = {
     apiVersion: 'v1',
     backendRunId: backend,
@@ -243,30 +244,12 @@ it('keeps the active series and completed result reachable without leaving the r
     }),
   };
   api.list.mockResolvedValue({ items: [], nextAfter: null });
-  render(
-    <LiveApp
-      session={session}
-      hostRunId={host}
-      backendRunId={backend}
-      measurementContext={measurementContext}
-    />,
-  );
+  render(<LiveApp session={session} hostRunId={host} backendRunId={backend} />);
   await screen.findByRole('heading', { name: 'Проведение испытания' });
   expect(screen.getByRole('button', { name: 'Испытания' })).toHaveProperty('disabled', true);
-  const key = `${host}:${backend}:${database}:${testId}`;
-  const next = {
-    ...snapshot,
-    measurementBatch: 2,
-    measurements:
-      snapshot.measurements?.map((item) => ({
-        ...item,
-        sequence: 2,
-        measuredAt: '2026-10-30T00:00:02Z',
-        value: 1001,
-      })) ?? [],
-  };
-  act(() => measurementContext.accept(key, next, true, 0));
-  expect(measurementContext.read(key).points.at(-1)?.pressure).toBe(1001);
+  expect(screen.getByText(/≈ 1\s?000 Па/)).toBeTruthy();
+  expect(screen.getByRole('region', { name: 'Характеристика утечки' })).toBeTruthy();
+  expect(screen.queryByText('Подробности измерений')).toBeNull();
   snapshot = {
     ...snapshot,
     revision: 2,
@@ -276,16 +259,66 @@ it('keeps the active series and completed result reachable without leaving the r
       stage: TestRecordStage.Finished,
       outcome: TestRecordOutcome.TestRecordOutcomeCompleted,
     },
+    pendingAction: {
+      testId,
+      actionId,
+      kind: PendingActionKind.ConfirmStopped,
+      instruction: 'Подтвердите, что вал остановился.',
+    },
   };
-  await userEvent
-    .setup()
-    .click(await screen.findByRole('button', { name: 'Результат прохода' }, { timeout: 8000 }));
+  const user = userEvent.setup();
+  await user.click(
+    await screen.findByRole('button', { name: 'Результат прохода' }, { timeout: 8000 }),
+  );
   expect(screen.getByRole('heading', { name: 'Результат испытания' })).toBeTruthy();
-  expect(screen.getByText('Завершено')).toBeTruthy();
+  const overview = screen.getByText('Завершено').closest('.result-overview');
+  const chart = screen.getByRole('region', { name: 'Характеристика утечки' });
+  for (const name of ['Параметры прохода', 'Результаты расчёта']) {
+    const detailsHeading = screen.getByRole('heading', { name });
+    expect(chart.compareDocumentPosition(detailsHeading)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  }
+  api.measurements.mockResolvedValue({ items: [], nextAfter: null });
+  const measurementTrace = screen.getByText('График измерений', { selector: 'summary' });
+  expect(overview?.compareDocumentPosition(measurementTrace)).toBe(
+    Node.DOCUMENT_POSITION_PRECEDING,
+  );
+  await user.click(measurementTrace);
+  expect(await screen.findByText('Сохранённых показаний для графика нет.')).toBeTruthy();
+  for (const title of ['Сведения о записи', 'Измерения', 'Журнал событий']) {
+    expect(screen.queryByText(title, { selector: 'summary' })).toBeNull();
+  }
+  expect(screen.queryByText('Подтвердите, что вал остановился.')).toBeNull();
+  const confirm = screen.getByRole('button', { name: 'Подтвердить остановку вала' });
+  const actions = screen.getByRole('button', { name: 'К списку' }).parentElement;
+  expect(confirm.parentElement).toBe(actions);
+  expect(screen.queryByRole('button', { name: 'Новое по этим параметрам' })).toBeNull();
+  api.confirm.mockImplementation(async (_testId, _actionId, { commandId }) => {
+    snapshot = { ...snapshot, revision: 3, lastEventSequence: 3, pendingAction: null };
+    return {
+      delivery: CommandDispatchDelivery.CommandDispatchDeliveryResponse,
+      command: { commandId, status: CommandStatusStatus.CommandStatusStatusCompleted, testId },
+    };
+  });
+  await user.click(confirm);
+  expect(api.confirm).toHaveBeenCalledWith(
+    testId,
+    actionId,
+    expect.objectContaining({
+      expectedRevision: 2,
+    }),
+  );
+  const newTest = await screen.findByRole(
+    'button',
+    { name: 'Новое по этим параметрам' },
+    { timeout: 8000 },
+  );
+  expect(newTest.parentElement).toBe(actions);
+  expect(newTest).toHaveProperty('disabled', false);
+  expect(screen.queryByRole('button', { name: 'Подтвердить остановку вала' })).toBeNull();
   expect(api.stop).not.toHaveBeenCalled();
 }, 12000);
 
-it('blocks navigation during the run and retains the chart through bridge interruption', async () => {
+it('blocks navigation during the run and restores current readings after bridge interruption', async () => {
   const sample = (index: number): Snapshot => ({
     apiVersion: 'v1',
     backendRunId: backend,
@@ -341,18 +374,13 @@ it('blocks navigation during the run and retains the chart through bridge interr
     verify: async () => desktop.status(),
     subscribe: () => () => {},
   };
-  const measurementContext = new MeasurementSeriesContext();
-  const view = render(
-    <DesktopApp bridge={desktop} session={session} measurementContext={measurementContext} />,
-  );
-  const points = () =>
-    screen.getByRole('img', { name: 'График показаний симулятора' }).getAttribute('data-points');
-  await waitFor(() => expect(points()).toContain('1000'));
+  const view = render(<DesktopApp bridge={desktop} session={session} />);
+  await screen.findByText(/≈ 1\s?000 Па/);
   const currentNavigation = screen.getByRole('button', { name: 'Текущее испытание' });
   expect(currentNavigation.getAttribute('aria-current')).toBe('page');
   currentNavigation.focus();
   snapshot = sample(2);
-  await waitFor(() => expect(points()).toContain('1001'), { timeout: 8000 });
+  await screen.findByText(/≈ 1\s?001 Па/, {}, { timeout: 8000 });
   expect(document.activeElement).toBe(currentNavigation);
   const user = userEvent.setup();
   expect(screen.getByRole('button', { name: 'Испытания' })).toHaveProperty('disabled', true);
@@ -368,27 +396,13 @@ it('blocks navigation during the run and retains the chart through bridge interr
         },
       }}
       session={session}
-      measurementContext={measurementContext}
     />,
   );
   await screen.findByRole('button', { name: 'Повторить связь' });
-  expect(screen.queryByRole('img', { name: 'График показаний симулятора' })).toBeNull();
+  expect(screen.queryByRole('region', { name: 'Характеристика утечки' })).toBeNull();
   snapshot = sample(3);
-  view.rerender(
-    <DesktopApp bridge={desktop} session={session} measurementContext={measurementContext} />,
-  );
-  await waitFor(
-    () =>
-      expect(points()).toBe(
-        JSON.stringify([
-          { seconds: 0, pressure: 1000, differential: null },
-          { seconds: 1, pressure: 1001, differential: null },
-          { seconds: 1.5, pressure: null, differential: null },
-          { seconds: 2, pressure: 1002, differential: null },
-        ]),
-      ),
-    { timeout: 8000 },
-  );
+  view.rerender(<DesktopApp bridge={desktop} session={session} />);
+  await screen.findByText(/≈ 1\s?002 Па/, {}, { timeout: 8000 });
   expect(screen.getByRole('button', { name: 'Испытания' })).toHaveProperty('disabled', true);
   snapshot = { ...sample(4), activeTest: { ...record, stage: TestRecordStage.Stopping } };
   await screen.findAllByText(/этап остановки/i, {}, { timeout: 8000 });
@@ -1380,6 +1394,7 @@ it('finishes opening history when the same session replaces its service wrapper'
   expect(await screen.findByRole('heading', { name: 'Результат испытания' })).toBeTruthy();
   expect(measurements).not.toHaveBeenCalled();
   expect(audit).not.toHaveBeenCalled();
+  expect(screen.getByText('Сведения о записи', { selector: 'summary' })).toBeTruthy();
   const user = userEvent.setup();
   await user.click(screen.getByText('Измерения', { selector: 'summary' }));
   await user.click(screen.getByText('Журнал событий', { selector: 'summary' }));
@@ -5106,7 +5121,7 @@ it('retains the running display and reserved Stop while replacing the session wr
     sessionView: async () => current,
   };
   const mounted = render(<LiveApp session={first} hostRunId={host} backendRunId={backend} />);
-  const chart = await screen.findByRole('img', { name: 'График показаний симулятора' });
+  const chart = await screen.findByRole('region', { name: 'Характеристика утечки' });
   const never = new Promise<SessionView>(() => {});
   mounted.rerender(
     <LiveApp
@@ -5115,7 +5130,7 @@ it('retains the running display and reserved Stop while replacing the session wr
       backendRunId={backend}
     />,
   );
-  expect(screen.getByRole('img', { name: 'График показаний симулятора' })).toBe(chart);
+  expect(screen.getByRole('region', { name: 'Характеристика утечки' })).toBe(chart);
   expect(screen.getByRole('button', { name: 'Остановить испытание' })).toBeTruthy();
 });
 

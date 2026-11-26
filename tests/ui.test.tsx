@@ -386,8 +386,8 @@ describe('подготовленные состояния оператора', (
     const differential = screen.getByText('Перепад на диафрагме').closest('.reading');
     if (!(pressure instanceof HTMLElement) || !(differential instanceof HTMLElement))
       throw new Error('Readings missing');
-    expect(within(pressure).getByText('Неизвестно')).toBeTruthy();
-    expect(within(differential).getByText('Неизвестно')).toBeTruthy();
+    expect(within(pressure).getByText('—')).toBeTruthy();
+    expect(within(differential).getByText('—')).toBeTruthy();
     expect(new URLSearchParams(window.location.search).get('step')).toBe('0');
     expect(screen.queryByRole('button', { name: 'Показать результат' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Испытания' })).toHaveProperty('disabled', true);
@@ -410,7 +410,7 @@ describe('подготовленные состояния оператора', (
     render(<App />);
     const pressure = screen.getByText('Давление в ёмкости').closest('.reading');
     if (!(pressure instanceof HTMLElement)) throw new Error('Pressure reading missing');
-    expect(within(pressure).getByText('Неизвестно')).toBeTruthy();
+    expect(within(pressure).getByText('—')).toBeTruthy();
     expect(within(pressure).getByText(/устарело/)).toBeTruthy();
   });
   it('сохраняет незавершённый ввод при навигации и заново запрашивает подтверждения готовности', async () => {
@@ -505,7 +505,7 @@ describe('подготовленные состояния оператора', (
     const pressure = screen.getByText('Давление в ёмкости').closest('.reading');
     expect(pressure).not.toBeNull();
     if (!(pressure instanceof HTMLElement)) throw new Error('Pressure reading missing');
-    expect(within(pressure).getByText('Неизвестно')).toBeTruthy();
+    expect(within(pressure).getByText('—')).toBeTruthy();
     expect(within(pressure).getByText(/устарело/)).toBeTruthy();
     expect(within(pressure).queryByText(/^0\s*Па$/)).toBeNull();
   });
@@ -530,7 +530,7 @@ describe('подготовленные состояния оператора', (
     await user.click(screen.getByRole('button', { name: 'Остановить испытание' }));
     const pressure = screen.getByText('Давление в ёмкости').closest('.reading');
     if (!(pressure instanceof HTMLElement)) throw new Error('Pressure reading missing');
-    expect(within(pressure).getByText('Неизвестно')).toBeTruthy();
+    expect(within(pressure).getByText('—')).toBeTruthy();
     expect(within(pressure).queryByText(/^0\s*Па$/)).toBeNull();
     expect(screen.getByRole('button', { name: 'Остановка выполняется' })).toHaveProperty(
       'disabled',

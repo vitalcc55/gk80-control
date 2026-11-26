@@ -9,8 +9,11 @@ const eventDateFormat = new Intl.DateTimeFormat('ru-RU', {
   timeStyle: 'medium',
 });
 
+export const unavailableValue = '—';
+
 /** Format the displayed reading without changing the stored or charted measurement. */
-export function formatMeasurement(value: number): string {
+export function formatMeasurement(value: number | null): string {
+  if (value === null) return unavailableValue;
   if (value > 0 && value < 0.005) return '< 0,01 Па';
   if (value < 0 && value > -0.005) return '−0,01 < значение < 0 Па';
   return `≈ ${formatNumber(value)} Па`;
