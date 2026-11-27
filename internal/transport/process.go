@@ -74,7 +74,7 @@ type readyResult struct {
 }
 
 // Start owns exactly the child it launches and authenticates its passive handshake.
-func Start(ctx context.Context, executable, profileDir, profileID, appVersion string) (*Process, contract.Handshake, error) {
+func Start(ctx context.Context, executable, profileDir, profileID, appVersion string, args ...string) (*Process, contract.Handshake, error) {
 	var empty contract.Handshake
 	if !filepath.IsAbs(executable) || !filepath.IsAbs(profileDir) {
 		return nil, empty, errors.New("absolute core and profile paths required")
@@ -84,7 +84,7 @@ func Start(ctx context.Context, executable, profileDir, profileID, appVersion st
 		return nil, empty, errors.New("core secret unavailable")
 	}
 	secret := base64.RawURLEncoding.EncodeToString(secretBytes)
-	cmd := exec.Command(executable)
+	cmd := exec.Command(executable, args...)
 	configureCoreProcess(cmd)
 	input, err := cmd.StdinPipe()
 	if err != nil {

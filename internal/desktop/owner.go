@@ -49,9 +49,9 @@ type Owner struct {
 }
 
 // NewOwner uses the production native-process transport.
-func NewOwner(hostID uuid.UUID, executable, profileDir, profileID, version string, log *slog.Logger, hostDegraded <-chan struct{}, degraded bool, notify func(contract.DesktopStatus)) *Owner {
+func NewOwner(hostID uuid.UUID, executable, profileDir, profileID, version string, log *slog.Logger, hostDegraded <-chan struct{}, degraded bool, notify func(contract.DesktopStatus), args ...string) *Owner {
 	starter := func(ctx context.Context) (ownedCore, contract.Handshake, error) {
-		process, handshake, err := transport.Start(ctx, executable, profileDir, profileID, version)
+		process, handshake, err := transport.Start(ctx, executable, profileDir, profileID, version, args...)
 		if process == nil {
 			return nil, handshake, err
 		}

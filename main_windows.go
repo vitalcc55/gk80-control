@@ -6,12 +6,14 @@ import (
 	"context"
 	"embed"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/vitalcc55/gk80-control/internal/contract"
+	"github.com/vitalcc55/gk80-control/internal/core"
 	"github.com/vitalcc55/gk80-control/internal/desktop"
 	"github.com/vitalcc55/gk80-control/internal/diagnostics"
 	"github.com/vitalcc55/gk80-control/internal/profile"
@@ -25,8 +27,16 @@ var desktopAssets embed.FS
 
 const appVersion = "0.1.0"
 const profileID = profile.DemoID
+const coreArgument = "--core"
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == coreArgument {
+		if len(os.Args) != 2 {
+			_, _ = fmt.Fprintln(os.Stderr, "GK80 core does not accept additional arguments")
+			os.Exit(1)
+		}
+		os.Exit(core.RunProcess(os.Stdin, os.Stdout, os.Stderr))
+	}
 	if err := runSafely(); err != nil {
 		var shutdown *shutdownFailure
 		coreExited := errors.As(err, &shutdown) && shutdown.coreExited
@@ -93,9 +103,9 @@ func run() (resultErr error) {
 	}()
 	logger.Application(diagnostics.ComponentDesktop).Info(string(diagnostics.ProcessStarted))
 	var app *application.App
-	owner = desktop.NewOwner(hostID, filepath.Join(filepath.Dir(executable), "gk80-core.exe"), profileDir, profileID, appVersion, logger.Application(diagnostics.ComponentTransport), logger.Degraded(), logErr != nil, func(status contract.DesktopStatus) {
+	owner = desktop.NewOwner(hostID, executable, profileDir, profileID, appVersion, logger.Application(diagnostics.ComponentTransport), logger.Degraded(), logErr != nil, func(status contract.DesktopStatus) {
 		app.Event.Emit("desktop:status", status)
-	})
+	}, coreArgument)
 	owner.SetConnectionEmitter(func(state contract.ConnectionState) { app.Event.Emit("core:connection", state) })
 	owner.SetCoreEventEmitter(func(event contract.Event) { app.Event.Emit("core:event", event) })
 	defer func() {

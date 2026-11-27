@@ -28,7 +28,7 @@ if (native) {
   const assets = join(browser, 'browser-assets');
   run(process.execPath, [npm, 'run', 'build:browser', '--', '--outDir', assets], { env });
   copyFileSync(join(assets, 'browser.html'), join(assets, 'index.html'));
-  copyFileSync(join(root, 'bin', 'gk80-core.exe'), join(browser, 'gk80-core.exe'));
+  run('go', ['build', '-o', join(browser, 'gk80-core.exe'), './cmd/gk80-core'], { env });
   run('go', ['build', '-o', join(browser, 'gk80-browser.exe'), './cmd/gk80-browser'], { env });
 } else if (mode === '--race') {
   run('go', ['test', ...testFlags, '-race',
